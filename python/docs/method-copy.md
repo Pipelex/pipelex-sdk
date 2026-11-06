@@ -1,6 +1,6 @@
 # Copying a method into another organization
 
-A stored method belongs to the organization that holds it, and access to it comes from membership in that organization. `copy_method` makes a new method in another organization the caller may change methods in, holding the original's draft, its form inputs and its saved examples, and leaves the original as it was. It is how a method reaches a team from the personal workspace that holds it, how it moves from a team into the caller's personal workspace, and, with the method's own organization as the destination, how a method is duplicated. `list_method_copies` lists the copies made of a method, so a surface can say where they went. The client reaches them on the hosted API's `POST /v1/methods/{method_id}/copy` and `GET /v1/methods/{method_id}/copies`, and the models are in `pipelex_sdk/product_models.py`. This page is the twin of `@pipelex/sdk`'s `docs/method-copy.md`.
+A stored method belongs to the organization that holds it, and access to it comes from membership in that organization. `copy_method` makes a new method in another organization the caller may change methods in, holding the original's draft, its form inputs and its saved examples, and leaves the original as it was. It is how a method reaches a team from the personal workspace that holds it, how it moves from a team into the caller's personal workspace, and, with the method's own organization as the destination, how a method is duplicated. The client reaches it on the hosted API's `POST /v1/methods/{method_id}/copy`, and the models are in `pipelex_sdk/product_models.py`. This page is the twin of `@pipelex/sdk`'s `docs/method-copy.md`.
 
 ```python
 import uuid
@@ -22,18 +22,17 @@ match result:
             print(f"{reference.path} names {reference.uri}")
 ```
 
-## The methods
+## The method
 
 | Method | Route | Answer |
 |---|---|---|
 | `copy_method(method_id, *, destination_org_id, name=None, expected_draft_updated_at=None, idempotency_key=None)` | `POST /v1/methods/{id}/copy` | A `MethodCopyResult`, discriminated on `outcome`: `MethodCopied` or `MethodCopyRefused`. |
-| `list_method_copies(method_id, *, limit=None, cursor=None)` | `GET /v1/methods/{id}/copies` | One `MethodCopyPage`, `items` and `next_cursor`, of `MethodCopyMarker` rows. `limit` is 1 to 100, 50 by default. |
 
-Both take a bare catalog id, as every method route does, and refuse a suffixed one (`mt_…@3`) with a `RequestArgumentError` before anything is sent. Every argument but the method id is keyword-only.
+It takes a bare catalog id, as every method route does, and refuse a suffixed one (`mt_…@3`) with a `RequestArgumentError` before anything is sent. Every argument but the method id is keyword-only.
 
 **The copy's body is closed.** The client sends `destination_org_id` and, when given, `name` and `expected_draft_updated_at`, and nothing else; a `None` reads as not given. `destination_org_id` is the canonical id of the destination, as a membership's `org_id` gives it; `name` is the copy's name, the original's when it is left out; `expected_draft_updated_at` is the original's draft token the caller last saw (`MethodData.updated_at`), echoed verbatim. A `destination_org_id` that is not a non-empty `str`, and a `name` or a token given that is not a `str`, are refused with a `RequestArgumentError` before any request, its `refused_argument` naming the argument.
 
-**Only a web session may copy.** A Pipelex API key belongs to one organization and cannot speak for another, so the platform refuses a copy sent with one `403` `auth.forbidden`, whatever its role. The listing is a read, open to every member of the method's organization and to every credential.
+**Only a web session may copy.** A Pipelex API key belongs to one organization and cannot speak for another, so the platform refuses a copy sent with one `403` `auth.forbidden`, whatever its role.
 
 ## What a copy holds
 
@@ -86,7 +85,7 @@ A non-2xx answer means no verdict could be produced, and none of them leaves any
 | `502` | `runtime.unavailable` | The platform could not read the caller's memberships. Its `retry` is `yes`. |
 | `500` | `pipelex.storage.not_configured` | The platform has no usable credentials for storage. Its `retry` is `no`. |
 | `503` | `pipelex.storage.unavailable` | Storage failed a read, a copy or a write. Its `retry` is `yes`. |
-| `503` | `runtime.unavailable` | The copy did not finish inside its deadline, a stored file it copied was written over meanwhile, or DynamoDB failed a read or a write. Its `retry` is `yes`. When DynamoDB failed both the write of the copy's row and the read that would confirm it, the `detail` names the copy's method id and says that a retry may make a second copy: the copy may stand in the destination, without the original's marker of it and without the destination's records of its files, so look for that id in the destination before copying again. |
+| `503` | `runtime.unavailable` | The copy did not finish inside its deadline, a stored file it copied was written over meanwhile, or DynamoDB failed a read or a write. Its `retry` is `yes`. When DynamoDB failed both the write of the copy's row and the read that would confirm it, the `detail` names the copy's method id and says that a retry may make a second copy: the copy may stand in the destination, without the destination's records of its files, so look for that id in the destination before copying again. |
 
 `MethodErrorCode` in `pipelex_sdk.errors` names `ORGANIZATION_NOT_FOUND` and `COPY_TOO_LARGE` beside the other method codes, and [errors.md](./errors.md) gives the problem every refusal carries.
 
@@ -118,14 +117,6 @@ except ApiResponseError as exc:
 | Other arguments under the same key | A `409` `request.idempotency_conflict`, `retry` `no`. A changed copy, such as one with a fresh draft token, goes under a new key. |
 
 Without a key, a copy whose answer was lost cannot be told from one that never ran, and sending it again may make a second copy. Even with one, two rare windows can make a second copy on a retry. A platform process can die after writing the copy and before storing its answer, a window the creation of a method shares. And the `503` whose `detail` names the copy released the key while the copy may stand, which is why it names the copy: look for that method id in the destination before copying again.
-
-## The copies of a method
-
-The original keeps a marker of each copy made of it, and `list_method_copies` pages them. A `MethodCopyMarker` holds `copy_method_id`, `destination_org_id`, `copied_by_user_id` and `copied_at`. The destination is named by its id alone, never by its name, so the listing tells no reader the name of an organization they do not belong to: a surface shows a destination's name from the reader's own memberships (`list_memberships`), and a copy in an organization the reader does not belong to stays an id. The rows come in the order of the copies' ids, which says nothing of when each was made; sort by `copied_at` to show them by date.
-
-Pass the page's `next_cursor` back as `cursor` to continue; `None` is the last page. A method never copied lists an empty page, as does a copy, which names its original through `copied_from` and has no copies of its own. A marker stays when its copy is erased, and the copy then reads as not found. The marker is written once the copy exists, and a failure to write it does not fail the copy, so a copy can, rarely, be missing from the list. The original's erasure and its discard delete its markers with it.
-
-The listing answers `404` `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted` while its erasure runs, and `422` `request.invalid` for a cursor it did not issue for that method or a `limit` outside 1 to 100. A page without its `next_cursor`, or whose rows break `MethodCopyMarker`, is an answer the SDK cannot read.
 
 ## `copied_from` on a method
 

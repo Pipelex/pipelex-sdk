@@ -419,11 +419,11 @@ export interface MethodVersionPage {
   nextCursor: string | null;
 }
 
-// ── Method copies (`/v1/methods/{id}/copy`, `/v1/methods/{id}/copies`) ──────
+// ── Method copies (`/v1/methods/{id}/copy`) ──────────────────────────────
 //
 // A copy is a new, unpublished method in a destination organization holding the original's draft,
 // its form inputs and its saved examples, each stored file they name copied into the destination.
-// The original stays as it was, and keeps a marker of each copy made of it.
+// The original stays as it was.
 
 /**
  * The copy — `copyMethod`, `POST /v1/methods/{id}/copy`. Its wire body is closed: the client
@@ -519,45 +519,6 @@ export interface MethodCopyLimit {
   name: "max_stored_files" | "max_stored_bytes";
   value: number;
   reached: number;
-}
-
-/** Query for one page of a method's copies. */
-export interface ListMethodCopiesQuery {
-  /**
-   * Page size, from 1 to 100; the API defaults to 50 and refuses a `limit` outside that range
-   * with a `422`.
-   */
-  limit?: number;
-  /** Opaque `nextCursor` from the previous page. */
-  cursor?: string;
-}
-
-/**
- * The original's record of one copy made of it — a row of `listMethodCopies`. It names the
- * destination by its id alone, never its name, so the listing tells no reader the name of an
- * organization they do not belong to: show a destination's name only from the reader's own
- * memberships. The marker stays when its copy is erased, and the copy then reads as not found.
- */
-export interface MethodCopyMarker {
-  /** The copy's method id, in the destination organization. */
-  copy_method_id: string;
-  /** The canonical id of the organization the copy was made in. */
-  destination_org_id: string;
-  /** The canonical id of the member who made the copy. */
-  copied_by_user_id: string;
-  /** ISO 8601 UTC instant the copy's row was written. */
-  copied_at: string;
-}
-
-/**
- * One page of a method's copies, in the order of the copies' ids, which says nothing of when each
- * was made. `nextCursor` is opaque — pass it straight back to `listMethodCopies` to continue;
- * `null` means this was the last page. A method never copied, and a copy, which names its
- * original through `copied_from` and has no copies of its own, answer an empty page.
- */
-export interface MethodCopyPage {
-  items: MethodCopyMarker[];
-  nextCursor: string | null;
 }
 
 // ── Method examples (`/v1/methods/{id}/examples`) ────────────────────────

@@ -621,7 +621,6 @@ describe("the method routes take a bare id", () => {
     ["listMethodVersions", (client) => client.listMethodVersions(SELECTOR)],
     ["getMethodVersion", (client) => client.getMethodVersion(SELECTOR, 3)],
     ["copyMethod", (client) => client.copyMethod(SELECTOR, { destination_org_id: "org_team" })],
-    ["listMethodCopies", (client) => client.listMethodCopies(SELECTOR)],
     ["deleteMethod", (client) => client.deleteMethod(SELECTOR)],
   ];
 

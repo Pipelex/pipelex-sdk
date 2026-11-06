@@ -1,8 +1,8 @@
 /**
- * A method copied into another organization and the copies a method lists: the copy's request,
- * its idempotency key, its two verdicts and every refusal the route answers, the copies page, and
- * the `copied_from` a copy's method reads carry — all against a mocked fetch. The Python SDK holds
- * the same routes to the same tests in `tests/unit/test_client_method_copies.py`.
+ * A method copied into another organization: the copy's request, its idempotency key, its two
+ * verdicts and every refusal the route answers, and the `copied_from` a copy's method reads carry
+ * — all against a mocked fetch. The Python SDK holds the same route to the same tests in
+ * `tests/unit/test_client_method_copies.py`.
  */
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
@@ -13,7 +13,6 @@ import type { MethodErrorCode } from "../src/errors.js";
 import type {
   MethodCopiedFrom,
   MethodCopyLimit,
-  MethodCopyMarker,
   MethodCopyResult,
   MethodData,
 } from "../src/product-models.js";
@@ -98,13 +97,6 @@ const REFUSED = {
   message:
     "main.mthds names a stored file the destination cannot read; remove or replace it, then copy again.",
   references: [{ path: "main.mthds", uri: "pipelex-storage://org_personal/assets/logo.png" }],
-};
-
-const MARKER: MethodCopyMarker = {
-  copy_method_id: "mt_copy01",
-  destination_org_id: "org_team",
-  copied_by_user_id: "user_1",
-  copied_at: "2026-10-23T09:00:00+00:00",
 };
 
 /** A problem document as the platform renders one of its refusals of the copy. */
@@ -506,107 +498,6 @@ describe("copyMethod — the refusals", () => {
 
     expect((err as ApiResponseError).code).toBe("pipelex.catalog.update_conflict");
     expect((err as ApiResponseError).problem.location?.field).toBe("expected_draft_updated_at");
-  });
-});
-
-describe("listMethodCopies", () => {
-  it("GETs /v1/methods/{id}/copies and maps the page envelope", async () => {
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { items: [MARKER], next_cursor: "c2" }));
-
-    const page = await makeClient().listMethodCopies("mt_receipts01");
-
-    const req = onlyRequest(spy);
-    expect(req.method).toBe("GET");
-    expect(req.url).toBe(`${BASE_URL}/v1/methods/mt_receipts01/copies`);
-    expect(page).toEqual({ items: [MARKER], nextCursor: "c2" });
-  });
-
-  it("forwards limit and cursor, an explicit empty cursor included", async () => {
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(() =>
-        Promise.resolve(jsonResponse(200, { items: [], next_cursor: null })),
-      );
-    const client = makeClient();
-
-    await client.listMethodCopies("mt_receipts01", { limit: 5, cursor: "c1" });
-    expect(onlyRequest(spy).url).toBe(
-      `${BASE_URL}/v1/methods/mt_receipts01/copies?limit=5&cursor=c1`,
-    );
-
-    spy.mockClear();
-    await client.listMethodCopies("mt_receipts01", { cursor: "" });
-    expect(onlyRequest(spy).url).toBe(`${BASE_URL}/v1/methods/mt_receipts01/copies?cursor=`);
-  });
-
-  it("follows the cursor to the last page", async () => {
-    const second: MethodCopyMarker = { ...MARKER, copy_method_id: "mt_copy02" };
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jsonResponse(200, { items: [MARKER], next_cursor: "c2" }))
-      .mockResolvedValueOnce(jsonResponse(200, { items: [second], next_cursor: null }));
-    const client = makeClient();
-
-    const first = await client.listMethodCopies("mt_receipts01", { limit: 1 });
-    const last = await client.listMethodCopies("mt_receipts01", {
-      limit: 1,
-      cursor: first.nextCursor!,
-    });
-
-    expect([...first.items, ...last.items].map((marker) => marker.copy_method_id)).toEqual([
-      "mt_copy01",
-      "mt_copy02",
-    ]);
-    expect(last.nextCursor).toBeNull();
-  });
-
-  it("reads a method never copied as an empty last page", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(200, { items: [], next_cursor: null }),
-    );
-
-    await expect(makeClient().listMethodCopies("mt_receipts01")).resolves.toEqual({
-      items: [],
-      nextCursor: null,
-    });
-  });
-
-  it.each([
-    ["an unknown method", 404, "pipelex.catalog.not_found"],
-    ["a method being erased", 409, "pipelex.catalog.being_deleted"],
-    ["a cursor it did not issue", 422, "request.invalid"],
-    ["a limit outside 1 to 100", 422, "request.invalid"],
-  ] as const)("throws %s as an ApiResponseError with its problem", async (_, status, code) => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(status, problemDocument(code, status, { detail: "Refused." })),
-    );
-
-    const err = await failureOf(() => makeClient().listMethodCopies("mt_receipts01"));
-
-    expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ProblemError).problem).toMatchObject({ code, domain: "input", retry: "no" });
-  });
-
-  it("throws a typed ApiResponseError on a page it cannot walk", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, { items: [MARKER] }));
-
-    const err = await failureOf(() => makeClient().listMethodCopies("mt_receipts01"));
-
-    expect(err).toBeInstanceOf(ApiResponseError);
-    expect((err as ApiResponseError).message).toBe(
-      "API GET /v1/methods/mt_receipts01/copies answered 200 with a page whose " +
-        "`next_cursor` is neither a string nor null",
-    );
-  });
-
-  it("refuses a suffixed method id before sending anything", async () => {
-    const spy = vi.spyOn(globalThis, "fetch");
-
-    const err = await failureOf(() => makeClient().listMethodCopies("mt_receipts01@draft"));
-
-    expect(err).toBeInstanceOf(RequestArgumentError);
-    expect(spy).not.toHaveBeenCalled();
   });
 });
 
