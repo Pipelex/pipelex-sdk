@@ -274,8 +274,8 @@ class MethodVersionBodies:
 
 
 class MethodCopyBodies:
-    """A method copied into another organization, as the platform serializes it (`MethodCopied`, `MethodCopyRefused`,
-    `MethodCopyPage`), and the original a copy names (`MethodCopiedFrom`).
+    """A method copied into another organization, as the platform serializes it (`MethodCopied`, `MethodCopyRefused`),
+    and the original a copy names (`MethodCopiedFrom`).
 
     `@pipelex/sdk`'s `tests/method-copies.test.ts` answers its client with the same documents.
     """
@@ -310,13 +310,6 @@ class MethodCopyBodies:
         "reason": "bundle_names_other_storage",
         "message": "main.mthds names a stored file the destination cannot read; remove or replace it, then copy again.",
         "references": [{"path": "main.mthds", "uri": "pipelex-storage://org_personal/assets/logo.png"}],
-    }
-
-    MARKER: ClassVar[dict[str, Any]] = {
-        "copy_method_id": "mt_copy01",
-        "destination_org_id": "org_team",
-        "copied_by_user_id": "user_1",
-        "copied_at": "2026-10-23T09:00:00+00:00",
     }
 
     LIMIT: ClassVar[dict[str, Any]] = {"name": "max_stored_files", "value": 200, "reached": 201}

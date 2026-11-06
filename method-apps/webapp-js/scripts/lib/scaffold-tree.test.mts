@@ -53,7 +53,7 @@ const NOT_COPIED = new Set([
 const SLICES = [
   {
     kind: "a published address",
-    argv: ["github.com/Pipelex/methods/text_stats@v0.1.1", "--name", "fixture-text-stats"],
+    argv: ["github.com/Pipelex/methods/text_stats@v0.2.0", "--name", "fixture-text-stats"],
     slug: "fixture-text-stats",
     pascal: "FixtureTextStats",
   },

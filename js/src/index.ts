@@ -188,7 +188,6 @@ export type {
 export type {
   UserProfile,
   BundleStorageReference,
-  ListMethodCopiesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
@@ -196,9 +195,7 @@ export type {
   MethodCopiedFrom,
   MethodCopyInput,
   MethodCopyLimit,
-  MethodCopyMarker,
   MethodCopyOutcome,
-  MethodCopyPage,
   MethodCopyRefusalReason,
   MethodCopyRefused,
   MethodCopyResult,
@@ -367,6 +364,7 @@ export type {
   WebhookHeaders,
   WebhookRefusal,
   WebhookReplayAccepted,
+  WebhookReplayOptions,
   WebhookSecret,
   WebhookSecretRotateOptions,
 } from "./webhooks.js";

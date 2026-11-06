@@ -3,7 +3,7 @@
 This is the reference for the second way a method reaches this CLI. The first is the one the three demos tell: the bundle lives at `widget/methods/<name>/main.mthds`, [`make codegen`](codegen.md) projects it, and a person writes the command that uses the projection. `make add-method` is the same story for a method that lives **on the platform** (a catalog id) or **in a published package** (an address): the method stays where it is, a one-line manifest names it, and the whole Python fan-out is written from the method's own contract.
 
 ```bash
-make add-method METHOD=github.com/Pipelex/methods/text_stats@v0.1.1
+make add-method METHOD=github.com/Pipelex/methods/text_stats@v0.2.0
 ```
 
 ## The gesture
@@ -37,10 +37,10 @@ The optional arguments:
 
 ## What it writes
 
-For `METHOD=github.com/Pipelex/methods/text_stats@v0.1.1`, with no other arguments:
+For `METHOD=github.com/Pipelex/methods/text_stats@v0.2.0`, with no other arguments:
 
 ```
-widget/methods/text-stats/method.json       # { "method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1" }
+widget/methods/text-stats/method.json       # { "method_ref": "github.com/Pipelex/methods/text_stats@v0.2.0" }
 widget/generated/text_stats/                # models.py, codegen.lock, __init__.py
 widget/attended/cli.py                      # its imports and one Typer command, at the anchors
 ```
@@ -58,7 +58,7 @@ Three files rather than the JS starter's seven, and the difference is not a gap.
 `widget/methods/<name>/method.json` holds exactly the selector and nothing else:
 
 ```json
-{ "method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1" }
+{ "method_ref": "github.com/Pipelex/methods/text_stats@v0.2.0" }
 ```
 
 It sits under `widget/methods/` rather than beside the generated tree, and that placement is the whole reason the second source kind cost `scripts/codegen.py` almost no new logic: `widget/methods/` stays the source of truth, `widget/generated/` stays purely derived, and `make codegen` regenerates a selector-sourced tree beside a bundle-sourced one instead of being a second regeneration path. A method directory holds either `.mthds` files or a `method.json`, never both — the two would disagree about where the tree came from, and the discovery refuses that naming it.

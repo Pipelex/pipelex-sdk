@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.60.0] - 2026-11-06
+
+### Added
+
+- **`replayRunWebhookDelivery` takes an `idempotencyKey`**: its new last argument, `WebhookReplayOptions`, sends `idempotencyKey` as the replay's `Idempotency-Key` header, so a replay sent again under the same key, as after an answer lost to a time limit, gets the stored answer naming the same attempt and the delivery is not sent twice; a key that is not 1 to 255 visible ASCII characters is a `RequestArgumentError` before anything is sent, and without one no header is sent (`docs/webhooks.md`).
+
+### Removed
+
+- **`listMethodCopies` (Breaking)**: the client no longer lists the copies made of a method, since the hosted API retires `GET /v1/methods/{method_id}/copies` and the record of copies behind it; `listMethodCopies` goes with the `MethodCopyPage`, `MethodCopyMarker` and `ListMethodCopiesQuery` types only it used. Copying is unchanged: `copyMethod` and its result types stay, and a copy still names its original through `copied_from` (`docs/method-copy.md`).
+
 ## [v0.59.0] - 2026-10-30
 
 ### Added

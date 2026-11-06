@@ -12,7 +12,7 @@ selector-resolution failure, a refused pipe selection, auth, a server fault) rai
 
 The method arrives in exactly one of three forms — the tooling routes' strict three-way XOR: its
 tree, an address-form `method_ref` (server-resolved, pipelex-api >= 0.21.0; the registry form
-stays a `501`), or a hosted `method_id` (platform-resolved — meaningless against a bare runner,
+is a `422` `request.unsupported`), or a hosted `method_id` (platform-resolved — meaningless against a bare runner,
 which has no catalog). The tree travels as the MTHDS protocol's `files` map, one file entry per
 tree path, which the runner reads exactly as `/v1/validate` and the run routes read it; the
 caller gives it in one of the forms a save takes (`files`, `tree` or `contents`), and the client
@@ -63,7 +63,9 @@ class CrateRequestBase(BaseModel):
     An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is resolved
     by the server (pipelex-api >= 0.21.0): the package's whole tree is fetched at the tag and read
     as a tree sent in `files` is. The **registry form** (any non-address reference) stays reserved
-    and answers `501` until a method registry exists.
+    until a method registry exists: the server refuses it with a `422` `request.unsupported` whose
+    `params.reason` is `registry_form_method_ref`, as pipelex-api does from v0.90.0, where it
+    answered `501` before.
 
     `dependencies` accompanies the tree: the method packages it calls by address that the runner
     cannot fetch, each a map of file entries keyed by its address, sent as given. These routes load
@@ -293,12 +295,13 @@ class PipeIORequest(CrateToolingRequest):
     `pipe_ref` names the pipe to describe by its qualified ref (`domain.pipe_code`) and is sent
     as given. Omitted, the server's selection chain decides: the `main_pipe` of the `METHODS.toml`
     at the tree's root, whether the tree was sent or fetched, else the closure's single `main_pipe`
-    declaration. A refused selection is a `422`
-    problem whose code is `request.pipe_not_found` for an unknown ref, `request.pipe_unspecified` for a chain
-    that finds no entry pipe, and `request.pipe_ambiguous` for an ambiguous bare code or a chain that finds
-    several; under `all_pipes` a chain that finds none or
-    several is not refused. The server resolves a bare ref across domains today; `prepare_inputs`
-    refuses one before sending it.
+    declaration. A refused selection is a `422` problem whose code is `request.pipe_not_found` for an
+    unknown ref, `request.pipe_unspecified` for a chain that finds no entry pipe or, with no manifest,
+    several bundles' `main_pipe` declarations, and `request.pipe_ambiguous` for an ambiguous bare code,
+    the pipes in question in its `params`; a manifest `main_pipe` no bundle or several define is the
+    method's own fault, `method.pipe_unresolved` or `method.ref_ambiguous`. Under `all_pipes` a chain
+    that finds none or several is not refused. The server resolves a bare ref across domains today;
+    `prepare_inputs` refuses one before sending it.
 
     `all_pipes` describes every pipe the closure loads instead of the selected one, and never
     refuses for want of an entry pipe. `include_files` echoes the text of the method's own `.mthds`

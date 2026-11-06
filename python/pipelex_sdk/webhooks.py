@@ -503,7 +503,8 @@ class WebhookDeliverySummary(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     delivery_id: str
-    """`whd_` and hexadecimal digits: the receiver's `webhook-id`, the same on every attempt and replay."""
+    """The receiver's `webhook-id`, the same on every attempt and replay: `whd_` followed by ASCII letters, digits
+    and underscores, at most 64 characters in all. Treat it as opaque, a key to deduplicate on and nothing to parse."""
     pipeline_run_id: str
     """The run whose event the delivery carries."""
     url_index: int
@@ -527,7 +528,8 @@ class WebhookDeliveryDetail(WebhookDeliverySummary):
     event: dict[str, Any]
     """The body of the delivery's latest attempt, as sent: `type`, `timestamp`, `attempt` and `data`, every attempt's
     body differing only in its `attempt`. Before any attempt, the body its first attempt carries. Kept as sent rather
-    than read as a `WebhookEvent`, so a receiver's log can be matched against it."""
+    than read as a `WebhookEvent`, so a receiver's log can be compared with it as parsed JSON: once an attempt was
+    made, it equals the body that attempt brought the receiver as a JSON value, not as the same bytes."""
 
 
 class WebhookDeliveryList(BaseModel):

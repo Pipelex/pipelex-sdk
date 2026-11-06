@@ -1,5 +1,5 @@
-"""Tests for a method copied into another organization and the copies a method lists — `copy_method`,
-`list_method_copies`, and the `copied_from` a copy's method reads carry.
+"""Tests for a method copied into another organization — `copy_method`, and the `copied_from` a copy's method
+reads carry.
 
 The twin of `pipelex-sdk-js/tests/method-copies.test.ts`. Most tests mock `_send` and answer with the
 platform's own serialized shapes (`MethodCopyBodies`), so Pydantic's validation on the way back is part of what
@@ -23,7 +23,6 @@ from pipelex_sdk.product_models import (
     MethodCopied,
     MethodCopiedFrom,
     MethodCopyLimit,
-    MethodCopyMarker,
     MethodCopyRefusalReason,
     MethodCopyRefused,
 )
@@ -266,13 +265,13 @@ class TestClientMethodCopies:
         """The key rides the copy's one request: a request the same client sends afterwards carries none."""
         server = _ScriptedServer(
             httpx.Response(200, json=MethodCopyBodies.COPIED),
-            httpx.Response(200, json={"items": [], "next_cursor": None}),
+            httpx.Response(200, json={**MethodCopyBodies.COPY, "files": []}),
         )
         client = server.client()
 
         async def scenario() -> None:
             await client.copy_method("mt_receipts01", destination_org_id="org_team", idempotency_key=MethodCopyBodies.KEY)
-            await client.list_method_copies("mt_receipts01")
+            await client.get_method("mt_copy01")
 
         asyncio.run(scenario())
 
@@ -426,95 +425,6 @@ class TestClientMethodCopies:
         limit = MethodCopyLimit.model_validate((refused.problem.model_extra or {})["limit"])
         assert limit == MethodCopyLimit(name="max_stored_files", value=200, reached=201)
         assert (refused.problem.domain, refused.problem.retry) == ("input", "no")
-
-    # ----- the copies of a method ------------------------------------------------------------------------------
-
-    def test_list_method_copies_reads_a_page_of_markers(
-        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
-    ) -> None:
-        send = patch_send(api_client, wire_response(200, json_body={"items": [MethodCopyBodies.MARKER], "next_cursor": "c2"}))
-
-        page = asyncio.run(api_client.list_method_copies("mt_receipts01"))
-
-        assert _sent_method(send) == "GET"
-        assert _sent_url(send) == f"{BASE_URL}/v1/methods/mt_receipts01/copies"
-        assert page.items == [MethodCopyMarker.model_validate(MethodCopyBodies.MARKER)]
-        assert page.items[0].destination_org_id == "org_team"
-        assert page.next_cursor == "c2"
-
-    @pytest.mark.parametrize(
-        ("limit", "cursor", "query"),
-        [
-            pytest.param(5, "c1", "?limit=5&cursor=c1", id="both"),
-            pytest.param(None, "", "?cursor=", id="empty-cursor"),
-            pytest.param(None, None, "", id="neither"),
-        ],
-    )
-    def test_list_method_copies_passes_the_limit_and_cursor(
-        self,
-        api_client: PipelexAPIClient,
-        wire_response: ResponseBuilder,
-        patch_send: SendPatcher,
-        limit: int | None,
-        cursor: str | None,
-        query: str,
-    ) -> None:
-        send = patch_send(api_client, wire_response(200, json_body={"items": [], "next_cursor": None}))
-
-        page = asyncio.run(api_client.list_method_copies("mt_receipts01", limit=limit, cursor=cursor))
-
-        assert _sent_url(send) == f"{BASE_URL}/v1/methods/mt_receipts01/copies{query}"
-        assert page.items == []
-        assert page.next_cursor is None
-
-    def test_list_method_copies_follows_the_cursor_to_the_last_page(
-        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
-    ) -> None:
-        second = {**MethodCopyBodies.MARKER, "copy_method_id": "mt_copy02"}
-        patch_send(
-            api_client,
-            wire_response(200, json_body={"items": [MethodCopyBodies.MARKER], "next_cursor": "c2"}),
-            wire_response(200, json_body={"items": [second], "next_cursor": None}),
-        )
-
-        async def scenario() -> list[str]:
-            first = await api_client.list_method_copies("mt_receipts01", limit=1)
-            assert first.next_cursor is not None
-            last = await api_client.list_method_copies("mt_receipts01", limit=1, cursor=first.next_cursor)
-            assert last.next_cursor is None
-            return [marker.copy_method_id for marker in [*first.items, *last.items]]
-
-        assert asyncio.run(scenario()) == ["mt_copy01", "mt_copy02"]
-
-    @pytest.mark.parametrize(
-        ("status", "code"),
-        [
-            pytest.param(404, MethodErrorCode.NOT_FOUND, id="unknown-method"),
-            pytest.param(409, MethodErrorCode.BEING_DELETED, id="being-deleted"),
-            pytest.param(422, "request.invalid", id="foreign-cursor"),
-            pytest.param(422, "request.invalid", id="limit"),
-        ],
-    )
-    def test_list_method_copies_raises_each_refusal_with_its_problem(
-        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, status: int, code: str
-    ) -> None:
-        patch_send(api_client, wire_response(status, json_body=problem_document(code, status, detail="Refused.")))
-
-        with pytest.raises(ApiResponseError) as exc_info:
-            asyncio.run(api_client.list_method_copies("mt_receipts01"))
-
-        assert (exc_info.value.problem.code, exc_info.value.problem.domain, exc_info.value.problem.retry) == (code, "input", "no")
-
-    def test_list_method_copies_refuses_a_page_without_its_cursor(
-        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
-    ) -> None:
-        """A page missing `next_cursor` is an answer the SDK cannot read, never a last page."""
-        patch_send(api_client, wire_response(200, json_body={"items": [MethodCopyBodies.MARKER]}))
-
-        with pytest.raises(ApiResponseError) as exc_info:
-            asyncio.run(api_client.list_method_copies("mt_receipts01"))
-
-        assert str(exc_info.value) == "API GET /v1/methods/mt_receipts01/copies answered 200 with a body that is not the answer the route returns"
 
     # ----- copied_from on a method read ------------------------------------------------------------------------
 

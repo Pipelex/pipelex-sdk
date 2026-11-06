@@ -47,6 +47,11 @@ export const SETS = [
     copies: ["python/tests/fixtures/run-status-reads.json"],
   },
   {
+    // The account check both SDKs' live e2e suites run before their first case (docs/live-accounts.md).
+    source: "js/tests/fixtures/live-account-cases.json",
+    copies: ["python/tests/fixtures/live-account-cases.json"],
+  },
+  {
     // The input-form descriptors both SDKs refuse (js/docs/input-preparation.md, python/docs/input-preparation.md).
     source: "js/tests/fixtures/malformed-input-forms.json",
     copies: ["python/tests/fixtures/malformed-input-forms.json"],

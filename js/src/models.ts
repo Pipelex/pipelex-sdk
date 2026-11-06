@@ -508,7 +508,9 @@ export interface FormatResponse {
  * An **address-form** `method_ref` (`github.com/<owner>/<repo>[/<selector>][@<tag>]`) is
  * resolved by the server (pipelex-api >= 0.21.0): the package's whole tree is fetched at the tag
  * and read as a tree sent in `files` is. The **registry form** (any non-address reference) stays
- * reserved and answers `501` until a method registry exists.
+ * reserved until a method registry exists: the server refuses it with a `422`
+ * `request.unsupported` whose `params.reason` is `registry_form_method_ref`, as pipelex-api does
+ * from v0.90.0, where it answered `501` before.
  *
  * The XOR is a server-side invariant, not a type-level one: expressing it as a union here would
  * make the common `{ files }` call site pick a branch for no gain, and the server rejects the
@@ -706,8 +708,10 @@ export interface PipeIORequest extends CrateRequestBase, PipelexHostedToolingExt
    * declaration. A selection the server refuses is a problem coded by what went wrong, of
    * the domain `input`, the candidates in its parameters where there are some:
    * `request.pipe_not_found` for a ref that names no pipe, `request.pipe_unspecified` for
-   * (without `all_pipes`) a method with no entry pipe, `request.pipe_ambiguous` for a code that
-   * matches pipes in several domains or (without `all_pipes`) several `main_pipe` declarations.
+   * (without `all_pipes`) a method with no entry pipe or, with no manifest, several bundles'
+   * `main_pipe` declarations, `request.pipe_ambiguous` for a bare code that matches pipes in
+   * several domains. A manifest `main_pipe` that no bundle or several define is the method's own
+   * fault, `method.pipe_unresolved` or `method.ref_ambiguous`.
    * A malformed request is `request.malformed`.
    *
    * The server does not refuse a bare code yet: a bare ref that matches one pipe is

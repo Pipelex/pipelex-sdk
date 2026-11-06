@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The published-method examples run on today's engines**: the web app template's README and its `docs/add-method.md` and `docs/codegen.md`, and `@pipelex/create-method-app`'s README, name `github.com/Pipelex/methods/text_stats@v0.2.0`, where they named `text_stats@v0.1.1`, whose flat `PipeFunc` function name every engine from pipelex 0.87.0 on refuses, so `make create` and `make add-method` with the example's address failed.
+
+### Security
+
+- **The web app template's `make create` no longer copies the shell's key into the project**: the new project's `.env.local` gets the base URL the gesture ran against and an empty `PIPELEX_API_KEY` line, where the plan and the closing lines tell the person to put their own key before `make dev`, because an exported key is whichever key was exported last, often a test key or one of another organization, and copied into a project it would outlive the shell and bill that organization. The gesture still runs its own requests with the key the shell exports, and when an env file holds a key, `.env.local` still leaves the line out so that file keeps supplying it, now also when the shell exports another. `@pipelex/create-method-app`'s refusal for a missing key says so.
+- **The CLI template's `make create` no longer copies the shell's key into the project**: the new project's `.env` gets the base URL the gesture ran against and an empty `PIPELEX_API_KEY` line, where the closing lines tell the person to put their own key, because an exported key is whichever key was exported last, often a test key or one of another organization, and copied into the project it outlived the shell it came from. A `.env` above the project that sets the key now gets no project `.env` in front of it even when the gesture runs from a shell exporting another key, so it still supplies its key whenever the shell exports none, where the gesture used to write the shell's key into a project `.env` that hid it; the plan then says when the shell's base URL is one that file would not reproduce. A run with no key at all is refused with `Put your own key in .env, or export it in your shell for this run`.
+
 ## [v0.54.0] - 2026-10-25
 
 ### Changed

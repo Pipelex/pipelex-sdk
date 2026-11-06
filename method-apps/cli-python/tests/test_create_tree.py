@@ -137,7 +137,9 @@ def test_is_named_after_the_method_and_keeps_nothing_of_the_gesture(project: Cre
     assert [line for line in env.read_text(encoding="utf-8").splitlines() if line.startswith("PIPELEX_BASE_URL")] == [
         "PIPELEX_BASE_URL='https://api.example.com'"
     ]
-    assert dotenv_values(env)["PIPELEX_API_KEY"] == "pk_recorded"
+    # The key the gesture ran with stays in the shell: the project's line is empty, for the person's own.
+    assert dotenv_values(env)["PIPELEX_API_KEY"] == ""
+    assert "pk_recorded" not in env.read_text(encoding="utf-8")
 
 
 def test_lints_and_formats_clean(project: Created):

@@ -4,7 +4,7 @@ This app ships no method. `make add-method` is how one arrives: it fetches the m
 
 ```bash
 make add-method METHOD=path/to/cv_screening/                        # a bundle
-make add-method METHOD=github.com/Pipelex/methods/text_stats@v0.1.1  # a published method
+make add-method METHOD=github.com/Pipelex/methods/text_stats@v0.2.0  # a published method
 make add-method METHOD=mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df       # a method in your catalog
 ```
 
@@ -42,10 +42,10 @@ A flag whose value is missing — or is itself another flag, which is what `--la
 
 ## What it writes
 
-For `METHOD=github.com/Pipelex/methods/text_stats@v0.1.1`, with no other arguments:
+For `METHOD=github.com/Pipelex/methods/text_stats@v0.2.0`, with no other arguments:
 
 ```
-methods/text-stats/method.json          # { "method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1" }
+methods/text-stats/method.json          # { "method_ref": "github.com/Pipelex/methods/text_stats@v0.2.0" }
 src/generated/text-stats/               # types.ts, binder.ts, contracts.ts, codegen.lock, sources.json
 src/types/textStatsPipeline.ts          # the narrower over the generated binder
 src/actions/runTextStatsPipeline.ts     # the blocking + start + poll trio
@@ -81,7 +81,7 @@ A method whose pipe takes a file hands `prepareInputs` the same tree the run sen
 `methods/<name>/method.json` holds exactly the selector and nothing else:
 
 ```json
-{ "method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1" }
+{ "method_ref": "github.com/Pipelex/methods/text_stats@v0.2.0" }
 ```
 
 It sits under `methods/` rather than beside the generated tree, and that placement is why the codegen scripts treat it like a bundle. `methods/` stays the source of truth and `src/generated/` stays purely derived, so every rule the [trust chain](codegen.md#the-trust-chain) rests on holds by construction: `sources.json` hashes the manifest the way it hashes a bundle, orphan detection still reads "a generated tree with no `methods/<name>/`", and `npm run codegen` regenerates selector-sourced trees beside file-sourced ones. A method directory holds either `.mthds` files or a `method.json`, never both — the two would disagree about where the tree came from, and the check refuses that naming both.

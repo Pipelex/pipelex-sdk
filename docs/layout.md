@@ -31,7 +31,7 @@ Everything that serves only the maintainers lives at the root instead:
 - `LICENSE` and `CLA.md`, the repository's license and the contributor agreement its pull requests are signed under;
 - `.githooks/`, the git hooks;
 - `.github/workflows/`, the pull-request checks, which [`ci.md`](ci.md) describes, with the rendered twins of each template's own workflows, and the release workflow and the mirrors' scheduled comparison, which [`release-model.md`](release-model.md) and [`export.md`](export.md) describe;
-- `scripts/`, which checks every manifest against `VERSION`, renders the twins, selects the packages a release ships, takes the release workflow's decisions and exports the starters;
+- `scripts/`, which checks every manifest against `VERSION`, renders the twins, selects the packages a release ships, takes the release workflow's decisions, exports the starters and takes the method-app templates' live proofs of `make create` ([`live-create-proofs.md`](live-create-proofs.md));
 - `.worktree.toml`, which tells the workspace's `wt` how to publish a sprint prerelease of `@pipelex/sdk`;
 - `.claude/skills/`, the maintainers' skills: `release` cuts a release of the repository, `bump-sdk` and `bump-mthds-form` move every template onto a newer published SDK or form kernel in one change, and `bump-tools-wasm` moves `js/` onto a newer `@pipelex/tools-wasm`, the engine the `.mthds` edit hook bundles, and sweeps the rebuilt hook over the MTHDS Test Corpus;
 - `docs/`, this documentation.

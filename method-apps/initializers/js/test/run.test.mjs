@@ -113,7 +113,7 @@ describe("a run", () => {
 
     for (const method of [
       "mt_abc123",
-      "github.com/Pipelex/methods/text_stats@v0.1.1",
+      "github.com/Pipelex/methods/text_stats@v0.2.0",
       "./no/such/bundle.mthds",
     ]) {
       const again = workspace();

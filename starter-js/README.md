@@ -172,7 +172,7 @@ One command turns a method into a new tab — a bundle you have on disk, a metho
 
 ```bash
 make add-method METHOD=path/to/my_method.mthds                       # a bundle: a .mthds file, or a directory of them
-make add-method METHOD=github.com/Pipelex/methods/text_stats@v0.1.1   # a published package
+make add-method METHOD=github.com/Pipelex/methods/text_stats@v0.2.0   # a published package
 make add-method METHOD=mt_abc123…                                      # a method in your org's catalog
 ```
 

@@ -512,7 +512,11 @@ export interface WebhookDeliveryAttempt {
 
 /** One delivery of a run's webhook, as anyone who can read the run sees it. */
 export interface WebhookDeliverySummary {
-  /** `whd_` and hexadecimal digits: the receiver's `webhook-id`, the same on every attempt and replay. */
+  /**
+   * The receiver's `webhook-id`, the same on every attempt and replay: `whd_` followed by ASCII
+   * letters, digits and underscores, at most 64 characters in all. Treat it as opaque, a key to
+   * deduplicate on and nothing to parse.
+   */
   delivery_id: string;
   /** The run whose event the delivery carries. */
   pipeline_run_id: string;
@@ -563,6 +567,21 @@ export interface WebhookReplayAccepted {
    * this same attempt.
    */
   attempt: number;
+}
+
+/** What a delivery's replay sends beside its path: the request's own header. */
+export interface WebhookReplayOptions {
+  /**
+   * The replay's idempotency key, sent as the `Idempotency-Key` header, and not sent at all when
+   * absent or `null`. Generate one per replay the caller means to ask for (a `crypto.randomUUID()`
+   * is a good key), and keep it across that replay's retries: the same replay sent again under the
+   * same key is answered with the stored answer, naming the same attempt, so a replay whose answer
+   * was lost can be sent again without the delivery being sent twice. A key reused for another
+   * request is refused `409` `request.idempotency_conflict`, and one whose earlier request is still
+   * being handled `409` `request.idempotency_key_in_use`, whose `retry` is `yes`. A key is 1 to 255
+   * visible ASCII characters, anything else a `RequestArgumentError` before any request.
+   */
+  idempotencyKey?: string | null;
 }
 
 // ── The organization's signing secret ─────────────────────────────────

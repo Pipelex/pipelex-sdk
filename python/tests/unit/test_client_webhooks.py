@@ -19,7 +19,7 @@ from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.webhooks import WebhookAttemptFailure, WebhookDeliveryState
 from tests.unit.conftest import BASE_URL, problem_document
-from tests.unit.test_data import WebhookData
+from tests.unit.test_data import IdempotencyKeyData, WebhookData
 
 _HEADER = "idempotency-key"
 
@@ -196,7 +196,7 @@ class TestClientWebhooks:
         assert (request.method, request.url.path) == ("GET", path)
         assert detail.event == WebhookData.EVENT
 
-    def test_replays_a_delivery_with_no_body_and_no_idempotency_key(self) -> None:
+    def test_replays_a_delivery_with_no_body_and_no_idempotency_key_when_none_is_given(self) -> None:
         path = f"/v1/runs/{WebhookData.RUN_ID}/webhook-deliveries/{WebhookData.DELIVERY_ID}/replay"
         answer = {"pipeline_run_id": WebhookData.RUN_ID, "delivery_id": WebhookData.DELIVERY_ID, "attempt": 3}
         server = _RecordingServer({path: [httpx.Response(202, json=answer)]})
@@ -208,6 +208,54 @@ class TestClientWebhooks:
         assert request.content == b""
         assert _HEADER not in request.headers
         assert accepted.model_dump() == answer
+
+    def test_replays_a_delivery_under_the_idempotency_key_given(self) -> None:
+        path = f"/v1/runs/{WebhookData.RUN_ID}/webhook-deliveries/{WebhookData.DELIVERY_ID}/replay"
+        answer = {"pipeline_run_id": WebhookData.RUN_ID, "delivery_id": WebhookData.DELIVERY_ID, "attempt": 3}
+        server = _RecordingServer({path: [httpx.Response(202, json=answer)]})
+
+        accepted = asyncio.run(
+            server.client().replay_run_webhook_delivery(WebhookData.RUN_ID, WebhookData.DELIVERY_ID, idempotency_key=WebhookData.KEY)
+        )
+
+        [request] = server.requests
+        assert (request.method, request.url.path) == ("POST", path)
+        assert request.content == b""
+        assert request.headers[_HEADER] == WebhookData.KEY
+        assert accepted.model_dump() == answer
+
+    @pytest.mark.parametrize(
+        ("idempotency_key", "fault"),
+        [(key, fault) for _, key, fault in IdempotencyKeyData.MALFORMED_KEYS],
+        ids=[name for name, _, _ in IdempotencyKeyData.MALFORMED_KEYS],
+    )
+    def test_refuses_a_malformed_replay_key_before_anything_is_sent(self, idempotency_key: object, fault: str) -> None:
+        server = _RecordingServer({})
+
+        with pytest.raises(RequestArgumentError) as caught:
+            asyncio.run(
+                server.client().replay_run_webhook_delivery(WebhookData.RUN_ID, WebhookData.DELIVERY_ID, idempotency_key=cast("str", idempotency_key))
+            )
+
+        assert fault in str(caught.value)
+        assert str(caught.value).endswith("Leave it out to replay the delivery without one.")
+        assert caught.value.problem.params is not None
+        assert caught.value.problem.params.as_wire()["argument"] == "idempotency_key"
+        assert server.requests == []
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [IdempotencyKeyData.KEY_USED_WITH_ANOTHER_BODY, IdempotencyKeyData.KEY_IN_USE],
+        ids=["idempotency-conflict", "idempotency-key-in-use"],
+    )
+    def test_surfaces_a_replay_key_refused_by_its_code(self, refusal: dict[str, Any]) -> None:
+        path = f"/v1/runs/{WebhookData.RUN_ID}/webhook-deliveries/{WebhookData.DELIVERY_ID}/replay"
+        server = _RecordingServer({path: [httpx.Response(409, json=refusal, headers={"content-type": "application/problem+json"})]})
+
+        with pytest.raises(ApiResponseError) as caught:
+            asyncio.run(server.client().replay_run_webhook_delivery(WebhookData.RUN_ID, WebhookData.DELIVERY_ID, idempotency_key=WebhookData.KEY))
+
+        assert (caught.value.problem.code, caught.value.problem.retry) == (refusal["code"], refusal["retry"])
 
     @pytest.mark.parametrize("reason", ["webhook_delivery_pending", "webhook_delivery_attempts_exhausted"])
     def test_surfaces_a_replay_refused_by_its_code_and_reason(self, reason: str) -> None:

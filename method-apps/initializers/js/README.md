@@ -10,12 +10,12 @@ make -C my-app serve
 
 The first command writes the [`webapp-js`](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/webapp-js) template of the [method-app family](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps), the `method-apps/` directory of `Pipelex/pipelex-sdk`, into `my-app/`, commits it as it came, and runs the copy's own `make create`, which scaffolds the method, names the project after it and runs `make all`. The second starts the dev server in the background, proves that the page answers, and prints its URL; `make stop` stops it. `make dev` runs the same server in the foreground instead.
 
-`--method` takes a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address (`github.com/Pipelex/methods/text_stats@v0.1.1`). A path is read from where you typed the command.
+`--method` takes a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address (`github.com/Pipelex/methods/text_stats@v0.2.0`). A path is read from where you typed the command.
 
 ## What it needs
 
 - **Node.js** at or above the template's floor (22.12 for `webapp-js`), `make`, and `git` unless you pass `--no-git`.
-- **`PIPELEX_API_KEY`** in the environment, since a fresh copy has no `.env.local` for `make create` to read it from. `make create` copies it into the project's `.env.local`. The initializer only checks that it is set, and never prints it.
+- **`PIPELEX_API_KEY`** in the environment, since a fresh copy has no `.env.local` for `make create` to read it from. `make create` runs with it and never copies it into the project: the project's `.env.local` gets an empty `PIPELEX_API_KEY` line, where you put your own key before `make dev`. The initializer only checks that it is set, and never prints it.
 - **A directory that is missing, empty, or holds only `.git`.** Anything else, `.DS_Store` included, is refused, and nothing is written.
 
 The package has no dependency. It carries the template inside it, packed from the family's repository at the commit it was published from, so `@X.Y.Z` writes exactly the X.Y.Z template and nothing is fetched from GitHub.

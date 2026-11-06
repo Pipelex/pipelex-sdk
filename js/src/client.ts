@@ -84,15 +84,12 @@ import type {
   OrganizationBranding,
   OrganizationBrandingUpdate,
   ListFilesQuery,
-  ListMethodCopiesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
   ListMethodVersionsQuery,
   ListRunFilesQuery,
   MethodCopyInput,
-  MethodCopyMarker,
   MethodCopyOutcome,
-  MethodCopyPage,
   MethodCopyResult,
   MethodData,
   MethodDeletionAccepted,
@@ -202,6 +199,7 @@ import type {
   WebhookDeliveryDetail,
   WebhookDeliveryList,
   WebhookReplayAccepted,
+  WebhookReplayOptions,
   WebhookSecret,
   WebhookSecretRotateOptions,
 } from "./webhooks.js";
@@ -1170,7 +1168,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `url` is a fully resolved absolute URL. `mayStartRun` marks a request that may create a run,
    * whose errors then say whether it may have (see `RunCreation`).
    * `idempotencyKey`, already checked by `idempotencyKeyOf`, is sent as the
-   * `Idempotency-Key` header; only `start` and `copyMethod` pass one.
+   * `Idempotency-Key` header; only `start`, `copyMethod`, `rotateWebhookSecret` and
+   * `replayRunWebhookDelivery` pass one.
    */
   private async requestRaw(
     method: HttpMethod,
@@ -2185,10 +2184,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * The mapping is what makes their no-verdict arms usable: a crate route answers `422`
    * for a request it cannot act on (a pipe selection `pipe-io` refuses; an unknown
-   * `kind`/`target`, or a `pipe_ref` on the concept-set-wide `types` kind, on `codegen`)
-   * and `501` for the reserved registry-form `method_ref` (the address form is resolved
-   * server-side as of pipelex-api 0.21.0). A caller branches on `ApiResponseError.status`,
-   * never on a message.
+   * `kind`/`target`, or a `pipe_ref` on the concept-set-wide `types` kind, on `codegen`;
+   * the reserved registry-form `method_ref`, coded `request.unsupported`, on all three, the
+   * address form being resolved server-side as of pipelex-api 0.21.0). A caller branches on
+   * the problem's `code`, never on a message.
    *
    * All of these are static and inference-free, so they default to the management-call
    * timeout. The internal raise is `crateRequestTimeoutMs`'s: the fetch-sized budget a
@@ -2322,9 +2321,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
   // unexposed — see their section above for why that blocks nothing. `pipe-io` is
   // newer: a runner serves it from `pipelex-api` v0.33.0, and codes its selection
   // refusals `request.pipe_not_found`, `request.pipe_unspecified` and
-  // `request.pipe_ambiguous`, and a hosted origin
-  // serves it once the platform's proxy and the gateway list it (see
-  // `docs/crate-routes.md`).
+  // `request.pipe_ambiguous` from v0.90.0; the dev plane serves it too, measured on
+  // api-dev.pipelex.com on 2026-10-31 (see `docs/crate-routes.md`).
   //
   // All three are STATIC routes (no dry-run sweep), so like every static sibling they
   // take no `timeoutMs` — see the policy note on `requestExtension` before adding one
@@ -2354,7 +2352,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * protocol's `files` map or as a `directory`, `tree` or `contents` the client sends
    * inline when small and by hash otherwise (see {@link CrateRequestBase}); an
    * address-form `method_ref` (server-resolved, pipelex-api >= 0.21.0; the registry form
-   * stays a `501`); or a hosted `method_id` (platform-resolved — see
+   * is a `422` `request.unsupported`); or a hosted `method_id` (platform-resolved — see
    * {@link PipelexHostedToolingExtensions}). An empty map or string is absent.
    *
    * `options.signal` stops the call between the steps a `directory`, `tree` or `contents`
@@ -2385,7 +2383,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Same 200-verdict discipline and same three-form closure selector as
    * {@link resolve}. Only a no-verdict condition throws `ApiResponseError`: an
    * unknown `kind`/`target`, a `pipe_ref` on the concept-set-wide `types` kind, or
-   * a malformed selector is a 422; a registry-form `method_ref` is a `501`.
+   * a malformed selector is a 422, and so is a registry-form `method_ref`, coded
+   * `request.unsupported`.
    */
   async codegen(
     request: CodegenRequest,
@@ -2422,9 +2421,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Only a no-verdict condition throws `ApiResponseError`: a malformed selector and an
    * over-limit file are `422` problems; a selection the route refuses is a `422` whose
    * `code` is `request.pipe_not_found` (an unknown `pipe_ref`), `request.pipe_unspecified`
-   * (no entry pipe) or `request.pipe_ambiguous` (an ambiguous code, several entry pipes), the
-   * candidates in its `params`; a registry-form `method_ref` is a `501`; a pipe whose
-   * artifacts cannot be derived is a `500`.
+   * (no entry pipe, or several bundles' `main_pipe` declarations) or `request.pipe_ambiguous`
+   * (an ambiguous bare code), the candidates in its `params`; a registry-form `method_ref` is a
+   * `422` `request.unsupported`; a pipe whose artifacts cannot be derived is a `500`.
    *
    * A `method_ref` gets the fetch-sized budget, as on the other crate routes. On the
    * hosted API the gateway caps a request at about 30 seconds whatever the client allows,
@@ -3688,34 +3687,6 @@ export class PipelexApiClient implements HostedProtocolSurface {
       throw this.unreadableAnswer("POST", `/${API_PREFIX}/${endpoint}`, res, fault);
     }
     return answer as unknown as MethodCopyResult;
-  }
-
-  /**
-   * One page of the copies made of a method, in the order of the copies' ids, which says nothing
-   * of when each was made — `GET /v1/methods/{id}/copies`.
-   *
-   * Each row is the `MethodCopyMarker` the original keeps of a copy: the copy's id, the
-   * destination's id, the member who made it and when. The destination is named by its id alone,
-   * never its name, so a surface shows a destination's name only from the reader's own
-   * memberships, and a copy in an organization the reader does not belong to stays a bare id. A
-   * marker stays when its copy is erased, and the copy then reads as not found. Pass the page's
-   * `nextCursor` back as `cursor` to continue; `null` is the last page. A method never copied,
-   * and a copy itself, answer an empty page. The listing is open to every member of the method's
-   * organization, a runner included, as every read of a method is.
-   *
-   * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
-   * `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and
-   * `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
-   * outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a
-   * string nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
-   */
-  async listMethodCopies(
-    methodId: string,
-    query: ListMethodCopiesQuery = {},
-  ): Promise<MethodCopyPage> {
-    const search = productQuery({ limit: query.limit, cursor: query.cursor });
-    const endpoint = `${methodPath(methodId, "listMethodCopies")}/copies`;
-    return this.requestPage<MethodCopyMarker>(`${endpoint}${search}`);
   }
 
   /**
@@ -5065,9 +5036,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
-   * One delivery of a run's webhooks, with its event as sent —
-   * `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`: the body of its latest attempt, which a
-   * receiver's log can be matched against byte for byte once written as compact JSON.
+   * One delivery of a run's webhooks, with its event —
+   * `GET /v1/runs/{id}/webhook-deliveries/{delivery_id}`: the body its latest attempt sent, or,
+   * before any attempt, the body its first attempt will send. Every attempt and replay of the
+   * delivery sends that body, only its `attempt` changing, so the event matches what a receiver
+   * logged only once an attempt was made: it then equals, as JSON, the body that attempt brought
+   * the receiver. Compare the two as parsed JSON values, never as text: the read promises the same
+   * value, not the same bytes.
    * `deliveryId` is the delivery's `delivery_id`, the receiver's `webhook-id`.
    *
    * Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds a lone surrogate,
@@ -5091,23 +5066,38 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * can read the run asks for one, an API key included, under the organization's replay rate.
    *
    * Answers the attempt number the replay is sent under; a replay asked again before it is sent is
-   * that same attempt. Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds
-   * a lone surrogate, before any request. Throws `ApiResponseError`: `404` `run.not_found` for a
-   * run the caller cannot read; `422` `request.invalid` naming `delivery_id` for a delivery the run
-   * does not have; `409` `pipelex.org.not_manageable` with the reason `webhook_delivery_pending`
-   * for a delivery still on its retry schedule, or `webhook_delivery_attempts_exhausted` for one
-   * holding the most attempts a delivery holds; `429` `account.rate_limited`, with its
-   * `retry_after`, past the organization's replay rate; and a `500` or `503` when the replay could
-   * not be queued, which then counts nothing against the rate.
+   * that same attempt.
+   *
+   * `options.idempotencyKey` is sent as the `Idempotency-Key` header, and nothing is sent when it
+   * is absent or `null`. The platform stores the replay's answer under the key, so the same replay
+   * sent again under the same key, as after an answer lost to a time limit, gets the stored answer,
+   * naming the same attempt, and the delivery is not sent twice. A key reused for another request
+   * is refused `409` `request.idempotency_conflict`, and one whose earlier request is still being
+   * handled `409` `request.idempotency_key_in_use`, whose `retry` is `yes`: send it again under the
+   * same key after its `retry_after`. See `WebhookReplayOptions`.
+   *
+   * Throws `RequestArgumentError` for an id that is empty, `.` or `..`, or holds a lone surrogate,
+   * or for an idempotency key that is not 1 to 255 visible ASCII characters, before any request.
+   * Throws `ApiResponseError`: `404` `run.not_found` for a run the caller cannot read; `422`
+   * `request.invalid` naming `delivery_id` for a delivery the run does not have; `409`
+   * `pipelex.org.not_manageable` with the reason `webhook_delivery_pending` for a delivery still on
+   * its retry schedule, or `webhook_delivery_attempts_exhausted` for one holding the most attempts
+   * a delivery holds; `429` `account.rate_limited`, with its `retry_after`, past the
+   * organization's replay rate; and a `500` or `503` when the replay could not be queued, which
+   * then counts nothing against the rate.
    */
   async replayRunWebhookDelivery(
     runId: string,
     deliveryId: string,
+    options: WebhookReplayOptions = {},
   ): Promise<WebhookReplayAccepted> {
     const call = "replayRunWebhookDelivery";
     const run = idPathSegment(runId, call, RUN_ID_ARGUMENT);
     const delivery = idPathSegment(deliveryId, call, DELIVERY_ID_ARGUMENT);
-    return this.requestProductObject("POST", `runs/${run}/webhook-deliveries/${delivery}/replay`);
+    const endpoint = `runs/${run}/webhook-deliveries/${delivery}/replay`;
+    const idempotencyKey = idempotencyKeyOf(options, "replay the delivery");
+    const res = await this.requestProductAnswer("POST", endpoint, undefined, { idempotencyKey });
+    return this.readObjectAnswer<WebhookReplayAccepted>("POST", endpoint, res);
   }
 
   /** Patch a run's status (admin/manual) — `PUT /v1/runs/{id}`. */
@@ -5697,9 +5687,9 @@ function nonEmptyString(value: string | null | undefined): string | undefined {
 const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
 /**
- * The longest idempotency key a start sends. It is room for any generated key, and keeps the
+ * The longest idempotency key a request sends. It is room for any generated key, and keeps the
  * hosted API's stored record of the key far inside its store's limit, which a longer key could
- * exceed, so that the start would run without the protection the key was sent for.
+ * exceed, so that the request would run without the protection the key was sent for.
  */
 const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 
@@ -5711,13 +5701,14 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 const VISIBLE_ASCII = /^[\x21-\x7E]+$/;
 
 /**
- * The idempotency key a start or a method copy sends, or `undefined` when the options carry none
- * (absent or `null`). A key that is not a string of 1 to 255 visible ASCII characters is refused
- * with a `RequestArgumentError` rather than dropped, an empty one included, since a request sent
- * without the key its caller gave would lose the protection the caller asked for without a word.
- * `request` says what the request does, as the refusal's last sentence names it ("start the run",
- * "copy the method"). The message never quotes the key, which a caller may derive from something
- * private. The Python SDK holds a key to the same rule, in the same words.
+ * The idempotency key a start, a method copy, a secret rotation or a delivery replay sends, or
+ * `undefined` when the options carry none (absent or `null`). A key that is not a string of 1 to
+ * 255 visible ASCII characters is refused with a `RequestArgumentError` rather than dropped, an
+ * empty one included, since a request sent without the key its caller gave would lose the
+ * protection the caller asked for without a word. `request` says what the request does, as the
+ * refusal's last sentence names it ("start the run", "copy the method", "rotate the secret",
+ * "replay the delivery"). The message never quotes the key, which a caller may derive from
+ * something private. The Python SDK holds a key to the same rule, in the same words.
  */
 function idempotencyKeyOf(
   options: { idempotencyKey?: string | null },

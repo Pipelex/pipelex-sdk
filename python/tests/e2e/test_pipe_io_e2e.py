@@ -4,7 +4,10 @@ Run it with `make e2e-test` against any API that serves the route — a local `p
 hosted platform:
 
     PIPELEX_E2E_BASE_URL=http://127.0.0.1:8082 make e2e-test
-    PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com PIPELEX_API_KEY=plx_sk_… PIPELEX_E2E_METHOD_ID=mt_… make e2e-test
+    PIPELEX_E2E_METHOD_ID=mt_… test-account run pipelex-sdk-python-e2e -- make -C python e2e-test
+
+Against the hosted platform it acts for the registered test account `test-account run` hands over, which `conftest.py`
+checks before the first case (`live_account.py`, `docs/live-accounts.md` at the repository's root).
 
 The whole module skips when `PIPELEX_E2E_BASE_URL` is unset, so `make agent-test`, which does not
 collect this directory at all, never reaches it. The inline `files` and `method_ref` cases need only
@@ -101,7 +104,9 @@ template = "$topic"
 
 
 def _entry_domain_bundle(domain: str) -> str:
-    """One domain declaring `run` as its `main_pipe`: two of them make the entry pipe ambiguous."""
+    """One domain declaring `run` as its `main_pipe`: two of them give the method no single entry pipe, and make the
+    bare code `run` ambiguous.
+    """
     return f"""domain = "{domain}"
 main_pipe = "run"
 
@@ -184,6 +189,19 @@ class TestPipeIOLive:
         assert report.files
         assert all(tree_path.endswith(".mthds") for tree_path in report.files)
 
+    def test_a_bare_code_two_domains_define_is_an_ambiguous_selection_naming_both(self) -> None:
+        # The route resolves a bare code that matches one pipe; one that matches a pipe in each of two domains is
+        # refused, naming the selection and the pipes it matches. `prepare_inputs` refuses a bare code before sending
+        # it, so only the route itself meets this refusal.
+        with pytest.raises(ApiResponseError) as exc_info:
+            _pipe_io(PipeIORequest(files=_SEVERAL_ENTRY_FILES, pipe_ref="run"))
+
+        refusal = exc_info.value
+        assert refusal.status == 422
+        assert (refusal.problem.code, refusal.problem.domain) == ("request.pipe_ambiguous", "input")
+        assert refusal.problem.params is not None
+        assert refusal.problem.params.as_wire() == {"pipe": "run", "candidates": ["smoke_pipe_io_alpha.run", "smoke_pipe_io_beta.run"]}
+
     # ── prepare_inputs on the route ──────────────────────────────────
 
     def test_prepare_inputs_walks_the_descriptor_the_route_selected(self) -> None:
@@ -217,29 +235,34 @@ class TestPipeIOLive:
         assert prepared.uploads == []
 
     @pytest.mark.parametrize(
-        ("files", "pipe_ref", "code", "named"),
+        ("files", "pipe_ref", "code", "params"),
         [
-            (_ENTRY_FILES, "smoke_pipe_io.absent", "request.pipe_not_found", "smoke_pipe_io.absent"),
-            (_NO_ENTRY_FILES, None, "request.pipe_unspecified", "main_pipe"),
-            (_SEVERAL_ENTRY_FILES, None, "request.pipe_ambiguous", "smoke_pipe_io_alpha.run, smoke_pipe_io_beta.run"),
+            (_ENTRY_FILES, "smoke_pipe_io.absent", "request.pipe_not_found", {"pipe": "smoke_pipe_io.absent"}),
+            (_NO_ENTRY_FILES, None, "request.pipe_unspecified", {"candidates": ["smoke_pipe_io_open.first", "smoke_pipe_io_open.second"]}),
+            # Several bundles declaring a `main_pipe` give the method no single pipe to start from, which the registry
+            # codes `request.pipe_unspecified` too: the request names no pipe, so no selection of it is ambiguous.
+            (_SEVERAL_ENTRY_FILES, None, "request.pipe_unspecified", {"candidates": ["smoke_pipe_io_alpha.run", "smoke_pipe_io_beta.run"]}),
         ],
     )
-    def test_prepare_inputs_maps_a_refused_selection(self, files: dict[str, FileEntry], pipe_ref: str | None, code: str, named: str) -> None:
-        # Needs the runner to answer the refusal with its pipe-selection problem code, and the hosted proxy
-        # to relay it unchanged. The server's `detail` names what was refused: the unknown ref, the missing
-        # `main_pipe`, or the candidates when several are declared.
+    def test_prepare_inputs_maps_a_refused_selection(
+        self, files: dict[str, FileEntry], pipe_ref: str | None, code: str, params: dict[str, Any]
+    ) -> None:
+        # Needs the runner to answer the refusal with its pipe-selection problem code, and the hosted proxy to relay it
+        # unchanged. What was refused is read from the problem's `params`, the unknown ref or the pipes the request
+        # could select, since the registry's sentence for `request.pipe_unspecified` names no pipe.
         async def _prepare() -> PreparedInputs:
             async with _client() as client:
                 return await client.prepare_inputs(files=files, pipe_ref=pipe_ref, inputs={})
 
         with pytest.raises(InputPreparationError, match="the pipe could not be selected") as exc_info:
             asyncio.run(_prepare())
-        assert named in str(exc_info.value)
+        assert exc_info.value.problem.code == code
         refusal = exc_info.value.__cause__
         assert isinstance(refusal, ApiResponseError)
-        assert refusal.problem.code == code
-        assert refusal.problem.domain == "input"
-        assert named in refusal.problem.detail
+        assert (refusal.problem.code, refusal.problem.domain) == (code, "input")
+        assert refusal.problem.params is not None
+        sent_params = refusal.problem.params.as_wire()
+        assert {name: sent_params.get(name) for name in params} == params
 
     # ── The hosted catalog selector ──────────────────────────────────
 

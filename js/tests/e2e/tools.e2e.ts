@@ -9,6 +9,10 @@
  * The suite fails fast with a clear message when the server is unreachable —
  * e2e runs are explicitly invoked, so a missing server is an error, not a skip.
  *
+ * `lint` and `format` are runner routes the hosted plane does not expose, so their
+ * cases skip on a hosted origin (`origin.ts`); `validate` is served everywhere, and
+ * its cases run against either.
+ *
  * The through-line is the diagnostic-endpoint contract: a malformed bundle is a
  * produced VERDICT on a 200 (`diagnostics[]` / `is_valid: false`), never a thrown
  * error; only a no-verdict condition (e.g. malformed formatter options) is non-2xx.
@@ -18,8 +22,12 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { PipelexApiClient } from "../../src/client.js";
 import { ApiResponseError } from "../../src/errors.js";
 import type { PipelexInvalidReport, PipelexValidationReport } from "../../src/models.js";
+import { isHostedOrigin } from "./origin.js";
 
 const BASE_URL = process.env.PIPELEX_E2E_BASE_URL ?? "http://localhost:8081";
+
+/** Whether the target is a hosted plane, which answers `lint` and `format` with a gateway `403`. */
+const ON_HOSTED_PLANE = isHostedOrigin(BASE_URL);
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -96,7 +104,7 @@ beforeAll(async () => {
   }
 });
 
-describe("e2e lint (/v1/lint)", () => {
+describe.skipIf(ON_HOSTED_PLANE)("e2e lint (/v1/lint)", () => {
   it("returns zero diagnostics for a correct bundle", async () => {
     const result = await client.lint(VALID_BUNDLE, "hello_world.mthds");
     expect(result.diagnostics).toEqual([]);
@@ -128,7 +136,7 @@ describe("e2e lint (/v1/lint)", () => {
   });
 });
 
-describe("e2e format (/v1/format)", () => {
+describe.skipIf(ON_HOSTED_PLANE)("e2e format (/v1/format)", () => {
   it("is a no-op on an already-canonical bundle", async () => {
     const result = await client.format(VALID_BUNDLE);
     expect(result.changed).toBe(false);

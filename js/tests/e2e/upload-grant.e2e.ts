@@ -2,15 +2,18 @@
  * E2E suite for the upload grant — exercised against a LIVE hosted platform (no fetch
  * mocks). Run with `make test-e2e` (or `npm run test:e2e`) against a platform that
  * serves `POST /v1/upload/grant` (platform >= 0.20.0) with the app bucket's CORS rule,
- * with `PIPELEX_API_KEY` set for it:
+ * as the registered test account the workspace's `test-account run` hands over, which the suite's
+ * global setup checks before the first case (`live-account.ts`, `docs/live-accounts.md` at the
+ * repository's root). From the repository's root:
  *
- *     PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com PIPELEX_API_KEY=plx_sk_… npm run test:e2e
+ *     test-account run pipelex-sdk-js-e2e -- make -C js test-e2e
  *
  * What the unit suite cannot prove: that the PUT `uploadWithGrant` composes is the one
  * S3 accepts for the grant the platform signed — the header names, the body setting a
  * `Content-Length` that matches the signed one, the checksum `describeUpload` computes
  * matching the one S3 computes — that the platform answers a repeat of the same bytes
- * with `stored: true`, and that S3's refusals carry the codes the error mapping reads.
+ * with `stored: true`, and that S3's refusals carry the codes the error mapping reads into
+ * a `RejectedAssetError`'s `reason`.
  * Every mock agrees with the helper; only the live store settles whether S3 does. It
  * runs in Node, whose `fetch` sends no preflight, so the bucket's CORS rule is proven
  * by a hosted page, not here.
@@ -122,6 +125,10 @@ describe("the upload grant against a live platform", () => {
     });
   });
 
+  // A storage refusal's `reason` is the SDK's reading of what S3 answered, which only the live
+  // store can prove. Its `code`, the problem's, is the SDK's reading of the status for now and is
+  // not asserted here: giving those refusals their census codes is L-261023-f4615d, and a retry
+  // verdict a fresh grant cures is L-261024-de1af0.
   it("refuses bytes other than the ones whose hash the grant was asked with (400 BadDigest)", async () => {
     const bytes = pdfBytes();
     const grant = await client.requestUploadGrant(await describeUpload(pdfFile(bytes)));
@@ -132,7 +139,7 @@ describe("the upload grant against a live platform", () => {
 
     expect(error).toBeInstanceOf(RejectedAssetError);
     expect((error as RejectedAssetError).status).toBe(400);
-    expect((error as RejectedAssetError).code).toBe("store_refused");
+    expect((error as RejectedAssetError).reason).toBe("store_refused");
     expect((error as RejectedAssetError).message).toContain("BadDigest");
   });
 
@@ -149,7 +156,7 @@ describe("the upload grant against a live platform", () => {
 
     expect(error).toBeInstanceOf(RejectedAssetError);
     expect((error as RejectedAssetError).status).toBe(412);
-    expect((error as RejectedAssetError).code).toBe("grant_used");
+    expect((error as RejectedAssetError).reason).toBe("grant_used");
     expect((error as RejectedAssetError).message).toContain("PreconditionFailed");
   });
 
@@ -167,7 +174,7 @@ describe("the upload grant against a live platform", () => {
 
     expect(error).toBeInstanceOf(RejectedAssetError);
     expect((error as RejectedAssetError).status).toBe(403);
-    expect((error as RejectedAssetError).code).toBe("signature_mismatch");
+    expect((error as RejectedAssetError).reason).toBe("signature_mismatch");
     expect((error as RejectedAssetError).message).toContain("SignatureDoesNotMatch");
   });
 
@@ -180,6 +187,11 @@ describe("the upload grant against a live platform", () => {
 
     expect(error).toBeInstanceOf(ApiResponseError);
     expect((error as ApiResponseError).status).toBe(413);
-    expect((error as ApiResponseError).code).toBe("payload_too_large");
+    expect((error as ApiResponseError).code).toBe("request.too_large");
+    expect((error as ApiResponseError).problem).toMatchObject({
+      domain: "input",
+      retry: "no",
+      params: { limit: probe.max_bytes, size: probe.max_bytes + 1 },
+    });
   });
 });

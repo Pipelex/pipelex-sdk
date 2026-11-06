@@ -86,7 +86,7 @@ class TestParseMethodArg:
             ("mt_abc-123", MethodSelector(method_id="mt_abc-123")),
             ("mt_abc-123@3", MethodSelector(method_id="mt_abc-123@3")),
             ("mt_abc-123@draft", MethodSelector(method_id="mt_abc-123@draft")),
-            ("github.com/Pipelex/methods/text_stats@v0.1.1", MethodSelector(method_ref="github.com/Pipelex/methods/text_stats@v0.1.1")),
+            ("github.com/Pipelex/methods/text_stats@v0.2.0", MethodSelector(method_ref="github.com/Pipelex/methods/text_stats@v0.2.0")),
             ("https://github.com/o/r/", MethodSelector(method_ref="github.com/o/r")),
             ("github.com/o/r/pkg/sub@release/1.0", MethodSelector(method_ref="github.com/o/r/pkg/sub@release/1.0")),
             ("./bundle", BundlePath("./bundle")),

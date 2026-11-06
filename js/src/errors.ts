@@ -138,8 +138,8 @@ export abstract class PipelexRequestError extends ProblemError {
  * tree lister refuses, a reserved key in `extra`, a `publishMethod()`
  * without its draft token, a `getMethodVersion()` version that is not a positive integer, a
  * selector `parseMethodSelector()` refuses, a method route given a suffixed id, an artifact
- * selection that is empty or names an unknown artifact, a start's `idempotencyKey` that is not 1
- * to 255 visible ASCII characters, or a base URL that is not host-only. Nothing reached the API,
+ * selection that is empty or names an unknown artifact, an `idempotencyKey` that is not 1 to 255
+ * visible ASCII characters, or a base URL that is not host-only. Nothing reached the API,
  * so the message says what to change.
  *
  * Its problem is `client.argument_invalid`, unless `options.problem` gives another: the client

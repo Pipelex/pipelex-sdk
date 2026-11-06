@@ -44,7 +44,7 @@ A method directory under `widget/methods/` names its closure in one of exactly t
 The three demos are bundles. A manifest is what [`make add-method`](add-method.md) writes for a method that lives on the platform (a catalog id) or in a published package (an address), and it holds the selector and nothing else:
 
 ```json
-{ "method_ref": "github.com/Pipelex/methods/text_stats@v0.1.1" }
+{ "method_ref": "github.com/Pipelex/methods/text_stats@v0.2.0" }
 ```
 
 Keeping it under `widget/methods/` rather than beside the generated tree is what made the second kind almost free. `widget/methods/` stays the source of truth and `widget/generated/` stays purely derived, so `make codegen` regenerates a selector-sourced tree beside a bundle-sourced one through the same call and the same writer, rather than being a second regeneration path with its own rules. A directory holding both kinds is refused rather than resolved in favour of one: the two would disagree about where the tree came from.

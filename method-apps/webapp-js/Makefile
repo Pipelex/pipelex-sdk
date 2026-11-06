@@ -189,7 +189,7 @@ add-method: ## Scaffold a method into the app from METHOD=<path/to/bundle | mt_â
 # template-only:begin â€” the bootstrap removes this block, with the gesture it runs.
 # Turns this template into the app for one method, in one go: scaffolds the
 # method, names the project after it (the bootstrap, run with the derived
-# values), writes .env.local from the shell, re-syncs the lock file, runs
+# values), writes .env.local with the base URL and never the key, re-syncs the lock file, runs
 # `make all`, and removes the bootstrap. One-shot, keyed and online, so it stays
 # out of `make all`; docs/create.md is the reference. A relative bundle path is
 # read from the directory make runs in.

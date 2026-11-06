@@ -1,11 +1,14 @@
 """The problem a refused request carries, exercised against a LIVE hosted platform (no mocks).
 
-Run it with `make e2e-test` against a platform that answers problem documents, with an API key set for it:
+Run it with `make e2e-test` against a platform that answers problem documents, as the registered test account the
+workspace's `test-account run` hands over, which `conftest.py` checks before the first case (`live_account.py`,
+`docs/live-accounts.md` at the repository's root). From the repository's root:
 
-    PIPELEX_E2E_BASE_URL=https://api-dev.pipelex.com PIPELEX_API_KEY=plx_sk_… make e2e-test
+    test-account run pipelex-sdk-python-e2e -- make -C python e2e-test
 
-The whole module skips when either variable is unset, so the unit suite's `make agent-test` never
-reaches it — and `make agent-test` does not collect this directory at all.
+The whole module skips when `PIPELEX_E2E_BASE_URL` is unset, or names a local runner with no `PIPELEX_API_KEY`.
+Against a hosted platform, a missing key or a missing expectation is no skip: `conftest.py` stops the whole run
+before the first case. `make agent-test` does not collect this directory at all.
 
 What the unit suite cannot prove: that the problem on an `ApiResponseError` is the one the server
 sent. The error reads a problem document as received, and builds one from the status by the edge's
@@ -98,12 +101,19 @@ class TestPlatformRefusalProblemLive:
         assert sent is not None
         assert sent.code == refusal.problem.code
 
-    def test_reads_a_body_the_platforms_validation_refuses_as_the_platforms_problem_its_items_naming_the_field(self) -> None:
+    def test_reads_a_body_the_platforms_validation_refuses_as_the_platforms_problem_its_location_naming_the_field(self) -> None:
         refusal = _refusal_of(lambda client: client.resolve_storage_url(_OVERLONG_STORAGE_URI))
 
+        # The body parses and one of its fields fails the route's schema: `request.invalid`, not `request.malformed`,
+        # which is a body that does not parse. A problem with a single fault names it in its own `location` and
+        # `params` and carries no `errors`.
         assert refusal.status == 422
-        assert refusal.problem.code == "request.malformed"
-        assert [item.location.field if item.location is not None else None for item in refusal.problem.errors or []] == ["uri"]
+        assert refusal.problem.code == "request.invalid"
+        assert refusal.problem.location is not None
+        assert refusal.problem.location.field == "uri"
+        assert refusal.problem.params is not None
+        assert refusal.problem.params.as_wire() == {"field": "uri"}
+        assert refusal.problem.errors is None
         assert (refusal.problem.domain, refusal.problem.retry) == ("input", "no")
         sent = read_problem_document(refusal.response_body, status=refusal.status, headers={})
         assert sent is not None

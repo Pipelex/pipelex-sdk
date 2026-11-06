@@ -293,7 +293,7 @@ async function create(argv, d, say, state) {
   if (!args.noCreate && !d.env.PIPELEX_API_KEY?.trim()) {
     throw Verdict.refused(
       "no-key",
-      "PIPELEX_API_KEY is not set: export it in this shell (make create copies it into the project's .env.local), or pass --no-create and write .env.local yourself before running make create",
+      "PIPELEX_API_KEY is not set: export it in this shell for make create, which never copies it into the project, or pass --no-create and write .env.local yourself before running make create",
     );
   }
 
