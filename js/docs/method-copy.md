@@ -25,7 +25,7 @@ if (result.outcome === "refused") {
 |---|---|---|
 | `copyMethod(methodId, { destination_org_id, name?, expected_draft_updated_at? }, { idempotencyKey? })` | `POST /v1/methods/{id}/copy` | A `MethodCopyResult`, discriminated on `outcome`: `copied` or `refused`. |
 
-It takes a bare catalog id, as every method route does, and refuse a suffixed one (`mt_…@3`) with a `RequestArgumentError` before anything is sent.
+It takes a bare catalog id, as every method route does, and refuses a suffixed one (`mt_…@3`) with a `RequestArgumentError` before anything is sent.
 
 **The copy's body is closed.** The client sends `destination_org_id` and, when given, `name` and `expected_draft_updated_at`, and nothing else; a `null` reads as not given. `destination_org_id` is the canonical id of the destination, as a membership's `org_id` gives it; `name` is the copy's name, the original's when it is left out; `expected_draft_updated_at` is the original's draft token the caller last saw (`MethodData.updated_at`). A `destination_org_id` that is not a non-empty string, and a `name` or a token given that is not a string, are refused with a `RequestArgumentError` before any request.
 
