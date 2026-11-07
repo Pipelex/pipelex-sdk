@@ -104,7 +104,7 @@ export interface MethodVersionSummary {
   /** The method's description at publish time, as the draft held it (see `MethodData.description`). */
   description: string | null;
   /**
-   * The method's categories at publish time, as slugs of the catalog's list (see
+   * The method's categories at publish time, as its manifest declared them (see
    * `MethodData.categories`); absent from a platform that predates them.
    */
   categories?: string[];
@@ -164,10 +164,11 @@ export interface MethodData {
    */
   description?: string | null;
   /**
-   * The draft's categories, read from its manifest's `categories` under `[package]` and kept when
-   * they are on the catalog's list, as slugs such as `human-resources`, in their declared order;
-   * empty for a draft with no manifest or none it knows, and absent from a platform that predates
-   * them. A person reads a category's label, which `listMethodTemplates` names beside its slug.
+   * The draft's categories, read from its manifest's `categories` under `[package]`: each
+   * well-formed slug, such as `human-resources`, once, in its declared order, whether or not it is
+   * on the catalog's list; empty for a draft with no manifest or none well-formed, and absent from
+   * a platform that predates them. The catalog shows a template under those on its list alone,
+   * which `listMethodCategories` reads, each category with its labels.
    */
   categories?: string[];
   created_at: string;
@@ -269,7 +270,7 @@ export interface PublicMethodDetail {
   name: string;
   /** The latest published version's description. */
   description: string | null;
-  /** The latest published version's categories, as slugs of the catalog's list. */
+  /** The latest published version's categories, as its manifest declared them. */
   categories: string[];
   created_at: string;
   /** The number of the latest published version, the one a reader reads, runs and copies. */
@@ -539,19 +540,33 @@ export interface MethodVersionPage {
   nextCursor: string | null;
 }
 
-// ── The template catalog (`/v1/method-templates`) ─────────────────────────
+// ── The template catalog (`/v1/method-templates`, `/v1/method-categories`) ─
 //
 // A template is a public method held by the organization the deployment names as its templates
 // organization, with a published version. Every organization reads the same catalog: the templates
 // a named ordering lists lead, in its order, and the others follow by name. A template reads, runs
-// and copies by its `method_id` as any public method does.
+// and copies by its `method_id` as any public method does. The catalog's categories are a list an
+// admin of the platform keeps, in its order, each with a label in every language the platform
+// speaks; a template shows under the categories its manifest declares that are on the list.
 
-/** One category of the catalog's list: the slug a manifest declares, and the English label a person reads. */
+/**
+ * One category of the catalog's list: the slug a manifest declares, and the labels a person reads.
+ */
 export interface MethodCategory {
   /** The stable slug, such as `human-resources`, which a method's `categories` hold. */
   slug: string;
-  /** The English label, such as `Human resources`; a client translating by slug falls back on it. */
+  /**
+   * The English label, such as `Human resources`: what a client that does not translate shows, and
+   * what one that does falls back on for a language `labels` lacks.
+   */
   label: string;
+  /**
+   * The label in each language the platform holds one for, by language tag, such as
+   * `{ en: "Human resources", fr: "Ressources humaines" }`; `labels.en` equals `label`. A category
+   * stored before the platform spoke a language lacks a label in it, so read `labels[locale] ??
+   * label`.
+   */
+  labels: Partial<Record<string, string>>;
 }
 
 /** One thumbnail of a template's latest published version, with a link to its bytes. */
@@ -621,8 +636,16 @@ export interface MethodTemplatePage {
   ordering: string | null;
   /**
    * Every category at least one template shows, whatever the filter, in the catalog's order, each
-   * with its label: the tabs a client draws, none of them ever empty.
+   * with its labels: the tabs a client draws, none of them ever empty.
    */
+  categories: MethodCategory[];
+}
+
+/**
+ * The catalog's whole list of categories — `listMethodCategories`: every category on it, in the
+ * catalog's order, each with its labels, whether or not a template shows it.
+ */
+export interface MethodCategoryList {
   categories: MethodCategory[];
 }
 
