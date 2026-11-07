@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The template catalog**: `listMethodTemplates` reads `GET /v1/method-templates` with its optional `ordering`, `category`, `limit` and `cursor`, answering a `MethodTemplatePage` with the templates in the platform's order, the `ordering` served and the `categories` at least one template shows, and `iterateMethodTemplates` follows the cursor with the same ordering and category; each `MethodTemplate` carries its thumbnails as `MethodTemplateThumbnail`s behind short-lived links, redacted from an answer the SDK cannot read (`docs/public-methods.md`).
+- **`visibility` and `categories` on a method**: every method read carries `visibility`, a `MethodVisibility` (`internal` or `public`) read open, and `categories`, the catalog slugs its manifest declares; each `MethodVersionSummary` carries the version's `categories` and its `thumbnails`, each a `MethodThumbnail` with its path, media type, size in pixels and SHA-256.
+- **A public method's publish refusals**: `MethodPublishRefusalReason` gains `storage_reference`, `thumbnail_missing` and `thumbnail_invalid`, each still a `refused` verdict that `publishMethod` answers rather than throws.
+- **`copied_from.version`**: a copy of another organization's public method names, in `MethodCopiedFrom.version`, the published version it took, its `draft_digest` `null`.
+
+### Changed
+
+- **`getMethod` answers `MethodDetail | PublicMethodDetail` (Breaking)**: another organization's public method reads as a `PublicMethodDetail`, its latest published version with that version's files and nothing of its draft, so code that reads the draft's `updated_at`, `draft_digest`, `input_data` or `copied_from` from `getMethod` narrows first with `"updated_at" in method`.
+- **`MethodVersionSummary.published_by` is optional (Breaking)**: another organization reading a public method's versions gets no publisher, so code reading `published_by` handles its absence.
+- **`MethodPublishRefused.reason` is read open (Breaking)**: it is typed `MethodPublishRefusalReason | (string & {})`, so a reason a later platform adds arrives as its raw string, still a verdict, and a `switch` over it needs a default branch.
+
 ## [v0.60.0] - 2026-11-06
 
 ### Added

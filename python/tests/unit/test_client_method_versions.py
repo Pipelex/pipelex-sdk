@@ -377,7 +377,10 @@ class TestClientMethodVersions:
             pytest.param({"version": MethodVersionBodies.SUMMARY, "method": MethodVersionBodies.METHOD}, id="no-outcome"),
             pytest.param({"outcome": "skipped", "version": MethodVersionBodies.SUMMARY, "method": MethodVersionBodies.METHOD}, id="unknown-outcome"),
             pytest.param({"outcome": "published", "version": MethodVersionBodies.SUMMARY}, id="no-method"),
-            pytest.param({"outcome": "refused", "reason": "late", "message": "m", "validation": {}, "method": {}}, id="unknown-reason"),
+            pytest.param(
+                {"outcome": "refused", "reason": 7, "message": "m", "validation": _valid_verdict(), "method": MethodVersionBodies.METHOD},
+                id="reason-not-a-string",
+            ),
             pytest.param(
                 {"outcome": "refused", "reason": "invalid", "message": "m", "method": MethodVersionBodies.METHOD}, id="refusal-without-validation"
             ),

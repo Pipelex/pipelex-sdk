@@ -1,7 +1,7 @@
 """Pipelex-product wire models — the snake_case JSON shapes the hosted-product routes speak.
 
 These mirror `pipelex-sdk-js/src/product-models.ts`. They are the management surface
-the hosted product (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
+the hosted product (`/v1/me`, `/v1/methods` and its examples, `/v1/method-templates`, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
 `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
 `/v1/resolve-storage-url`, `/v1/upload`, `/v1/files`, `/v1/runs`) drives.
 
@@ -34,9 +34,20 @@ from typing import Annotated, Any, Literal, Self, TypeAlias, cast
 
 from mthds.method_tree.file_entry import FileEntry
 from mthds.method_tree.models import MethodTree
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, TypeAdapter, ValidationInfo, WrapValidator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    TypeAdapter,
+    ValidationInfo,
+    WrapValidator,
+    model_validator,
+)
 
-from pipelex_sdk._pydantic_utils import none_when_it_does_not_fit
+from pipelex_sdk._pydantic_utils import empty_list_factory_of, none_when_it_does_not_fit
 from pipelex_sdk.answer_reading import LenientProblem
 from pipelex_sdk.runs import RunStatus
 from pipelex_sdk.validation_models import PipelexValidationResult
@@ -97,11 +108,53 @@ class SavedMethodFile(BaseModel):
     method again for fresh links."""
 
 
+class MethodVisibility(StrEnum):
+    """Who may see a method — `MethodData.visibility`.
+
+    - `INTERNAL`: the members of the organization that holds it, every method's default.
+    - `PUBLIC`: every organization, which reads, runs and copies its published versions.
+
+    Only an admin of the platform sets it; no route of this client writes it. Read open, as
+    `MethodData.visibility` types it: a value a later platform adds arrives as its raw string rather
+    than failing the read.
+    """
+
+    INTERNAL = "internal"
+    PUBLIC = "public"
+
+
+class MethodThumbnail(BaseModel):
+    """One image directly under a method tree's `thumbnails/` folder, as the publish that recorded it on a version measured it.
+
+    Its aspect ratio is never declared: read it from `width` and `height`, and draw the thumbnail
+    closest to the shape you draw. A version records only the valid ones (a PNG, JPEG or WebP of
+    at least 800 by 400 pixels), so an image the platform refused is simply absent.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    path: str
+    """The image's tree path, `thumbnails/` and its file name."""
+
+    media_type: str
+    """The media type sniffed from its bytes: `image/png`, `image/jpeg` or `image/webp`."""
+
+    width: StrictInt
+    """Its width in pixels, as a browser draws it."""
+
+    height: StrictInt
+    """Its height in pixels, as a browser draws it."""
+
+    sha256: str
+    """The SHA-256 of its bytes, 64 lowercase hexadecimal characters: its hash in the tree."""
+
+
 class MethodVersionSummary(BaseModel):
     """One published version without its files.
 
     What `list_method_versions` lists, what a method read carries as `latest_published`, and
-    what a publish answers as `version`.
+    what a publish answers as `version`. Read from another organization's public method, it carries
+    no `published_by`: the publisher's user id does not cross organizations.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -125,21 +178,32 @@ class MethodVersionSummary(BaseModel):
     """The version of the runner that validated the bundle and computed the fingerprint."""
 
     description: str | None = None
-    """The bundle's top-level `description` at publish time."""
+    """The method's description at publish time, as the draft held it (see `MethodData.description`)."""
+
+    categories: list[str] = Field(default_factory=list)
+    """The method's categories at publish time, as slugs of the catalog's list (see `MethodData.categories`);
+    empty from a platform that predates them."""
+
+    thumbnails: list[MethodThumbnail] = Field(default_factory=empty_list_factory_of(MethodThumbnail))
+    """The valid images directly under the version's `thumbnails/` folder, in tree path order, as the
+    publish measured them; empty when the version records none, and from a platform that predates them."""
 
     published_at: str
     """ISO-8601 UTC instant of the publish."""
 
-    published_by: str
+    published_by: str | None = None
     """The publisher's canonical user id, or `system:publish-initial` for a version the one-time
-    migration wrote for a method saved before versions existed."""
+    migration wrote for a method saved before versions existed. `None` when another organization reads
+    a public method."""
 
 
 class MethodVersion(MethodVersionSummary):
     """One published version with its files — `get_method_version`.
 
     It carries no `name`, which belongs to the method and changes without a publish, and no
-    `input_data`, which is the editor's form state and not part of what a caller runs.
+    `input_data`, which is the editor's form state and not part of what a caller runs. Read from
+    another organization's public method, it carries no `published_by`, and its files are linked in
+    the organization that holds it.
     """
 
     method_id: str
@@ -180,7 +244,12 @@ class MethodCopiedFrom(BaseModel):
     """The original's method id."""
 
     draft_digest: str | None = None
-    """The digest of the original's draft the copy took; `None` for an empty draft."""
+    """The digest of the original's draft the copy took; `None` for an empty draft, and for a copy of another
+    organization's public method, which takes a published version rather than the draft."""
+
+    version: StrictInt | None = None
+    """The published version the copy took, on a copy of another organization's public method; `None` on a copy
+    of a draft."""
 
 
 class MethodData(BaseModel):
@@ -202,7 +271,14 @@ class MethodData(BaseModel):
     created_by_user_id: str
     description: str | None = None
     """The draft's description, which the platform reads from its files on every draft write: the
-    top-level `description` of the first `.mthds` file that declares one."""
+    `description` of its `METHODS.toml` manifest, else the top-level `description` of its primary
+    bundle, else its main pipe's, a blank one counting as none at each step."""
+
+    categories: list[str] = Field(default_factory=list)
+    """The draft's categories, read from its manifest's `categories` under `[package]` and kept when they are
+    on the catalog's list, as slugs such as `human-resources`, in their declared order; empty for a draft with
+    no manifest or none the catalog knows, and from a platform that predates them. A person reads a
+    category's label, which `list_method_templates` names beside its slug."""
 
     deletion_state: MethodDeletionState | None = None
     #: The editor's form inputs, saved with the draft and outside its digest.
@@ -234,14 +310,76 @@ class MethodData(BaseModel):
     and from a platform that predates copies. Written once, when the copy is made, and never rewritten. The
     list rows (`MethodSummary`) do not carry it."""
 
+    visibility: Annotated[MethodVisibility | str, Field(union_mode="left_to_right")] = MethodVisibility.INTERNAL
+    """Who may see the method: `internal`, the members of the organization that holds it, or `public`, every
+    organization, which reads, runs and copies its published versions (see `MethodVisibility`). `internal`
+    from a platform that predates it, and a value a later platform adds keeps its raw string. The list rows
+    (`MethodSummary`) do not carry it."""
+
 
 class MethodDetail(MethodData):
-    """One saved method with its draft's files — `get_method`."""
+    """One saved method of the caller's organization with its draft's files — what `get_method` answers for one of the caller's own methods."""
 
     files: list[SavedMethodFile]
     """The draft's tree, the one `draft_digest` names, one file per entry in tree path order, each with
     a link to its bytes; an empty list for an empty draft. `PipelexAPIClient.write_method_tree` writes it
     to disk."""
+
+
+class PublicMethodDetail(BaseModel):
+    """Another organization's public method, as a reader outside that organization sees it — what `get_method` answers for it.
+
+    It is the latest published version, never the draft: `description` and `categories` are that
+    version's, and `files` is its tree, linked in the organization that holds it, which
+    `PipelexAPIClient.write_method_tree` writes as it writes any listing. It carries nothing of the
+    draft and nothing of the owner's people: no `updated_at` (the draft's token), `draft_digest`,
+    `input_data`, `pipe_output`, `created_by_user_id`, `copied_from` or `deletion_state`, and its
+    `latest_published` no `published_by`. Every write of it is the owner's alone: from another
+    organization a write answers `404` `pipelex.catalog.not_found`, while `copy_method` copies it and the
+    run routes run it by its bare id or `mt_…@<n>`, never `@draft`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    method_id: str
+    org_id: str
+    """The canonical id of the organization that holds the method."""
+
+    name: str
+    description: str | None = None
+    """The latest published version's description."""
+
+    categories: list[str] = Field(default_factory=list)
+    """The latest published version's categories, as slugs of the catalog's list."""
+
+    created_at: str
+    latest_version: StrictInt
+    """The number of the latest published version, the one a reader reads, runs and copies. Read strictly, as
+    `MethodVersionSummary.version` is."""
+
+    latest_published: MethodVersionSummary
+    """The latest published version's summary, without its publisher."""
+
+    visibility: Annotated[MethodVisibility | str, Field(union_mode="left_to_right")]
+    """`public`: another organization reads a method only while it is public."""
+
+    files: list[SavedMethodFile]
+    """The latest published version's tree, one file per entry in tree path order, each with a link to its bytes."""
+
+
+def read_method(value: Any) -> MethodDetail | PublicMethodDetail:
+    """Read the answer of `get_method`: the caller's own method whole, or another organization's public method in its narrower shape.
+
+    The two are told apart by the draft's token, `updated_at`, which only the owner's read carries. Each is
+    validated as its own model, so a refusal names its fields as that model's (`("files", 1, "sha256")`), and an
+    answer that is no object is refused as `MethodDetail` refuses one.
+
+    Raises:
+        ValidationError: The answer is neither shape.
+    """
+    if isinstance(value, dict) and "updated_at" not in value:
+        return PublicMethodDetail.model_validate(value)
+    return MethodDetail.model_validate(value)
 
 
 class MethodWriteInput(BaseModel):
@@ -312,13 +450,28 @@ class MethodPublishOutcome(StrEnum):
 
 
 class MethodPublishRefusalReason(StrEnum):
-    """Why a draft was not published."""
+    """Why a draft was not published.
+
+    The last three refuse only a public method's publish, so that the card of a template never loses
+    its picture and every organization can run what it reads.
+    """
 
     INVALID = "invalid"
     """The draft does not validate."""
 
     NOT_RUNNABLE = "not_runnable"
     """The draft validates with pending signatures: valid, but it does not run yet."""
+
+    THUMBNAIL_MISSING = "thumbnail_missing"
+    """The method is public, and the draft's tree holds no file directly under `thumbnails/`, or none was read in time."""
+
+    THUMBNAIL_INVALID = "thumbnail_invalid"
+    """The method is public, and no file directly under the draft's `thumbnails/` is a valid thumbnail (a PNG, JPEG or
+    WebP of at least 800 by 400 pixels)."""
+
+    STORAGE_REFERENCE = "storage_reference"
+    """The method is public, and a `.mthds` file of the draft names a `pipelex-storage://` file, which other
+    organizations cannot read."""
 
 
 class MethodPublished(BaseModel):
@@ -348,17 +501,23 @@ class MethodPublishUnchanged(BaseModel):
 class MethodPublishRefused(BaseModel):
     """A publish the draft's content refused: nothing was published.
 
-    `message` says why — for `not_runnable`, that the draft "is valid but does not run yet" — and
-    `validation` is the runner's `POST /v1/validate` answer for the draft, read member by member as
-    `validate` reads it (`pipelex_sdk.problem_items.ProblemItems`): an invalid arm whose `errors`,
-    problem items, say what to fix, or, for `not_runnable`, the valid arm. An entry that names no fault
-    is left out, and a member the standard declares is kept only when it is well-formed.
+    `message` says why, for a person — for `not_runnable`, that the draft "is valid but does not run
+    yet", and for the thumbnail refusals, what the image must be — and `validation` is the runner's
+    `POST /v1/validate` answer for the draft, read member by member as `validate` reads it
+    (`pipelex_sdk.problem_items.ProblemItems`): an invalid arm whose `errors`, problem items, say what to
+    fix, or, for `not_runnable` and the refusals of a public method, the valid arm. An entry that names no
+    fault is left out, and a member the standard declares is kept only when it is well-formed.
     """
 
     model_config = ConfigDict(extra="allow")
 
     outcome: Literal[MethodPublishOutcome.REFUSED]
-    reason: MethodPublishRefusalReason
+
+    reason: Annotated[MethodPublishRefusalReason | str, Field(union_mode="left_to_right")]
+    """Why: the `MethodPublishRefusalReason` member when this SDK knows the reason, its raw string for one a later
+    platform adds. A refusal is a verdict whatever its reason, so show its `message` when the reason is one you do
+    not handle."""
+
     message: str
     validation: PipelexValidationResult
     method: MethodData
@@ -430,6 +589,91 @@ class MethodPage(BaseModel):
 
     items: list[MethodSummary]
     next_cursor: str | None
+
+
+# ── The template catalog (`/v1/method-templates`) ─────────────────────────
+#
+# A template is a public method held by the organization the deployment names as its templates
+# organization, with a published version. Every organization reads the same catalog: the templates a
+# named ordering lists lead, in its order, and the others follow by name. A template reads, runs and
+# copies by its `method_id` as any public method does.
+
+
+class MethodCategory(BaseModel):
+    """One category of the catalog's list: the slug a manifest declares, and the English label a person reads."""
+
+    model_config = ConfigDict(extra="allow")
+
+    slug: str
+    """The stable slug, such as `human-resources`, which a method's `categories` hold."""
+
+    label: str
+    """The English label, such as `Human resources`; a client translating by slug falls back on it."""
+
+
+class MethodTemplateThumbnail(MethodThumbnail):
+    """One thumbnail of a template's latest published version, with a link to its bytes."""
+
+    url: str = Field(repr=False)
+    """A presigned `GET` of the image's bytes, valid until `expires_at`, which a browser loads with no
+    credential. It is a bearer credential until it expires, so it is never logged, and a thumbnail's
+    `repr` leaves it out."""
+
+    expires_at: str
+    """When `url` stops working, an ISO-8601 UTC instant about fifteen minutes after the read."""
+
+
+class MethodTemplate(BaseModel):
+    """One card of the template catalog: a template as its latest published version shows it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    method_id: str
+    """The template's catalog id, which `get_method`, the run routes and `copy_method` take."""
+
+    name: str
+    """The method's name."""
+
+    description: str | None = None
+    """The latest published version's description; `None` when it has none."""
+
+    latest_version: StrictInt
+    """The number of the latest published version, the one a reader reads, runs and copies."""
+
+    categories: list[str]
+    """The latest published version's categories, as slugs of the catalog's list."""
+
+    organization_name: str
+    """The display name of the organization that holds the template."""
+
+    thumbnails: list[MethodTemplateThumbnail]
+    """The latest published version's thumbnails, each with its size and a link; draw the one whose `width` and
+    `height` come closest to the shape you draw."""
+
+
+class MethodTemplatePage(BaseModel):
+    """One page of the template catalog, in the order served, kept to the category asked for — `list_method_templates`.
+
+    `next_cursor` is opaque: pass it back as `cursor` with the same `ordering` and `category`, which the cursor
+    does not hold, and treat a `None` as the last page. A page resumes after the last template the page before
+    served, wherever the catalog now places it, so a template added or removed elsewhere between two pages
+    neither repeats nor skips the ones around that point. `ordering` and `categories` describe the whole catalog
+    on every page. Every field is required, as on every page model: the platform always sends them.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[MethodTemplate]
+    """The page's templates: those the ordering lists first, in its order, then the others by name."""
+
+    next_cursor: str | None
+
+    ordering: str | None
+    """The name of the ordering served; `None` when there is none, the templates then listed by name."""
+
+    categories: list[MethodCategory]
+    """Every category at least one template shows, whatever the filter, in the catalog's order, each with its
+    label: the tabs a client draws, none of them ever empty."""
 
 
 class MethodDeletionAccepted(BaseModel):

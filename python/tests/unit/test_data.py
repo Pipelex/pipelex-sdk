@@ -315,6 +315,117 @@ class MethodCopyBodies:
     LIMIT: ClassVar[dict[str, Any]] = {"name": "max_stored_files", "value": 200, "reached": 201}
 
 
+class PublicMethodBodies:
+    """Public methods and the template catalog, as the platform serializes them (`MethodTemplatePage`,
+    `PublicMethodDetail`, `PublicMethodVersionSummary`, `PublicMethodVersionDetail`), and a method its owner reads
+    with its visibility, its categories and its version's thumbnails.
+
+    `@pipelex/sdk`'s `tests/public-methods.test.ts` answers its client with the same documents.
+    """
+
+    DIGEST: ClassVar[str] = "sha256:5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47"
+    TOKEN: ClassVar[str] = "2026-11-07T08:00:00.123456+00:00"
+    SIGNED: ClassVar[str] = "X-Amz-Signature=deadbeef"
+
+    THUMBNAIL: ClassVar[dict[str, Any]] = {
+        "path": "thumbnails/card.png",
+        "media_type": "image/png",
+        "width": 1600,
+        "height": 800,
+        "sha256": "8ff436def1451285599a1b1ad70800493b8dcafde2912e1a38345633054e4c26",
+    }
+
+    #: A template as the catalog serves it, its thumbnail with a signed link.
+    TEMPLATE: ClassVar[dict[str, Any]] = {
+        "method_id": "mt_cv01",
+        "name": "CV Analyzer",
+        "description": "Analyze a CV against a job offer",
+        "latest_version": 1,
+        "categories": ["human-resources"],
+        "organization_name": "Dev Templates",
+        "thumbnails": [
+            {
+                **THUMBNAIL,
+                "url": f"https://app-bucket.s3.amazonaws.com/org_t/blobs/{THUMBNAIL['sha256']}?{SIGNED}",
+                "expires_at": "2026-11-07T09:15:00+00:00",
+            }
+        ],
+    }
+
+    CATEGORIES: ClassVar[list[dict[str, Any]]] = [
+        {"slug": "finance", "label": "Finance"},
+        {"slug": "human-resources", "label": "Human resources"},
+    ]
+
+    PAGE: ClassVar[dict[str, Any]] = {"items": [TEMPLATE], "next_cursor": None, "ordering": "default", "categories": CATEGORIES}
+
+    #: A published version as its owner reads it.
+    SUMMARY: ClassVar[dict[str, Any]] = {
+        "version": 2,
+        "tree_digest": DIGEST,
+        "crate_fingerprint": "a1b2c3",
+        "runner_version": "0.97.0",
+        "description": "Count the words of a text",
+        "categories": ["general", "marketing"],
+        "thumbnails": [THUMBNAIL],
+        "published_at": "2026-11-07T09:00:00+00:00",
+        "published_by": "user_owner",
+    }
+
+    #: The same version as another organization reads it: no publisher.
+    PUBLIC_SUMMARY: ClassVar[dict[str, Any]] = {key: value for key, value in SUMMARY.items() if key != "published_by"}
+
+    FILES: ClassVar[list[dict[str, Any]]] = [
+        {
+            "path": "main.mthds",
+            "sha256": "16c322ec9ceeb29cf54ef4553f087cba1683c3f20f3bf334e49ccc2ad0ecba3e",
+            "size": 19,
+            "url": f"https://app-bucket.s3.amazonaws.com/org_owner/blobs/16c322ec?{SIGNED}",
+            "expires_at": "2026-11-07T09:15:00+00:00",
+        }
+    ]
+
+    #: Another organization's public method, as a reader outside it reads it.
+    PUBLIC_METHOD: ClassVar[dict[str, Any]] = {
+        "method_id": "mt_stats01",
+        "org_id": "org_owner",
+        "name": "Text stats",
+        "description": "Count the words of a text",
+        "categories": ["general", "marketing"],
+        "created_at": "2026-11-01T09:00:00+00:00",
+        "latest_version": 2,
+        "latest_published": PUBLIC_SUMMARY,
+        "visibility": "public",
+        "files": FILES,
+    }
+
+    #: The same method as its owner reads it.
+    OWN_METHOD: ClassVar[dict[str, Any]] = {
+        "method_id": "mt_stats01",
+        "org_id": "org_owner",
+        "created_by_user_id": "user_owner",
+        "name": "Text stats",
+        "input_data": {"text": "hello"},
+        "pipe_output": None,
+        "description": "Count the words of a text",
+        "categories": ["general", "marketing"],
+        "created_at": "2026-11-01T09:00:00+00:00",
+        "updated_at": TOKEN,
+        "deletion_state": None,
+        "draft_digest": DIGEST,
+        "latest_version": 2,
+        "latest_published": SUMMARY,
+        "copied_from": None,
+        "visibility": "public",
+        "files": FILES,
+    }
+
+    #: A copy of another organization's public method, which names the version it took.
+    COPIED_FROM_VERSION: ClassVar[dict[str, Any]] = {"org_id": "org_owner", "method_id": "mt_stats01", "draft_digest": None, "version": 2}
+
+    VALID_VERDICT: ClassVar[dict[str, Any]] = {"is_valid": True, "is_runnable": True}
+
+
 class MethodExampleBodies:
     """A method's saved examples, as the platform serializes them (`MethodExample`, `MethodExamplePage`).
 

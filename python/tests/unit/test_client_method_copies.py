@@ -25,6 +25,7 @@ from pipelex_sdk.product_models import (
     MethodCopyLimit,
     MethodCopyRefusalReason,
     MethodCopyRefused,
+    MethodDetail,
 )
 from tests.unit.conftest import BASE_URL, problem_document, refused_argument
 from tests.unit.test_data import MethodCopyBodies
@@ -440,10 +441,10 @@ class TestClientMethodCopies:
         )
 
         async def scenario() -> list[MethodCopiedFrom | None]:
-            copy = await api_client.get_method("mt_copy01")
-            null_one = await api_client.get_method("mt_copy01")
-            absent_one = await api_client.get_method("mt_copy01")
-            return [copy.copied_from, null_one.copied_from, absent_one.copied_from]
+            reads = [await api_client.get_method("mt_copy01") for _ in range(3)]
+            own_reads = [read for read in reads if isinstance(read, MethodDetail)]
+            assert len(own_reads) == len(reads)
+            return [read.copied_from for read in own_reads]
 
         copied_from, null_one, absent_one = asyncio.run(scenario())
 

@@ -138,12 +138,15 @@ from pipelex_sdk.product_models import (
     MethodPage,
     MethodPublishResultAdapter,
     MethodSummary,
+    MethodTemplate,
+    MethodTemplatePage,
     MethodVersion,
     MethodVersionPage,
     OrganizationBranding,
     PipelexApiKeyCreated,
     PipelexApiKeyList,
     PlanView,
+    PublicMethodDetail,
     ResolvedStorageUrl,
     RunDetail,
     RunFilesPage,
@@ -153,6 +156,7 @@ from pipelex_sdk.product_models import (
     SubscriptionResponse,
     UploadedFile,
     UserProfile,
+    read_method,
 )
 from pipelex_sdk.runs import (
     PipelexRunResultStart,
@@ -2146,15 +2150,87 @@ class PipelexAPIClient(MthdsAPIClient):
         ):
             yield method_summary
 
-    async def get_method(self, method_id: str) -> MethodDetail:
-        """Read one method with its draft's files — `GET /v1/methods/{id}`.
+    async def list_method_templates(
+        self,
+        *,
+        ordering: str | None = None,
+        category: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> MethodTemplatePage:
+        """One page of the template catalog — `GET /v1/method-templates`.
 
-        Its identity, its draft (`files`, `input_data`) with the draft's token (`updated_at`) and
-        digest (`draft_digest`), and its latest published version's summary (`latest_version`,
-        `latest_published`), whatever the publish state: a method never published reads with both
-        `None`, never as an error. `files` lists the draft's tree in tree path order, each file with
-        its SHA-256, its size and a link to its bytes valid for about fifteen minutes, and is empty for
-        an empty draft; `write_method_tree` brings the tree to disk.
+        The catalog is the public methods of the organization the deployment names as its templates
+        organization, the same for every caller. The templates the ordering lists lead, in its order, and
+        every other template follows by name. Each `MethodTemplate` carries the method's id and name, its
+        latest published version's number, description and categories, its organization's display name and
+        each thumbnail with its size and a link to its bytes valid for about fifteen minutes. A template
+        reads, runs and copies by its `method_id`, as another organization's public method does
+        (`get_method`, `copy_method`).
+
+        Args:
+            ordering: The ordering to serve, such as `default` or an arm of a test; `None`, or a name that is
+                unknown or malformed, serves `default`. The page's `ordering` names the one served.
+            category: Keep the templates of this category, by its slug, in the same order; a slug no template
+                shows keeps none.
+            limit: Page size, from 1 to 200; the API defaults to 50 and refuses one outside that range with a
+                `422`.
+            cursor: The `next_cursor` of the previous page, passed back opaquely with the same `ordering` and
+                `category`, which the cursor does not hold.
+
+        Returns:
+            A `MethodTemplatePage`: the page's templates, `next_cursor` (`None` on the last page), the name of
+            the ordering served (`None` when there is none, the templates then listed by name), and, whatever
+            the filter, every category at least one template shows, with its label, in the catalog's order,
+            so no tab drawn from it is ever empty. `iterate_method_templates` follows the cursor.
+
+        Raises:
+            ApiResponseError: `422` `request.invalid` for a `limit` outside 1 to 200 or a cursor of another
+                listing; `422` `request.malformed` for a cursor that does not decode; `500`
+                `runtime.misconfigured` when the templates organization the deployment names has no record or a
+                link cannot be signed; `503` `runtime.unavailable`, safe to retry; a `200` the SDK cannot read,
+                reported with every link redacted.
+        """
+        query = _product_query({"ordering": ordering, "category": category, "limit": limit, "cursor": cursor})
+        return await self._request_product("GET", f"method-templates{query}", read=MethodTemplatePage.model_validate, carries_links=True)
+
+    async def iterate_method_templates(
+        self,
+        *,
+        ordering: str | None = None,
+        category: str | None = None,
+        limit: int | None = None,
+    ) -> AsyncIterator[MethodTemplate]:
+        """Yield every template of the catalog, in the order served, following the cursors — `GET /v1/method-templates`.
+
+        Every page is asked for with the same `ordering` and `category`. It stops when `next_cursor` is
+        `None`, and when the server hands back the cursor it was just sent. The ordering served and the
+        categories are on each page, so read one page with `list_method_templates` when you need them.
+
+        Raises:
+            PagingNotTerminatingError: If the server never stops handing out cursors.
+        """
+        async for template in _follow_cursor(
+            "Method template",
+            lambda cursor: self.list_method_templates(ordering=ordering, category=category, limit=limit, cursor=cursor),
+        ):
+            yield template
+
+    async def get_method(self, method_id: str) -> MethodDetail | PublicMethodDetail:
+        """Read one method with its files — `GET /v1/methods/{id}`.
+
+        One of the caller's organization's methods answers a `MethodDetail`: its identity, its draft
+        (`files`, `input_data`) with the draft's token (`updated_at`) and digest (`draft_digest`), and its
+        latest published version's summary (`latest_version`, `latest_published`), whatever the publish
+        state: a method never published reads with both `None`, never as an error. `files` lists the
+        draft's tree in tree path order, each file with its SHA-256, its size and a link to its bytes valid
+        for about fifteen minutes, and is empty for an empty draft; `write_method_tree` brings the tree to
+        disk.
+
+        **Another organization's public method reads too, in a narrower shape**, a `PublicMethodDetail`: its
+        latest published version, that version's description, categories and files, and nothing of its
+        draft or of the owner's people, so no `updated_at` to write or publish with. Branch on the class
+        (`isinstance(method, MethodDetail)`) before reading the draft.
 
         Takes a bare catalog id: the method routes address the method itself, never a version of
         it. A caller holding `mt_…@3` strips the suffix with
@@ -2165,13 +2241,14 @@ class PipelexAPIClient(MthdsAPIClient):
         that holds a lone surrogate, which a URL cannot carry.
 
         Raises:
-            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown or foreign-org method; `409`
-                `pipelex.catalog.being_deleted` while its erasure runs; a `500` `runtime.unexpected` for a
-                method whose draft names a tree the platform holds no record of; a `200` the SDK cannot
-                read, a listing whose `sha256` is not 64 lowercase hex digits among them, reported with
-                every link redacted.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method, for another
+                organization's internal one, and for a public one made internal again or being erased;
+                `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs; a
+                `500` `runtime.unexpected` for a method whose tree the platform holds no record of; a `200`
+                the SDK cannot read, a listing whose `sha256` is not 64 lowercase hex digits among them,
+                reported with every link redacted.
         """
-        return await self._request_product("GET", _method_path(method_id, call="get_method"), read=MethodDetail.model_validate, carries_links=True)
+        return await self._request_product("GET", _method_path(method_id, call="get_method"), read=read_method, carries_links=True)
 
     async def create_method(self, write_input: MethodWriteInput) -> MethodData:
         """Create a method — `POST /v1/methods`.
@@ -2658,7 +2735,9 @@ class PipelexAPIClient(MthdsAPIClient):
         be reached, answers unusably or does not finish within the platform's deadline is a `502` or a
         `503` with nothing written, so a retry is safe; a runner that refuses the request itself is
         relayed under its own status. A retry of a publish that landed while its answer was lost, as
-        on a client timeout, answers `unchanged` with the version it wrote.
+        on a client timeout, answers `unchanged` with the version it wrote. A method made public while its
+        publish ran is a `503` with nothing written, safe to retry, which a retry judges as a public
+        method's publish.
 
         Args:
             method_id: The method's bare catalog id.
@@ -2667,9 +2746,11 @@ class PipelexAPIClient(MthdsAPIClient):
         Returns:
             A `MethodPublishResult` discriminated on `outcome` — branch on it: `MethodPublished` with
             the new `version`; `MethodPublishUnchanged` with the existing latest `version`;
-            `MethodPublishRefused` with a `reason` (`invalid`, or `not_runnable` for a draft that
-            validates with pending signatures), a `message` and the runner's `validation` verdict.
-            Every arm carries the `method`.
+            `MethodPublishRefused` with a `reason`, a `message` and the runner's `validation` verdict. The
+            reason is `invalid`, or `not_runnable` for a draft that validates with pending signatures, and for
+            a public method also `thumbnail_missing`, `thumbnail_invalid` or `storage_reference` (see
+            `MethodPublishRefusalReason`); a reason this SDK does not know keeps its raw string and is still a
+            verdict, so show its `message`. Every arm carries the `method`.
 
         Raises:
             RequestArgumentError: `expected_draft_updated_at` is not a `str` — `None` included; nothing
@@ -2705,12 +2786,14 @@ class PipelexAPIClient(MthdsAPIClient):
         Returns:
             A `MethodVersionPage` of `MethodVersionSummary` rows, without their files. `next_cursor`
             is `None` on the last page; a page may be short while it is set, because the platform
-            reads versions whole. A method never published answers an empty page.
+            reads versions whole. A method never published answers an empty page. Another
+            organization's public method lists its versions too, each without its `published_by`.
 
         Raises:
-            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method; `409`
-                `pipelex.catalog.being_deleted`; `422` `request.invalid` for a cursor the listing did not
-                issue for this method or a `limit` outside 1 to 100.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method and for another
+                organization's internal one; `409` `pipelex.catalog.being_deleted` while the erasure of the
+                caller's own method runs; `422` `request.invalid` for a cursor the listing did not issue for
+                this method or a `limit` outside 1 to 100.
         """
         query = _product_query({"limit": limit, "cursor": cursor})
         endpoint = f"{_method_path(method_id, call='list_method_versions')}/versions{query}"
@@ -2720,7 +2803,9 @@ class PipelexAPIClient(MthdsAPIClient):
         """Read one published version of a method, with its files — `GET /v1/methods/{id}/versions/{n}`.
 
         `files` lists the version's tree in tree path order, each file with a link to its bytes valid
-        for about fifteen minutes; `write_method_tree` brings the tree to disk.
+        for about fifteen minutes; `write_method_tree` brings the tree to disk. Another organization's
+        public method reads its versions too, without their `published_by`, the files linked in the
+        organization that holds it.
 
         Args:
             method_id: The method's bare catalog id.
@@ -2730,7 +2815,8 @@ class PipelexAPIClient(MthdsAPIClient):
             RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as
                 `2.0`, a numeric string and anything else that is not an `int` included; nothing is sent.
             ApiResponseError: `404` `pipelex.catalog.not_found` for a version the method never
-                published and for an unknown method; `409` `pipelex.catalog.being_deleted`; a
+                published, for an unknown method and for another organization's internal one; `409`
+                `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs; a
                 `500` `runtime.unexpected` for a version stored before methods were trees that the platform has
                 not rewritten as one (its `tree_digest` is `None`); a `200` the SDK cannot read,
                 reported with every link redacted.
@@ -2763,6 +2849,12 @@ class PipelexAPIClient(MthdsAPIClient):
         never the latest published version; with `expected_draft_updated_at`, it takes exactly the draft the
         caller last saw.
 
+        **Another organization's public method copies too**, a template of the catalog among them, from its
+        latest published version rather than its draft: that version's tree, description and categories, and the
+        method's examples, never the owner's form inputs, with `copied_from` naming the `version`. Leave
+        `expected_draft_updated_at` out then: sent with such a method, it is refused with a `422`
+        `request.invalid` naming it.
+
         The route serves web sessions only: a Pipelex API key belongs to one organization and cannot speak for
         another. The body is closed: the client sends `destination_org_id` and, when given, `name` and
         `expected_draft_updated_at`, and nothing else, a `None` reading as not given.
@@ -2774,7 +2866,8 @@ class PipelexAPIClient(MthdsAPIClient):
             name: The copy's name, under the creation's rules; `None` keeps the original's.
             expected_draft_updated_at: The original's draft token (`MethodData.updated_at`) the caller last saw,
                 echoed verbatim: a draft that moved since is refused with a `409` `pipelex.catalog.update_conflict`, and
-                nothing is copied. `None` copies the draft as it stands when the request is served.
+                nothing is copied. `None` copies the draft as it stands when the request is served, and is what a
+                copy of another organization's public method sends.
             idempotency_key: The copy's idempotency key, sent as the `Idempotency-Key` header, and not sent at all
                 when `None`. Generate one per copy the caller means to make (a `str(uuid.uuid4())` is a good key),
                 and keep it, with every other argument unchanged, across that copy's retries. The hosted API
@@ -2794,7 +2887,7 @@ class PipelexAPIClient(MthdsAPIClient):
             A `MethodCopyResult` discriminated on `outcome` — branch on it: `MethodCopied` with the copy as `method`,
             `examples_copied` and `stored_files_copied`; `MethodCopyRefused` with the `reason`
             `bundle_names_other_storage`, a `message` and every `references` entry (`path`, `uri`) a `.mthds` file
-            of the draft holds that the destination cannot read and, in a duplicate, that names a file under the
+            of the tree holds that the destination cannot read and, in a duplicate, that names a file under the
             original's run files, which erasing the original would remove, nothing written.
 
         Raises:
@@ -2805,8 +2898,9 @@ class PipelexAPIClient(MthdsAPIClient):
                 `503` whose `detail` names the copy: `403` `auth.forbidden` for a request that is not from a web
                 session, or for a role that may not change methods, in the method's organization or in the
                 destination; `404` `pipelex.org.not_found` for a destination the caller does not belong to, still
-                being set up or unknown, alike; `404` `pipelex.catalog.not_found` for an unknown method; `409`
-                `pipelex.catalog.being_deleted`; `409` `pipelex.catalog.update_conflict` for a draft that moved since
+                being set up or unknown, alike; `404` `pipelex.catalog.not_found` for an unknown method and for
+                another organization's internal one; `409` `pipelex.catalog.being_deleted` while the erasure of the
+                caller's own method runs; `409` `pipelex.catalog.update_conflict` for a draft that moved since
                 `expected_draft_updated_at`; a `409` whose `domain` is `runtime` and `retry` `no`, for a draft whose
                 tree the method's organization holds no record of or no longer holds every file of; `413`
                 `request.too_large` for a copied example, or the copy's row, too large for one stored item, the row
@@ -4726,8 +4820,8 @@ class _CursorPage(Protocol[_PageItemT_co]):
 async def _follow_cursor(noun: str, read_page: Callable[[str | None], Awaitable[_CursorPage[_PageItemT]]]) -> AsyncIterator[_PageItemT]:
     """Follow a paged list's cursor until the server says there is no more, yielding every row.
 
-    The one loop behind `iterate_methods`, `iterate_runs`, `iterate_method_examples` and `iterate_files`, so they cannot drift apart. It
-    keeps going through an empty page that carries a cursor, since a filtered page can hold no
+    The one loop behind `iterate_methods`, `iterate_method_templates`, `iterate_runs`, `iterate_method_examples` and
+    `iterate_files`, so they cannot drift apart. It keeps going through an empty page that carries a cursor, since a filtered page can hold no
     row and still not be the end. It stops when `next_cursor` is `None`, and when the server hands
     back the cursor it was just sent, checked before yielding so a stuck cursor never re-yields a
     page. Past `_MAX_LIST_PAGES` pages it raises rather than return a truncated list.

@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The template catalog**: `list_method_templates` reads `GET /v1/method-templates` with its optional `ordering`, `category`, `limit` and `cursor`, answering a `MethodTemplatePage` with the templates in the platform's order, the `ordering` served and the `categories` at least one template shows, and `iterate_method_templates` follows the cursor with the same ordering and category; each `MethodTemplate` carries its thumbnails as `MethodTemplateThumbnail`s behind short-lived links, left out of their `repr` and redacted from an answer the SDK cannot read (`docs/public-methods.md`).
+- **`visibility` and `categories` on a method**: every method read carries `visibility`, a `MethodVisibility` (`INTERNAL` or `PUBLIC`) read open, `INTERNAL` when absent, and `categories`, the catalog slugs its manifest declares; each `MethodVersionSummary` carries the version's `categories` and its `thumbnails`, each a `MethodThumbnail` with its path, media type, size in pixels and SHA-256.
+- **A public method's publish refusals**: `MethodPublishRefusalReason` gains `STORAGE_REFERENCE`, `THUMBNAIL_MISSING` and `THUMBNAIL_INVALID`, each still a `MethodPublishRefused` verdict that `publish_method` returns rather than raises.
+- **`MethodCopiedFrom.version`**: a copy of another organization's public method names the published version it took, its `draft_digest` `None`.
+
+### Changed
+
+- **`get_method` returns `MethodDetail | PublicMethodDetail` (Breaking)**: another organization's public method reads as a `PublicMethodDetail`, its latest published version with that version's files and nothing of its draft, so code that reads the draft's `updated_at`, `draft_digest`, `input_data` or `copied_from` from `get_method` narrows first with `isinstance(method, MethodDetail)`; `pipelex_sdk.product_models.read_method` reads a body into the right model.
+- **`MethodVersionSummary.published_by` is optional (Breaking)**: it defaults to `None`, since another organization reading a public method's versions gets no publisher.
+- **`MethodPublishRefused.reason` is read open (Breaking)**: it is typed `MethodPublishRefusalReason | str`, so a reason a later platform adds arrives as its raw `str`, still a verdict, instead of making the answer unreadable, and a `match` over it needs a branch for a plain string.
+
 ## [v0.60.0] - 2026-11-06
 
 ### Added

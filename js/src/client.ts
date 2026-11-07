@@ -86,6 +86,7 @@ import type {
   ListFilesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
+  ListMethodTemplatesQuery,
   ListMethodVersionsQuery,
   ListRunFilesQuery,
   MethodCopyInput,
@@ -108,11 +109,14 @@ import type {
   MethodPublishResult,
   MethodRenameInput,
   MethodSummary,
+  MethodTemplate,
+  MethodTemplatePage,
   MethodVersion,
   MethodVersionPage,
   MethodVersionSummary,
   MethodWriteInput,
   OnboardingSubmission,
+  PublicMethodDetail,
   PipelexApiKeyCreated,
   PipelexApiKeyList,
   ListRunsQuery,
@@ -2895,13 +2899,96 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
-   * Read one method with its draft's files — `GET /v1/methods/{id}`: its identity, its draft
+   * One page of the template catalog — `GET /v1/method-templates`: the public methods of the
+   * organization the deployment names as its templates organization, the same for every caller.
+   *
+   * The templates the ordering lists lead, in its order, and every other template follows by name.
+   * `ordering` names the ordering to serve, such as `default` or an arm of a test; an absent,
+   * unknown or malformed name serves `default`, and the page's `ordering` names the one served,
+   * `null` when there is none. `category` keeps one category's templates, by slug, in the same
+   * order; an unknown slug keeps none. Whatever the filter, the page's `categories` names, with its
+   * label, every category at least one template shows, in the catalog's order, so no tab drawn
+   * from it is ever empty.
+   *
+   * Each `MethodTemplate` carries the method's id and name, its latest published version's number,
+   * description and categories, its organization's display name and each thumbnail with its size
+   * and a link to its bytes valid for about fifteen minutes. A template reads, runs and copies by
+   * its `method_id`, as another organization's public method does (`getMethod`, `copyMethod`).
+   *
+   * Pass the page's `nextCursor` back as `cursor` with the same `ordering` and `category`, which the
+   * cursor does not hold; `null` is the last page. `iterateMethodTemplates` follows it for you.
+   *
+   * Throws `ApiResponseError`: `422` `request.invalid` for a `limit` outside 1 to 200 or a cursor of
+   * another listing, `422` `request.malformed` for a cursor that does not decode, `500`
+   * `runtime.misconfigured` when the templates organization the deployment names has no record or
+   * a link cannot be signed, and `503` `runtime.unavailable`, safe to retry. A page whose `items`
+   * or `categories` is not an array, whose `next_cursor` is neither a string nor `null`, or whose
+   * `ordering` is neither a string nor `null` is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too, its links redacted.
+   */
+  async listMethodTemplates(query: ListMethodTemplatesQuery = {}): Promise<MethodTemplatePage> {
+    const search = productQuery({
+      ordering: query.ordering,
+      category: query.category,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    const endpoint = `method-templates${search}`;
+    const res = withLinks(await this.requestProductAnswer("GET", endpoint, undefined));
+    const page = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const { items, next_cursor: nextCursor, ordering, categories } = page;
+    let fault: string | undefined;
+    if (!Array.isArray(items)) fault = "`items` is not an array";
+    else if (nextCursor !== null && typeof nextCursor !== "string") {
+      fault = "`next_cursor` is neither a string nor null";
+    } else if (ordering !== null && typeof ordering !== "string") {
+      fault = "`ordering` is neither a string nor null";
+    } else if (!Array.isArray(categories)) fault = "`categories` is not an array";
+    if (fault !== undefined) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a page of templates whose ${fault}`,
+      );
+    }
+    return {
+      items: items as MethodTemplate[],
+      nextCursor: nextCursor as string | null,
+      ordering: ordering as string | null,
+      categories: categories as MethodTemplatePage["categories"],
+    };
+  }
+
+  /**
+   * Every template of the catalog, in the order served — follows `listMethodTemplates`'s cursor
+   * for you, with the same `ordering` and `category` on every page. It stops on a `null` cursor or
+   * on a cursor the server failed to advance, and throws `PagingNotTerminatingError` past a page
+   * ceiling no real catalog reaches. The ordering served and the categories are on each page, so
+   * read one page with `listMethodTemplates` when you need them.
+   */
+  async *iterateMethodTemplates(
+    query: Omit<ListMethodTemplatesQuery, "cursor"> = {},
+  ): AsyncGenerator<MethodTemplate, void, undefined> {
+    yield* followCursor("listMethodTemplates", (cursor) =>
+      this.listMethodTemplates({ ...query, cursor }),
+    );
+  }
+
+  /**
+   * Read one method with its files — `GET /v1/methods/{id}`. One of the caller's organization's
+   * methods answers a `MethodDetail`: its identity, its draft
    * (`files`, `input_data`) with the draft's token (`updated_at`) and digest (`draft_digest`),
    * and its latest published version's summary (`latest_version`, `latest_published`), whatever
    * the publish state. A method never published reads with both `null`, never as an error.
    * `files` lists the draft's tree in tree path order, each file with its SHA-256, its size and a
    * link to its bytes valid for about fifteen minutes, and is empty for an empty draft;
    * `writeMethodTree` brings the tree to disk.
+   *
+   * **Another organization's public method reads too, in a narrower shape**, a
+   * `PublicMethodDetail`: its latest published version, that version's description, categories
+   * and files, and nothing of its draft or of the owner's people, so no `updated_at` to write or
+   * publish with. Narrow the answer with `"updated_at" in method` before reading the draft.
    *
    * Takes a bare catalog id: the method routes address the method itself, never a version of
    * it. A caller holding `mt_…@3` strips the suffix with `parseMethodSelector` and reads that
@@ -2910,16 +2997,22 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * and for an id that is empty, `.` or `..`, which the URL would resolve into another route's
    * path.
    *
-   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown or foreign-org
-   * method, `409` `pipelex.catalog.being_deleted` while its erasure runs, and a `500`
-   * `runtime.unexpected` for a method whose draft names a tree the platform holds no record of. An
-   * answer whose `files` is not a listing is an answer the SDK cannot read, thrown as an
+   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown method, for
+   * another organization's internal one, and for a public one made internal again or being
+   * erased; `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method
+   * runs; and a `500` `runtime.unexpected` for a method whose tree the platform holds no record
+   * of. An answer whose `files` is not a listing is an answer the SDK cannot read, thrown as an
    * `ApiResponseError` too.
    */
-  async getMethod(methodId: string): Promise<MethodDetail> {
+  async getMethod(methodId: string): Promise<MethodDetail | PublicMethodDetail> {
     const endpoint = methodPath(methodId, "getMethod");
     const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    return this.readSavedTree<MethodDetail>("GET", endpoint, withLinks(res), "a stored method");
+    return this.readSavedTree<MethodDetail | PublicMethodDetail>(
+      "GET",
+      endpoint,
+      withLinks(res),
+      "a stored method",
+    );
   }
 
   /**
@@ -3450,9 +3543,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * The answer is a `MethodPublishResult` discriminated on `outcome` — branch on it:
    * `published` with the new `version`; `unchanged` with the existing latest `version`;
-   * `refused` with a `reason` (`invalid`, or `not_runnable` for a draft that validates with
-   * pending signatures), a `message` and the runner's `validation` verdict, whose problem items
-   * are read member by member as `validate` reads them. Every arm carries the `method`. A publish
+   * `refused` with a `reason`, a `message` and the runner's `validation` verdict, whose problem
+   * items are read member by member as `validate` reads them. The reason is `invalid`, or
+   * `not_runnable` for a draft that validates with pending signatures, and for a public method
+   * also `thumbnail_missing`, `thumbnail_invalid` or `storage_reference` (see
+   * `MethodPublishRefusalReason`); a reason this SDK does not know is passed through as its raw
+   * string, still a verdict, so show its `message`. Every arm carries the `method`. A publish
    * moves no token.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` when
@@ -3467,7 +3563,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * cannot be reached, answers unusably or does not finish within the platform's deadline is a
    * `502` or a `503` with nothing written, so a retry is safe; a runner that refuses the request
    * itself is relayed under its own status. A retry of a publish that landed while its answer was
-   * lost, as on a client timeout, answers `unchanged` with the version it wrote.
+   * lost, as on a client timeout, answers `unchanged` with the version it wrote. A method made
+   * public while its publish ran is a `503` with nothing written, safe to retry, which a retry
+   * judges as a public method's publish.
    *
    * An answer whose `outcome` is not one of the outcomes above, that carries no `method` object,
    * or a refusal whose `validation` is not a verdict object with a boolean `is_valid`, is an answer
@@ -3521,11 +3619,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Pass the page's `nextCursor` back as `cursor` to continue; `null` is the last page. A page
    * may be short while `nextCursor` is set, because the platform reads versions whole. A method
-   * never published answers an empty page.
+   * never published answers an empty page. Another organization's public method lists its
+   * versions too, each without its `published_by`.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
-   * `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and
-   * `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
+   * `pipelex.catalog.not_found` for an unknown method and for another organization's internal
+   * one, `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs,
+   * and `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
    * outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a
    * string nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
@@ -3541,12 +3641,15 @@ export class PipelexApiClient implements HostedProtocolSurface {
   /**
    * One published version of a method, with its files — `GET /v1/methods/{id}/versions/{n}`.
    * `files` lists the version's tree as `getMethod` lists the draft's, each file with a link to
-   * its bytes valid for about fifteen minutes, which `writeMethodTree` writes to disk.
+   * its bytes valid for about fifteen minutes, which `writeMethodTree` writes to disk. Another
+   * organization's public method reads its versions too, without their `published_by`, the files
+   * linked in the organization that holds it.
    *
    * Takes a bare catalog id, as `getMethod` does, and the version number. Throws
    * `RequestArgumentError` for a `version` that is not a positive integer, before any request.
    * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for a version the method never
-   * published and for an unknown method, `409` `pipelex.catalog.being_deleted`, and `500`
+   * published, for an unknown method and for another organization's internal one, `409`
+   * `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs, and `500`
    * `runtime.unexpected` for a version stored before methods were trees and never rewritten as
    * one, which names no tree to serve.
    */
@@ -3581,10 +3684,16 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * original stays as it was. The copy takes the draft, never the latest published version; with
    * `expected_draft_updated_at`, it takes exactly the draft the caller last saw.
    *
+   * **Another organization's public method copies too**, a template of the catalog among them,
+   * from its latest published version rather than its draft: that version's tree, description and
+   * categories, and the method's examples, never the owner's form inputs, with `copied_from`
+   * naming the `version`. Leave `expected_draft_updated_at` out then: sent with such a method, it
+   * is refused with a `422` `request.invalid` naming it.
+   *
    * The answer is a `MethodCopyResult` discriminated on `outcome` — branch on it: `copied` with
    * the copy as `method`, `examples_copied` and `stored_files_copied`; `refused` with the
    * `reason` `bundle_names_other_storage`, a `message` and every `references` entry (`{ path, uri
-   * }`) a `.mthds` file of the draft holds that the destination cannot read and, in a duplicate,
+   * }`) a `.mthds` file of the tree holds that the destination cannot read and, in a duplicate,
    * that names a file under the original's run files, which erasing the original would remove,
    * nothing written.
    *
@@ -3603,7 +3712,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * that is not from a web session, or for a role that may not change methods, in the method's
    * organization or in the destination; `404` `pipelex.org.not_found` for a destination the
    * caller does not belong to, still being set up or unknown, alike; `404`
-   * `pipelex.catalog.not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`;
+   * `pipelex.catalog.not_found` for an unknown method and for another organization's internal
+   * one; `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs;
    * `409` `pipelex.catalog.update_conflict` for a draft that moved since
    * `expected_draft_updated_at`; a `409` whose `domain` is `runtime` and `retry` `no`, for a
    * draft whose tree the method's organization holds no record of or no longer holds every file

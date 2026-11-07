@@ -243,6 +243,7 @@ class TestClientProduct:
 
         method = asyncio.run(client.get_method("m1"))
 
+        assert isinstance(method, MethodDetail)
         assert method.draft_digest is None
         assert method.files == []
 
