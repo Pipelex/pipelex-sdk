@@ -546,8 +546,8 @@ export interface MethodVersionPage {
 // organization, with a published version. Every organization reads the same catalog: the templates
 // a named ordering lists lead, in its order, and the others follow by name. A template reads, runs
 // and copies by its `method_id` as any public method does. The catalog's categories are a list an
-// admin of the platform keeps, in its order, each with a label in every language the platform
-// speaks; a template shows under the categories its manifest declares that are on the list.
+// admin of the platform keeps, in its order, each with its labels in the languages it has been
+// given; a template shows under the categories its manifest declares that are on the list.
 
 /**
  * One category of the catalog's list: the slug a manifest declares, and the labels a person reads.
