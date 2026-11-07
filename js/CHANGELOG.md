@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The template catalog**: `listMethodTemplates` reads `GET /v1/method-templates` with its optional `ordering`, `category`, `limit` and `cursor`, answering a `MethodTemplatePage` with the templates in the platform's order, the `ordering` served and the `categories` at least one template shows, and `iterateMethodTemplates` follows the cursor with the same ordering and category; each `MethodTemplate` carries its thumbnails as `MethodTemplateThumbnail`s behind short-lived links, and a page whose templates or categories lack a member a card is drawn from is an answer the SDK cannot read, its links redacted (`docs/public-methods.md`).
+- **`visibility` and `categories` on a method**: a method read (not a list row) carries `visibility`, a `MethodVisibility` (`internal` or `public`) read open, and `categories`, the catalog slugs its manifest declares, both absent from a platform that predates them, `visibility` then meaning `internal`; each `MethodVersionSummary` carries the version's `categories` and its `thumbnails`, each a `MethodThumbnail` with its path, media type, size in pixels and SHA-256.
+- **A public method's publish refusals**: `MethodPublishRefusalReason` gains `storage_reference`, `thumbnail_missing` and `thumbnail_invalid`, each still a `refused` verdict that `publishMethod` answers rather than throws.
+- **`copied_from.version`**: a copy of another organization's public method names, in `MethodCopiedFrom.version`, the published version it took, its `draft_digest` `null`.
+
+### Changed
+
+- **`getMethod` answers `MethodDetail | PublicMethodDetail` (Breaking)**: another organization's public method reads as a `PublicMethodDetail`, its latest published version with that version's files and nothing of its draft, so code that reads the draft's `updated_at`, `draft_digest`, `input_data` or `copied_from` from `getMethod` narrows first with `"updated_at" in method`; an answer without `updated_at` that carries a member only the owner's read has, and a public read without its `latest_version` and `latest_published`, are answers the SDK cannot read.
+- **`MethodVersionSummary.published_by` is optional (Breaking)**: another organization reading a public method's versions gets no publisher, so code reading `published_by` handles its absence.
+- **`MethodPublishRefused.reason` is read open (Breaking)**: it is typed `MethodPublishRefusalReason | (string & {})`, so a reason a later platform adds arrives as its raw string, still a verdict, and a `switch` over it needs a default branch.
+
+### Fixed
+
+- **`publishMethod` checks a refusal's `reason` and `message`**: a refused answer whose `reason` or `message` is not a string is an answer the SDK cannot read, thrown as an `ApiResponseError`, as the Python SDK refuses it, rather than a verdict typed as a string it does not hold.
+
 ## [v0.60.0] - 2026-11-06
 
 ### Added

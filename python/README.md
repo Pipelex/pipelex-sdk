@@ -107,9 +107,10 @@ A saved method has a draft, written freely and never validated, and immutable pu
 from pathlib import Path
 
 from pipelex_sdk.method_selector import parse_method_selector
-from pipelex_sdk.product_models import MethodDraftInput, MethodPublishRefused
+from pipelex_sdk.product_models import MethodDetail, MethodDraftInput, MethodPublishRefused
 
 method = await client.get_method("mt_123")
+assert isinstance(method, MethodDetail)  # your own method, with its draft; another organization's public one reads narrower
 tree = await client.list_method_tree(Path("methods/demo"))
 draft = await client.write_draft("mt_123", MethodDraftInput(tree=tree, expected_updated_at=method.updated_at))
 result = await client.publish_method("mt_123", expected_draft_updated_at=draft.updated_at)
@@ -153,16 +154,33 @@ A copy is a new, unpublished method in an organization you may change methods in
 ```python
 import uuid
 
-from pipelex_sdk.product_models import MethodCopied
+from pipelex_sdk.product_models import MethodCopied, MethodDetail
 
 method = await client.get_method("mt_123")
-result = await client.copy_method(
-    "mt_123", destination_org_id="org_team", expected_draft_updated_at=method.updated_at, idempotency_key=str(uuid.uuid4())
-)
+token = method.updated_at if isinstance(method, MethodDetail) else None  # a public method of another organization takes none
+result = await client.copy_method("mt_123", destination_org_id="org_team", expected_draft_updated_at=token, idempotency_key=str(uuid.uuid4()))
 if isinstance(result, MethodCopied):
     print(result.method.method_id, result.method.copied_from)
 else:
     print(result.message, [reference.uri for reference in result.references])
+```
+
+### Browse the template catalog
+
+The template catalog is the public methods every organization reads, in the order the platform serves, with the categories at least one template shows and each card's thumbnails behind short-lived links. Another organization's public method reads in a narrower shape, a `PublicMethodDetail` holding its latest published version and nothing of its draft, which runs and copies like any method; a public method's publish adds refusals of its own, still verdicts ([`docs/public-methods.md`](docs/public-methods.md)):
+
+```python
+from pipelex_sdk.product_models import PublicMethodDetail
+
+page = await client.list_method_templates(category="human-resources", limit=8)
+for tab in page.categories:
+    print(tab.slug, tab.label)
+async for template in client.iterate_method_templates(ordering="default"):  # every template, in the order served
+    print(template.name, [thumbnail.width for thumbnail in template.thumbnails])
+if page.items:
+    read = await client.get_method(page.items[0].method_id)
+    if isinstance(read, PublicMethodDetail):
+        print(read.latest_published.categories)
 ```
 
 ### Find, link and zip the organization's files

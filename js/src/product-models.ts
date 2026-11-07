@@ -1,6 +1,6 @@
 /**
  * Pipelex-product wire models — the snake_case JSON shapes the hosted-product
- * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
+ * routes (`/v1/me`, `/v1/methods` and its examples, `/v1/method-templates`, `/v1/organizations`, `/v1/branding`, `/v1/billing/*`,
  * `/v1/pipelex-api-keys`, `/v1/onboarding/submit`,
  * `/v1/resolve-storage-url`, `/v1/upload`, `/v1/upload/grant`, `/v1/files`, `/v1/runs`) speak.
  *
@@ -57,8 +57,31 @@ export interface SavedMethodFile {
 }
 
 /**
+ * One image directly under a method tree's `thumbnails/` folder, as the publish that recorded it on
+ * a version measured it from its bytes. Its aspect ratio is never declared: read it from `width`
+ * and `height`, and draw the thumbnail closest to the shape you draw. A version records only the
+ * valid ones (a PNG, JPEG or WebP of at least 800×400 pixels), so an image the platform refused is
+ * simply absent.
+ */
+export interface MethodThumbnail {
+  /** The image's tree path, `thumbnails/` and its file name. */
+  path: string;
+  /** The media type sniffed from its bytes: `image/png`, `image/jpeg` or `image/webp`. */
+  media_type: string;
+  /** Its width in pixels, as a browser draws it. */
+  width: number;
+  /** Its height in pixels, as a browser draws it. */
+  height: number;
+  /** The SHA-256 of its bytes, 64 lowercase hex characters: its hash in the tree. */
+  sha256: string;
+}
+
+/**
  * One published version without its files — what `listMethodVersions` lists, what a
  * method read carries as `latest_published`, and what a publish answers as `version`.
+ *
+ * Read from another organization's public method, it carries no `published_by`: the
+ * publisher's user id does not cross organizations.
  */
 export interface MethodVersionSummary {
   /** The version number, from 1, never reused and never renumbered. */
@@ -78,21 +101,34 @@ export interface MethodVersionSummary {
   crate_fingerprint: string | null;
   /** The version of the runner that validated the bundle and computed the fingerprint. */
   runner_version: string | null;
-  /** The bundle's top-level `description` at publish time. */
+  /** The method's description at publish time, as the draft held it (see `MethodData.description`). */
   description: string | null;
+  /**
+   * The method's categories at publish time, as slugs of the catalog's list (see
+   * `MethodData.categories`); absent from a platform that predates them.
+   */
+  categories?: string[];
+  /**
+   * The valid images directly under the version's `thumbnails/` folder, in tree path order, as
+   * the publish measured them; empty when the version records none, and absent from a platform
+   * that predates them.
+   */
+  thumbnails?: MethodThumbnail[];
   /** ISO-8601 UTC instant of the publish. */
   published_at: string;
   /**
    * The publisher's canonical user id, or `system:publish-initial` for a version the one-time
-   * migration wrote for a method saved before versions existed.
+   * migration wrote for a method saved before versions existed. Absent when another organization
+   * reads a public method.
    */
-  published_by: string;
+  published_by?: string;
 }
 
 /**
  * One published version with its files — `getMethodVersion`. It carries no `name`, which
  * belongs to the method and changes without a publish, and no `input_data`, which is the
- * editor's form state and not part of what a caller runs.
+ * editor's form state and not part of what a caller runs. Read from another organization's public
+ * method, it carries no `published_by`, and its files are linked in the organization that holds it.
  */
 export interface MethodVersion extends MethodVersionSummary {
   method_id: string;
@@ -102,7 +138,8 @@ export interface MethodVersion extends MethodVersionSummary {
 
 /**
  * A saved method — `createMethod`, `writeDraft`, `renameMethod`, and the `method` of every
- * publish outcome; `getMethod` answers it with the draft's files (`MethodDetail`). Its draft is
+ * publish outcome; `getMethod` answers it with the draft's files (`MethodDetail`) for the caller's
+ * own method, and another organization's public one as a `PublicMethodDetail`. Its draft is
  * named by `draft_digest`; the latest published version is summarized in `latest_published`.
  *
  * The publish state a client shows is derived, never stored: never published
@@ -120,11 +157,19 @@ export interface MethodData {
   /** Legacy persisted output spec; optional. */
   pipe_output?: Record<string, unknown> | null;
   /**
-   * Derived from the draft's top-level `description`. Read-side only: the
-   * server recomputes it from the draft on every draft write, so it never appears on
-   * the write contract.
+   * The draft's description, read from its files: the `description` of its `METHODS.toml`
+   * manifest, else the top-level `description` of its primary bundle, else its main pipe's, a
+   * blank one counting as none at each step. Read-side only: the server recomputes it from the
+   * draft on every draft write, so it never appears on the write contract.
    */
   description?: string | null;
+  /**
+   * The draft's categories, read from its manifest's `categories` under `[package]` and kept when
+   * they are on the catalog's list, as slugs such as `human-resources`, in their declared order;
+   * empty for a draft with no manifest or none it knows, and absent from a platform that predates
+   * them. A person reads a category's label, which `listMethodTemplates` names beside its slug.
+   */
+  categories?: string[];
   created_at: string;
   /**
    * **The draft's token.** It moves on every draft write and on nothing else: creation sets
@@ -157,7 +202,18 @@ export interface MethodData {
    * is made, and never rewritten. The list rows (`MethodSummary`) do not carry it.
    */
   copied_from?: MethodCopiedFrom | null;
+  /**
+   * Who may see the method: `internal`, the members of the organization that holds it, or
+   * `public`, every organization, which reads, runs and copies its published versions. Only an
+   * admin of the platform sets it, and no route of this client writes it. Absent from a platform
+   * that predates it, which means `internal`, and read open, so a value a later platform adds
+   * arrives as its raw string. The list rows (`MethodSummary`) do not carry it.
+   */
+  visibility?: MethodVisibility | (string & {});
 }
+
+/** Who may see a method — `MethodData.visibility`. */
+export type MethodVisibility = "internal" | "public";
 
 /**
  * The method a copy was made from, as it stood at the copy — `MethodData.copied_from`. Opaque ids
@@ -170,16 +226,59 @@ export interface MethodCopiedFrom {
   org_id: string;
   /** The original's method id. */
   method_id: string;
-  /** The digest of the original's draft the copy took; `null` for an empty draft. */
+  /**
+   * The digest of the original's draft the copy took; `null` for an empty draft, and for a copy of
+   * another organization's public method, which takes a published version rather than the draft.
+   */
   draft_digest: string | null;
+  /**
+   * The published version the copy took, on a copy of another organization's public method;
+   * `null` or absent on a copy of a draft.
+   */
+  version?: number | null;
 }
 
 /**
- * A saved method with its draft's files — what `getMethod` answers. `files` lists the draft's
- * tree in tree path order, each file with its SHA-256, its size and a link to its bytes valid for
- * about fifteen minutes, and is empty for an empty draft; `writeMethodTree` brings it to disk.
+ * A saved method of the caller's organization with its draft's files — what `getMethod` answers
+ * for one of the caller's own methods. `files` lists the draft's tree in tree path order, each
+ * file with its SHA-256, its size and a link to its bytes valid for about fifteen minutes, and is
+ * empty for an empty draft; `writeMethodTree` brings it to disk.
  */
 export interface MethodDetail extends MethodData {
+  files: SavedMethodFile[];
+}
+
+/**
+ * Another organization's public method, as a reader outside that organization sees it — what
+ * `getMethod` answers for a method of another organization that is public. It is the latest
+ * published version, never the draft: `description` and `categories` are that version's, and
+ * `files` is its tree, linked in the organization that holds it, which `writeMethodTree` writes
+ * as it writes any listing.
+ *
+ * It carries nothing of the draft and nothing of the owner's people: no `updated_at` (the draft's
+ * token), `draft_digest`, `input_data`, `pipe_output`, `created_by_user_id`, `copied_from` or
+ * `deletion_state`, and its `latest_published` no `published_by`. So `"updated_at" in method`
+ * tells a `MethodDetail` from it. Every write of it is the owner's alone: from another
+ * organization, a write answers `404` `pipelex.catalog.not_found`, while `copyMethod` copies it and
+ * the run routes run it by its bare id or `mt_…@<n>`, never `@draft`.
+ */
+export interface PublicMethodDetail {
+  method_id: string;
+  /** The canonical id of the organization that holds the method. */
+  org_id: string;
+  name: string;
+  /** The latest published version's description. */
+  description: string | null;
+  /** The latest published version's categories, as slugs of the catalog's list. */
+  categories: string[];
+  created_at: string;
+  /** The number of the latest published version, the one a reader reads, runs and copies. */
+  latest_version: number;
+  /** The latest published version's summary, without its publisher. */
+  latest_published: MethodVersionSummary;
+  /** `public`: another organization reads a method only while it is public. */
+  visibility: MethodVisibility | (string & {});
+  /** The latest published version's tree, one entry per file in tree path order. */
   files: SavedMethodFile[];
 }
 
@@ -348,10 +447,23 @@ export interface MethodPublishInput {
 export type MethodPublishOutcome = "published" | "unchanged" | "refused";
 
 /**
- * Why a draft was not published: `invalid`, it does not validate; `not_runnable`, it validates
- * with pending signatures, so it is valid but does not run yet.
+ * Why a draft was not published:
+ *
+ * - `invalid`: it does not validate;
+ * - `not_runnable`: it validates with pending signatures, so it is valid but does not run yet;
+ * - `thumbnail_missing`: the method is public, and the draft's tree holds no file directly under
+ *   `thumbnails/`, or none was read in time;
+ * - `thumbnail_invalid`: the method is public, and no file directly under the draft's
+ *   `thumbnails/` is a valid thumbnail (a PNG, JPEG or WebP of at least 800×400 pixels);
+ * - `storage_reference`: the method is public, and a `.mthds` file of the draft names a
+ *   `pipelex-storage://` file, which other organizations cannot read.
+ *
+ * `thumbnail_missing`, `thumbnail_invalid` and `storage_reference` refuse only a public method's
+ * publish, so that the card of a template never loses its picture and every organization can run
+ * what it reads.
  */
-export type MethodPublishRefusalReason = "invalid" | "not_runnable";
+export type MethodPublishRefusalReason =
+  "invalid" | "not_runnable" | "thumbnail_missing" | "thumbnail_invalid" | "storage_reference";
 
 /** A publish that wrote a new version. */
 export interface MethodPublished {
@@ -375,14 +487,22 @@ export interface MethodPublishUnchanged {
 /** A publish the draft's content refused: nothing was published. */
 export interface MethodPublishRefused {
   outcome: "refused";
-  reason: MethodPublishRefusalReason;
-  /** Says why; for `not_runnable`, that the draft "is valid but does not run yet". */
+  /**
+   * Why: a `MethodPublishRefusalReason`, or the raw string of one this SDK does not know, which a
+   * later platform may add. A refusal is a verdict whatever its reason, so show its `message`
+   * when the reason is one you do not handle.
+   */
+  reason: MethodPublishRefusalReason | (string & {});
+  /**
+   * Says why, for a person; for `not_runnable`, that the draft "is valid but does not run yet",
+   * and for the thumbnail refusals, what the image must be.
+   */
   message: string;
   /**
    * The runner's `POST /v1/validate` answer for the draft, read member by member as `validate`
    * reads it: an invalid arm whose `errors`, problem items, say what to fix, or, for
-   * `not_runnable`, the valid arm. An entry that names no fault is left out, and a member the
-   * standard declares is kept only when it is well-formed.
+   * `not_runnable` and the refusals of a public method, the valid arm. An entry that names no
+   * fault is left out, and a member the standard declares is kept only when it is well-formed.
    */
   validation: PipelexValidationResult;
   method: MethodData;
@@ -419,6 +539,93 @@ export interface MethodVersionPage {
   nextCursor: string | null;
 }
 
+// ── The template catalog (`/v1/method-templates`) ─────────────────────────
+//
+// A template is a public method held by the organization the deployment names as its templates
+// organization, with a published version. Every organization reads the same catalog: the templates
+// a named ordering lists lead, in its order, and the others follow by name. A template reads, runs
+// and copies by its `method_id` as any public method does.
+
+/** One category of the catalog's list: the slug a manifest declares, and the English label a person reads. */
+export interface MethodCategory {
+  /** The stable slug, such as `human-resources`, which a method's `categories` hold. */
+  slug: string;
+  /** The English label, such as `Human resources`; a client translating by slug falls back on it. */
+  label: string;
+}
+
+/** One thumbnail of a template's latest published version, with a link to its bytes. */
+export interface MethodTemplateThumbnail extends MethodThumbnail {
+  /**
+   * A link to the image's bytes, signed by storage, which a browser loads with no credential. It is
+   * a bearer credential until it expires: keep it out of logs, messages and stored records.
+   */
+  url: string;
+  /** ISO-8601 UTC instant the link stops working, about fifteen minutes after the read. */
+  expires_at: string;
+}
+
+/** One card of the template catalog: a template as its latest published version shows it. */
+export interface MethodTemplate {
+  /** The template's catalog id, which `getMethod`, the run routes and `copyMethod` take. */
+  method_id: string;
+  /** The method's name. */
+  name: string;
+  /** The latest published version's description; `null` when it has none. */
+  description: string | null;
+  /** The number of the latest published version, the one a reader reads, runs and copies. */
+  latest_version: number;
+  /** The latest published version's categories, as slugs of the catalog's list. */
+  categories: string[];
+  /** The display name of the organization that holds the template. */
+  organization_name: string;
+  /**
+   * The latest published version's thumbnails, each with its size and a link; draw the one whose
+   * `width` and `height` come closest to the shape you draw.
+   */
+  thumbnails: MethodTemplateThumbnail[];
+}
+
+/** Query for one page of the template catalog — `listMethodTemplates`. */
+export interface ListMethodTemplatesQuery {
+  /**
+   * The ordering to serve, such as `default` or an arm of a test; an absent, unknown or malformed
+   * name serves `default`. The answer's `ordering` names the one served.
+   */
+  ordering?: string;
+  /**
+   * Keep the templates of this category, by its slug, in the same order; a slug no template shows
+   * keeps none.
+   */
+  category?: string;
+  /** Page size, from 1 to 200; the API defaults to 50 and refuses one outside that range with a `422`. */
+  limit?: number;
+  /** Opaque `nextCursor` from the previous page, sent with the same `ordering` and `category`. */
+  cursor?: string;
+}
+
+/**
+ * One page of the template catalog, in the order served, kept to the category asked for.
+ *
+ * `nextCursor` is opaque — pass it back to `listMethodTemplates` with the same `ordering` and
+ * `category`, which the cursor does not hold; `null` means this was the last page. A page resumes
+ * after the last template the page before served, wherever the catalog now places it, so a template
+ * added or removed elsewhere between two pages neither repeats nor skips the ones around that point.
+ * `ordering` and `categories` describe the whole catalog on every page.
+ */
+export interface MethodTemplatePage {
+  /** The page's templates: those the ordering lists first, in its order, then the others by name. */
+  items: MethodTemplate[];
+  nextCursor: string | null;
+  /** The name of the ordering served; `null` when there is none, the templates then listed by name. */
+  ordering: string | null;
+  /**
+   * Every category at least one template shows, whatever the filter, in the catalog's order, each
+   * with its label: the tabs a client draws, none of them ever empty.
+   */
+  categories: MethodCategory[];
+}
+
 // ── Method copies (`/v1/methods/{id}/copy`) ──────────────────────────────
 //
 // A copy is a new, unpublished method in a destination organization holding the original's draft,
@@ -442,6 +649,9 @@ export interface MethodCopyInput {
    * The original's draft token (`MethodData.updated_at`) the caller last saw, echoed verbatim: a
    * draft that moved since is refused with a `409` `pipelex.catalog.update_conflict`, and nothing
    * is copied. Omitted or `null`, the copy takes the draft as it stands when the request is served.
+   * Leave it out when copying another organization's public method: that copy takes the latest
+   * published version, never the draft, and the field sent with it is refused with a `422`
+   * `request.invalid` naming it.
    */
   expected_draft_updated_at?: string | null;
 }

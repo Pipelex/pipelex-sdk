@@ -252,7 +252,10 @@ for entry in page.outputs:
 The answer is a `DraftFileFromFileResult`, a `200` discriminated on `blob`, a `DraftFileBlob`: `copied`, or `already_held` when the organization's blob store already held the bytes and nothing was copied. Both carry the `file` as the draft's tree now names it, a `DraftFileAdded` with its `path`, `sha256` and `size`, and the `method` as the draft write stored it, a `MethodData` whose `updated_at` is the new draft token.
 
 ```python
+from pipelex_sdk.product_models import MethodDetail
+
 method = await client.get_method("mt_abc123")
+assert isinstance(method, MethodDetail)  # your own method: another organization's public one has no draft to write
 added = await client.copy_file_into_draft("mt_abc123", file_id="fl_0199", path="assets/logo.png", expected_updated_at=method.updated_at)
 draft_token = added.method.updated_at
 ```

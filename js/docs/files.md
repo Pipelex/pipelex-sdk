@@ -231,6 +231,7 @@ The answer is a `DraftFileFromFileResult`, a `200` discriminated on `blob`: `cop
 
 ```ts
 const method = await client.getMethod("mt_abc123");
+if (!("updated_at" in method)) throw new Error("only the owner writes a method's draft");
 const added = await client.copyFileIntoDraft("mt_abc123", {
   file_id: "fl_0199",
   path: "assets/logo.png",

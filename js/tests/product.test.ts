@@ -354,7 +354,9 @@ describe("methods catalog", () => {
     const client = makeClient();
     const spy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(jsonResponse(200, { method_id: "a/b", files: [] }));
+      .mockResolvedValue(
+        jsonResponse(200, { method_id: "a/b", updated_at: "2026-10-08T09:00:00Z", files: [] }),
+      );
 
     await client.getMethod("a/b");
 

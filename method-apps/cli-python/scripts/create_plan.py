@@ -46,7 +46,6 @@ from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.pipe_io_contracts import PipeIOContract, PipeIOContracts
 from pipelex_sdk.crate_models import CodegenValidReport, PipeIOValidReport
 from pipelex_sdk.method_selector import parse_method_selector
-from pipelex_sdk.product_models import MethodData
 from pydantic import BaseModel
 
 from pipelex_method_cli_python.cli import RESERVED_FLAGS
@@ -78,10 +77,17 @@ class PlanError(Exception):
     """A refusal: something asked for cannot be done, and the message says what to do instead. Nothing was written."""
 
 
+class NamedMethod(Protocol):
+    """What the gesture reads of a stored method: its name, which the owner's read and another organization's public read both carry."""
+
+    @property
+    def name(self) -> str: ...
+
+
 class CreateClient(CodegenClient, Protocol):
     """What the gesture needs of a client: the codegen kit's routes, and the catalog's `GET /v1/methods/{id}`."""
 
-    async def get_method(self, method_id: str) -> MethodData: ...
+    async def get_method(self, method_id: str) -> NamedMethod: ...
 
 
 # ── The argument ────────────────────────────────────────────────────────────
