@@ -5,13 +5,14 @@ A stored method belongs to the organization that holds it, and access to it come
 ```python
 import uuid
 
-from pipelex_sdk.product_models import MethodCopied, MethodCopyRefused
+from pipelex_sdk.product_models import MethodCopied, MethodCopyRefused, MethodDetail
 
 method = await client.get_method("mt_abc123")
 result = await client.copy_method(
     method.method_id,
     destination_org_id="org_team",
-    expected_draft_updated_at=method.updated_at,
+    # Another organization's public method has no draft to name: its copy takes no token.
+    expected_draft_updated_at=method.updated_at if isinstance(method, MethodDetail) else None,
     idempotency_key=str(uuid.uuid4()),
 )
 match result:
@@ -46,9 +47,11 @@ It takes a bare catalog id, as every method route does, and refuses a suffixed o
 | Published versions | None: the copy starts unpublished, its `latest_version` and `latest_published` `None`, and its own publish makes version 1 |
 | Runs | None: a run stays in the organization that ran it and was billed for it |
 | `method_id`, `org_id`, `created_by_user_id`, `created_at` | A new id, the destination, the copier and the moment of the copy |
-| `copied_from` | `{ org_id, method_id, draft_digest }` of the original, as it stood at the copy, its `draft_digest` `None` when the original's draft held no files |
+| `copied_from` | `{ org_id, method_id, draft_digest }` of the original, as it stood at the copy, its `draft_digest` `None` when the original's draft held no files; for another organization's public method, `{ org_id, method_id, draft_digest, version }`, `version` the version copied and `draft_digest` always `None` |
 
 **The copy takes the draft, never the latest published version.** The draft is what the person sees in the editor, and the copy goes through its own first publish anyway; an invalid draft is copied as it is, and the copy's publish refuses it as it would any draft. With `expected_draft_updated_at`, the copy takes exactly the draft the caller last saw: a draft that moved since is a `409` `pipelex.catalog.update_conflict`, and nothing is copied. A client that has just saved the editor's pending edits sends the token that save answered.
+
+**Another organization's public method copies from its latest published version** instead, since its draft is the owner's: that version's tree, description and categories, and the method's saved examples, but not the owner's form inputs. The copy's `copied_from` names the `version` it took. The caller never saw that method's draft, so `expected_draft_updated_at` sent with it is a `422` `request.invalid` naming the field. [public-methods.md](./public-methods.md) describes public methods.
 
 **A stored file named by an input is copied.** A `pipelex-storage://` address resolves only inside the organization it names, so every such address in the original's organization, in the form inputs and in each example's inputs, is copied into the destination's `assets/` under a new address, and the value is rewritten to it; a file named twice is copied once. A duplicate keeps every address of the organization as it is, an upload's above all, since the organization is the same, and copies only the files the original method's own runs stored, under `pipelex-storage://<org_id>/<method_id>/…`, which erasing the original would sweep away. An address of another organization, a malformed one and one whose file is gone are kept unchanged. The destination records each copied file among its files, attributed to the copier. `stored_files_copied` counts the distinct files copied.
 
@@ -75,12 +78,12 @@ A non-2xx answer means no verdict could be produced, and none of them leaves any
 |---|---|---|
 | `403` | `auth.forbidden` | The request is not from a web session, or the caller's role changes no method, `runner` or a role the platform does not know, in the method's organization or in the destination: the role must change. |
 | `404` | `pipelex.org.not_found` | The destination is one the caller does not belong to, one whose invitation they have not accepted, one still being set up, or one that does not exist. The platform answers them alike, so it never says whether an organization exists. |
-| `404` | `pipelex.catalog.not_found` | An unknown method. The destination is judged first, so an unknown method in a destination the caller may not write to reads `pipelex.org.not_found`. |
+| `404` | `pipelex.catalog.not_found` | An unknown method, or another organization's method that is not public. The destination is judged first, so an unknown method in a destination the caller may not write to reads `pipelex.org.not_found`. |
 | `409` | `pipelex.catalog.being_deleted` | The original's erasure has started. |
 | `409` | `pipelex.catalog.update_conflict` | The draft moved since `expected_draft_updated_at`; `location.field` names that member. Read the method again and copy with the fresh token. |
 | `409` | | The method's organization holds no record of the draft's tree, or no longer holds every file of it: its `domain` is `runtime` and its `retry` `no`, a stored record contradicting itself that neither the caller nor a retry can mend. No registered code names this refusal yet; it is not the `request.idempotency_conflict` of an idempotency key reused with other arguments (below). |
 | `413` | `request.too_large` | A copied example, or the copy's row, does not fit in one stored item. The row keeps room for the summary a publish adds, so a `name` that would leave none is refused. |
-| `422` | `request.invalid` | A body that does not validate, such as a name holding a lone surrogate. |
+| `422` | `request.invalid` | A body that does not validate, such as a name holding a lone surrogate, or an `expected_draft_updated_at` sent to copy another organization's public method. |
 | `422` | `pipelex.catalog.copy_too_large` | The copy passes one of its bounds on the stored files it copies. Its problem's `limit` member, typed `MethodCopyLimit`, names the bound, `max_stored_files` or `max_stored_bytes`, its `value` and what the copy `reached`. Removing examples, or the files they hold, brings it under. |
 | `502` | `runtime.unavailable` | The platform could not read the caller's memberships. Its `retry` is `yes`. |
 | `500` | `pipelex.storage.not_configured` | The platform has no usable credentials for storage. Its `retry` is `no`. |
@@ -120,4 +123,4 @@ Without a key, a copy whose answer was lost cannot be told from one that never r
 
 ## `copied_from` on a method
 
-Every read of a method, `get_method` and the `method` of every write, carries `copied_from`: a `MethodCopiedFrom` (`org_id`, `method_id`, `draft_digest`) of the original on a copy, and `None` on a method created afresh or from a platform that predates copies. It is written once, when the copy is made, and never rewritten, so it names the draft the copy started from even after the original has changed or been erased; its `draft_digest` is `None` for a draft that held no tree. It holds opaque ids only, never a name, and the original's organization may be one the reader does not belong to. The list rows (`MethodSummary`) do not carry it.
+Every read of a method, `get_method` and the `method` of every write, carries `copied_from`: a `MethodCopiedFrom` (`org_id`, `method_id`, `draft_digest`, and `version`, the published version a copy of another organization's public method took, `None` for a copy of a draft) of the original on a copy, and `None` on a method created afresh or from a platform that predates copies. It is written once, when the copy is made, and never rewritten, so it names what the copy started from even after the original has changed or been erased: the draft, by its `draft_digest`, `None` for a draft that held no tree, or, for a copy of another organization's public method, the published `version`, its `draft_digest` `None`. It holds opaque ids only, never a name, and the original's organization may be one the reader does not belong to. The list rows (`MethodSummary`) do not carry it, and neither does another organization's public method read as a `PublicMethodDetail`.

@@ -16,6 +16,7 @@ import type {
   MethodCopyResult,
   MethodData,
 } from "../src/product-models.js";
+import { ownMethod } from "./helpers/method-reads.js";
 import { problemDocument } from "./helpers/problems.js";
 import type { ProblemMembers } from "./helpers/problems.js";
 
@@ -508,8 +509,8 @@ describe("copied_from on a method read", () => {
       .mockResolvedValueOnce(jsonResponse(200, { ...WIRE_COPY, copied_from: null, files: [] }));
     const client = makeClient();
 
-    const copy = await client.getMethod("mt_copy01");
-    const fresh = await client.getMethod("mt_copy01");
+    const copy = ownMethod(await client.getMethod("mt_copy01"));
+    const fresh = ownMethod(await client.getMethod("mt_copy01"));
 
     expect(copy.copied_from).toEqual(COPIED_FROM);
     expect(fresh.copied_from).toBeNull();

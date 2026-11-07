@@ -86,6 +86,7 @@ import type {
   ListFilesQuery,
   ListMethodExamplesQuery,
   ListMethodsQuery,
+  ListMethodTemplatesQuery,
   ListMethodVersionsQuery,
   ListRunFilesQuery,
   MethodCopyInput,
@@ -108,11 +109,14 @@ import type {
   MethodPublishResult,
   MethodRenameInput,
   MethodSummary,
+  MethodTemplate,
+  MethodTemplatePage,
   MethodVersion,
   MethodVersionPage,
   MethodVersionSummary,
   MethodWriteInput,
   OnboardingSubmission,
+  PublicMethodDetail,
   PipelexApiKeyCreated,
   PipelexApiKeyList,
   ListRunsQuery,
@@ -2895,13 +2899,101 @@ export class PipelexApiClient implements HostedProtocolSurface {
   }
 
   /**
-   * Read one method with its draft's files — `GET /v1/methods/{id}`: its identity, its draft
+   * One page of the template catalog — `GET /v1/method-templates`: the public methods of the
+   * organization the deployment names as its templates organization, the same for every caller.
+   *
+   * The templates the ordering lists lead, in its order, and every other template follows by name.
+   * `ordering` names the ordering to serve, such as `default` or an arm of a test; an absent,
+   * unknown or malformed name serves `default`, and the page's `ordering` names the one served,
+   * `null` when there is none. `category` keeps one category's templates, by slug, in the same
+   * order; an unknown slug keeps none. Whatever the filter, the page's `categories` names, with its
+   * label, every category at least one template shows, in the catalog's order, so no tab drawn
+   * from it is ever empty.
+   *
+   * Each `MethodTemplate` carries the method's id and name, its latest published version's number,
+   * description and categories, its organization's display name and each thumbnail with its size
+   * and a link to its bytes valid for about fifteen minutes. A template reads, runs and copies by
+   * its `method_id`, as another organization's public method does (`getMethod`, `copyMethod`).
+   *
+   * Pass the page's `nextCursor` back as `cursor` with the same `ordering` and `category`, which the
+   * cursor does not hold; `null` is the last page. `iterateMethodTemplates` follows it for you.
+   *
+   * Throws `ApiResponseError`: `422` `request.invalid` for a `limit` outside 1 to 200 or a cursor of
+   * another listing, `422` `request.malformed` for a cursor that does not decode, `500`
+   * `runtime.misconfigured` when the templates organization the deployment names has no record or
+   * a link cannot be signed, and `503` `runtime.unavailable`, safe to retry. A page whose `items`
+   * or `categories` is not an array, whose `next_cursor` or `ordering` is neither a string nor
+   * `null`, a template lacking a member a card is drawn from (a string `method_id`, `name` and
+   * `organization_name`, a `description` that is a string or `null`, a positive integer
+   * `latest_version`, an array of string `categories`, and `thumbnails` each with a string `path`,
+   * `media_type`, `sha256`, `url` and `expires_at` and a positive integer `width` and `height`), and a
+   * category without a string `slug` and `label` are an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too, its links redacted.
+   */
+  async listMethodTemplates(query: ListMethodTemplatesQuery = {}): Promise<MethodTemplatePage> {
+    const search = productQuery({
+      ordering: query.ordering,
+      category: query.category,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    const endpoint = `method-templates${search}`;
+    const res = withLinks(await this.requestProductAnswer("GET", endpoint, undefined));
+    const page = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const { items, next_cursor: nextCursor, ordering, categories } = page;
+    let fault: string | null = null;
+    if (!Array.isArray(items)) fault = "`items` is not an array";
+    else if (nextCursor !== null && typeof nextCursor !== "string") {
+      fault = "`next_cursor` is neither a string nor null";
+    } else if (ordering !== null && typeof ordering !== "string") {
+      fault = "`ordering` is neither a string nor null";
+    } else if (!Array.isArray(categories)) fault = "`categories` is not an array";
+    else fault = methodTemplatesFault(items) ?? methodCategoriesFault(categories);
+    if (fault !== null) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a page of templates whose ${fault}`,
+      );
+    }
+    return {
+      items: items as MethodTemplate[],
+      nextCursor: nextCursor as string | null,
+      ordering: ordering as string | null,
+      categories: categories as MethodTemplatePage["categories"],
+    };
+  }
+
+  /**
+   * Every template of the catalog, in the order served — follows `listMethodTemplates`'s cursor
+   * for you, with the same `ordering` and `category` on every page. It stops on a `null` cursor or
+   * on a cursor the server failed to advance, and throws `PagingNotTerminatingError` past a page
+   * ceiling no real catalog reaches. The ordering served and the categories are on each page, so
+   * read one page with `listMethodTemplates` when you need them.
+   */
+  async *iterateMethodTemplates(
+    query: Omit<ListMethodTemplatesQuery, "cursor"> = {},
+  ): AsyncGenerator<MethodTemplate, void, undefined> {
+    yield* followCursor("listMethodTemplates", (cursor) =>
+      this.listMethodTemplates({ ...query, cursor }),
+    );
+  }
+
+  /**
+   * Read one method with its files — `GET /v1/methods/{id}`. One of the caller's organization's
+   * methods answers a `MethodDetail`: its identity, its draft
    * (`files`, `input_data`) with the draft's token (`updated_at`) and digest (`draft_digest`),
    * and its latest published version's summary (`latest_version`, `latest_published`), whatever
    * the publish state. A method never published reads with both `null`, never as an error.
    * `files` lists the draft's tree in tree path order, each file with its SHA-256, its size and a
    * link to its bytes valid for about fifteen minutes, and is empty for an empty draft;
    * `writeMethodTree` brings the tree to disk.
+   *
+   * **Another organization's public method reads too, in a narrower shape**, a
+   * `PublicMethodDetail`: its latest published version, that version's description, categories
+   * and files, and nothing of its draft or of the owner's people, so no `updated_at` to write or
+   * publish with. Narrow the answer with `"updated_at" in method` before reading the draft.
    *
    * Takes a bare catalog id: the method routes address the method itself, never a version of
    * it. A caller holding `mt_…@3` strips the suffix with `parseMethodSelector` and reads that
@@ -2910,16 +3002,36 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * and for an id that is empty, `.` or `..`, which the URL would resolve into another route's
    * path.
    *
-   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown or foreign-org
-   * method, `409` `pipelex.catalog.being_deleted` while its erasure runs, and a `500`
-   * `runtime.unexpected` for a method whose draft names a tree the platform holds no record of. An
-   * answer whose `files` is not a listing is an answer the SDK cannot read, thrown as an
-   * `ApiResponseError` too.
+   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown method, for
+   * another organization's internal one, and for a public one made internal again or being
+   * erased; `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method
+   * runs; and a `500` `runtime.unexpected` for a method whose tree the platform holds no record
+   * of. An answer whose `files` is not a listing is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too, its links redacted, and so is one that lacks `updated_at` while it
+   * carries a member only the owner's read has (`draft_digest`, `created_by_user_id`,
+   * `input_data`, `pipe_output`, `copied_from`, `deletion_state`), which would otherwise pass for
+   * another organization's public method, and a public read without an integer `latest_version`
+   * and a `latest_published` object.
    */
-  async getMethod(methodId: string): Promise<MethodDetail> {
+  async getMethod(methodId: string): Promise<MethodDetail | PublicMethodDetail> {
     const endpoint = methodPath(methodId, "getMethod");
-    const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    return this.readSavedTree<MethodDetail>("GET", endpoint, withLinks(res), "a stored method");
+    const res = withLinks(await this.requestProductAnswer("GET", endpoint, undefined));
+    const method = this.readSavedTree<MethodDetail | PublicMethodDetail>(
+      "GET",
+      endpoint,
+      res,
+      "a stored method",
+    );
+    const fault = methodReadFault(method as unknown as Record<string, unknown>);
+    if (fault !== null) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a stored method ${fault}`,
+      );
+    }
+    return method;
   }
 
   /**
@@ -3450,9 +3562,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * The answer is a `MethodPublishResult` discriminated on `outcome` — branch on it:
    * `published` with the new `version`; `unchanged` with the existing latest `version`;
-   * `refused` with a `reason` (`invalid`, or `not_runnable` for a draft that validates with
-   * pending signatures), a `message` and the runner's `validation` verdict, whose problem items
-   * are read member by member as `validate` reads them. Every arm carries the `method`. A publish
+   * `refused` with a `reason`, a `message` and the runner's `validation` verdict, whose problem
+   * items are read member by member as `validate` reads them. The reason is `invalid`, or
+   * `not_runnable` for a draft that validates with pending signatures, and for a public method
+   * also `thumbnail_missing`, `thumbnail_invalid` or `storage_reference` (see
+   * `MethodPublishRefusalReason`); a reason this SDK does not know is passed through as its raw
+   * string, still a verdict, so show its `message`. Every arm carries the `method`. A publish
    * moves no token.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` when
@@ -3467,11 +3582,14 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * cannot be reached, answers unusably or does not finish within the platform's deadline is a
    * `502` or a `503` with nothing written, so a retry is safe; a runner that refuses the request
    * itself is relayed under its own status. A retry of a publish that landed while its answer was
-   * lost, as on a client timeout, answers `unchanged` with the version it wrote.
+   * lost, as on a client timeout, answers `unchanged` with the version it wrote. A method made
+   * public while its publish ran is a `503` with nothing written, safe to retry, which a retry
+   * judges as a public method's publish.
    *
    * An answer whose `outcome` is not one of the outcomes above, that carries no `method` object,
-   * or a refusal whose `validation` is not a verdict object with a boolean `is_valid`, is an answer
-   * the SDK cannot read, thrown as an `ApiResponseError` too.
+   * or a refusal whose `reason` or `message` is not a string or whose `validation` is not a verdict
+   * object with a boolean `is_valid`, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too.
    */
   async publishMethod(methodId: string, input: MethodPublishInput): Promise<MethodPublishResult> {
     const token: unknown = (input as Partial<MethodPublishInput> | undefined)
@@ -3499,12 +3617,18 @@ export class PipelexApiClient implements HostedProtocolSurface {
     // The refused arm carries the runner's verdict, whose problem items are read member by
     // member as `validate` reads them, so one malformed item never costs the caller the others.
     const validation = answer.validation;
-    if (!isPlainObject(validation) || typeof validation.is_valid !== "boolean") {
+    let fault: string | null = null;
+    if (typeof answer.reason !== "string") fault = "`reason` is not a string";
+    else if (typeof answer.message !== "string") fault = "`message` is not a string";
+    else if (!isPlainObject(validation) || typeof validation.is_valid !== "boolean") {
+      fault = "`validation` is not an object";
+    }
+    if (fault !== null) {
       throw this.unreadableAnswer(
         "POST",
         `/${API_PREFIX}/${endpoint}`,
         res,
-        "a publish result whose `validation` is not an object",
+        `a publish result whose ${fault}`,
       );
     }
     return {
@@ -3521,11 +3645,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Pass the page's `nextCursor` back as `cursor` to continue; `null` is the last page. A page
    * may be short while `nextCursor` is set, because the platform reads versions whole. A method
-   * never published answers an empty page.
+   * never published answers an empty page. Another organization's public method lists its
+   * versions too, each without its `published_by`.
    *
    * Takes a bare catalog id, as `getMethod` does. Throws `ApiResponseError`: `404`
-   * `pipelex.catalog.not_found` for an unknown method, `409` `pipelex.catalog.being_deleted`, and
-   * `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
+   * `pipelex.catalog.not_found` for an unknown method and for another organization's internal
+   * one, `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs,
+   * and `422` `request.invalid` for a cursor the listing did not issue for this method or a `limit`
    * outside 1 to 100. A page whose `items` is not an array or whose `next_cursor` is neither a
    * string nor `null` is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
    */
@@ -3541,12 +3667,15 @@ export class PipelexApiClient implements HostedProtocolSurface {
   /**
    * One published version of a method, with its files — `GET /v1/methods/{id}/versions/{n}`.
    * `files` lists the version's tree as `getMethod` lists the draft's, each file with a link to
-   * its bytes valid for about fifteen minutes, which `writeMethodTree` writes to disk.
+   * its bytes valid for about fifteen minutes, which `writeMethodTree` writes to disk. Another
+   * organization's public method reads its versions too, without their `published_by`, the files
+   * linked in the organization that holds it.
    *
    * Takes a bare catalog id, as `getMethod` does, and the version number. Throws
    * `RequestArgumentError` for a `version` that is not a positive integer, before any request.
    * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for a version the method never
-   * published and for an unknown method, `409` `pipelex.catalog.being_deleted`, and `500`
+   * published, for an unknown method and for another organization's internal one, `409`
+   * `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs, and `500`
    * `runtime.unexpected` for a version stored before methods were trees and never rewritten as
    * one, which names no tree to serve.
    */
@@ -3581,10 +3710,16 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * original stays as it was. The copy takes the draft, never the latest published version; with
    * `expected_draft_updated_at`, it takes exactly the draft the caller last saw.
    *
+   * **Another organization's public method copies too**, a template of the catalog among them,
+   * from its latest published version rather than its draft: that version's tree, description and
+   * categories, and the method's examples, never the owner's form inputs, with `copied_from`
+   * naming the `version`. Leave `expected_draft_updated_at` out then: sent with such a method, it
+   * is refused with a `422` `request.invalid` naming it.
+   *
    * The answer is a `MethodCopyResult` discriminated on `outcome` — branch on it: `copied` with
    * the copy as `method`, `examples_copied` and `stored_files_copied`; `refused` with the
    * `reason` `bundle_names_other_storage`, a `message` and every `references` entry (`{ path, uri
-   * }`) a `.mthds` file of the draft holds that the destination cannot read and, in a duplicate,
+   * }`) a `.mthds` file of the tree holds that the destination cannot read and, in a duplicate,
    * that names a file under the original's run files, which erasing the original would remove,
    * nothing written.
    *
@@ -3603,7 +3738,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * that is not from a web session, or for a role that may not change methods, in the method's
    * organization or in the destination; `404` `pipelex.org.not_found` for a destination the
    * caller does not belong to, still being set up or unknown, alike; `404`
-   * `pipelex.catalog.not_found` for an unknown method; `409` `pipelex.catalog.being_deleted`;
+   * `pipelex.catalog.not_found` for an unknown method and for another organization's internal
+   * one; `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs;
    * `409` `pipelex.catalog.update_conflict` for a draft that moved since
    * `expected_draft_updated_at`; a `409` whose `domain` is `runtime` and `retry` `no`, for a
    * draft whose tree the method's organization holds no record of or no longer holds every file
@@ -5849,6 +5985,115 @@ function savedFilesFault(files: unknown): string | null {
     const size = file.size;
     if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
       return `holds an entry whose \`size\` is not a non-negative integer, at [${index}]`;
+    }
+  }
+  return null;
+}
+
+/** The members only the owner's read of a method carries, never another organization's. */
+const OWNER_ONLY_METHOD_MEMBERS = [
+  "draft_digest",
+  "created_by_user_id",
+  "input_data",
+  "pipe_output",
+  "copied_from",
+  "deletion_state",
+] as const;
+
+/**
+ * Why a method read is not one the SDK reads, or `null` when it is. The owner's read carries the
+ * draft's token, `updated_at`, which is what tells it from another organization's public method;
+ * so an answer without the token that still carries a member only the owner's read has is a
+ * damaged owner read rather than a public one, and a public read must carry the latest published
+ * version it is about.
+ */
+function methodReadFault(method: Record<string, unknown>): string | null {
+  if ("updated_at" in method) return null;
+  const ownerMember = OWNER_ONLY_METHOD_MEMBERS.find((member) => member in method);
+  if (ownerMember !== undefined) {
+    return `without \`updated_at\` that carries the owner's \`${ownerMember}\``;
+  }
+  if (!isPositiveInteger(method.latest_version)) {
+    return "read as another organization's public method whose `latest_version` is not a positive integer";
+  }
+  if (!isPlainObject(method.latest_published)) {
+    return "read as another organization's public method whose `latest_published` is not an object";
+  }
+  return null;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+/**
+ * Why the catalog's templates are not ones the SDK reads, or `null` when they are: each an object
+ * with what a card is drawn from, a string `method_id`, `name` and `organization_name`, a
+ * `description` that is a string or `null`, a positive integer `latest_version`, an array of string `categories`, and `thumbnails`, each with
+ * a string `path`, `media_type`, `sha256`, `url` and `expires_at` and a positive integer `width`
+ * and `height`.
+ */
+function methodTemplatesFault(items: unknown[]): string | null {
+  for (let index = 0; index < items.length; index += 1) {
+    const item: unknown = items[index];
+    if (!isPlainObject(item))
+      return `\`items\` holds an entry that is not an object, at [${index}]`;
+    for (const member of ["method_id", "name", "organization_name"]) {
+      if (typeof item[member] !== "string") {
+        return `\`items\` holds a template whose \`${member}\` is not a string, at [${index}]`;
+      }
+    }
+    if (
+      item.description !== null &&
+      item.description !== undefined &&
+      typeof item.description !== "string"
+    ) {
+      return `\`items\` holds a template whose \`description\` is neither a string nor null, at [${index}]`;
+    }
+    if (!isPositiveInteger(item.latest_version)) {
+      return `\`items\` holds a template whose \`latest_version\` is not a positive integer, at [${index}]`;
+    }
+    if (!isStringArray(item.categories)) {
+      return `\`items\` holds a template whose \`categories\` is not an array of strings, at [${index}]`;
+    }
+    const thumbnails = item.thumbnails;
+    if (!Array.isArray(thumbnails)) {
+      return `\`items\` holds a template whose \`thumbnails\` is not an array, at [${index}]`;
+    }
+    for (let position = 0; position < thumbnails.length; position += 1) {
+      const thumbnail: unknown = thumbnails[position];
+      const where = `at [${index}].thumbnails[${position}]`;
+      if (!isPlainObject(thumbnail))
+        return `\`items\` holds a thumbnail that is not an object, ${where}`;
+      for (const member of ["path", "media_type", "sha256", "url", "expires_at"]) {
+        if (typeof thumbnail[member] !== "string") {
+          return `\`items\` holds a thumbnail whose \`${member}\` is not a string, ${where}`;
+        }
+      }
+      for (const member of ["width", "height"]) {
+        if (!isPositiveInteger(thumbnail[member])) {
+          return `\`items\` holds a thumbnail whose \`${member}\` is not a positive integer, ${where}`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Why the catalog's categories are not ones the SDK reads, or `null`: each a string `slug` and `label`. */
+function methodCategoriesFault(categories: unknown[]): string | null {
+  for (let index = 0; index < categories.length; index += 1) {
+    const category: unknown = categories[index];
+    if (
+      !isPlainObject(category) ||
+      typeof category.slug !== "string" ||
+      typeof category.label !== "string"
+    ) {
+      return `\`categories\` holds an entry without a string \`slug\` and \`label\`, at [${index}]`;
     }
   }
   return null;

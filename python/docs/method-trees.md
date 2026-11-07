@@ -70,7 +70,7 @@ To send one tree to several calls, a validation, a pipe I/O read and a run for i
 
 ## Reading a tree
 
-`get_method(method_id)` answers a `MethodDetail`: the method, with `files`, the draft's tree listed in tree path order. `get_method_version(method_id, version)` answers a `MethodVersion`: the version's summary, with the same `files`. Each file is a `SavedMethodFile`:
+`get_method(method_id)` answers a `MethodDetail`: the method, with `files`, the draft's tree listed in tree path order; another organization's public method answers a `PublicMethodDetail`, its `files` that of its latest published version ([public-methods.md](./public-methods.md)). `get_method_version(method_id, version)` answers a `MethodVersion`: the version's summary, with the same `files`. Each file is a `SavedMethodFile`:
 
 | Field | Meaning |
 |---|---|

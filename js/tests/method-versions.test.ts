@@ -8,6 +8,7 @@ import { ProblemError } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
 import type { MethodErrorCode } from "../src/errors.js";
+import { ownMethod } from "./helpers/method-reads.js";
 import { problemResponse } from "./helpers/problems.js";
 import type {
   MethodData,
@@ -742,7 +743,7 @@ describe("the method resource", () => {
       jsonResponse(200, { ...WIRE_METHOD, files: FILES, deletion_state: "pending" }),
     );
 
-    const method = await client.getMethod("mt_receipts01");
+    const method = ownMethod(await client.getMethod("mt_receipts01"));
 
     expect(method.deletion_state).toBe("pending");
   });
@@ -763,7 +764,7 @@ describe("getMethod", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(jsonResponse(200, { ...WIRE_METHOD, files: FILES }));
 
-    const method = await client.getMethod("mt_receipts01");
+    const method = ownMethod(await client.getMethod("mt_receipts01"));
 
     expect(onlyRequest(spy).url).toBe(`${BASE_URL}/v1/methods/mt_receipts01`);
     expect(method).toEqual(METHOD_DETAIL);
@@ -776,7 +777,7 @@ describe("getMethod", () => {
       jsonResponse(200, { ...WIRE_METHOD, files: [], draft_digest: null }),
     );
 
-    const method = await makeClient().getMethod("mt_receipts01");
+    const method = ownMethod(await makeClient().getMethod("mt_receipts01"));
 
     expect(method.files).toEqual([]);
     expect(method.draft_digest).toBeNull();
