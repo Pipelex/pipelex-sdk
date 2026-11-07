@@ -197,6 +197,36 @@ describe("listMethodTemplates", () => {
       { ...PAGE, categories: null },
       "`categories` is not an array",
     ],
+    [
+      "a template that is no object",
+      { ...PAGE, items: [42] },
+      "`items` holds an entry that is not an object, at [0]",
+    ],
+    [
+      "a template whose version is a string",
+      { ...PAGE, items: [{ ...TEMPLATE, latest_version: "1" }] },
+      "`items` holds a template whose `latest_version` is not a positive integer, at [0]",
+    ],
+    [
+      "a template with no organization name",
+      { ...PAGE, items: [{ ...TEMPLATE, organization_name: undefined }] },
+      "`items` holds a template whose `organization_name` is not a string, at [0]",
+    ],
+    [
+      "a template whose thumbnails are null",
+      { ...PAGE, items: [{ ...TEMPLATE, thumbnails: null }] },
+      "`items` holds a template whose `thumbnails` is not an array, at [0]",
+    ],
+    [
+      "a thumbnail with no link",
+      { ...PAGE, items: [{ ...TEMPLATE, thumbnails: [{ ...TEMPLATE.thumbnails[0], url: null }] }] },
+      "`items` holds a thumbnail whose `url` is not a string, at [0].thumbnails[0]",
+    ],
+    [
+      "a category whose slug is no string",
+      { ...PAGE, categories: [{ slug: 5, label: "Finance" }] },
+      "`categories` holds an entry without a string `slug` and `label`, at [0]",
+    ],
   ])("throws a typed ApiResponseError hiding every link for %s", async (_label, body, fault) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
 
@@ -259,6 +289,39 @@ describe("another organization's public method", () => {
     expect(method).toEqual(PUBLIC_METHOD);
     expect("updated_at" in method).toBe(false);
     expect(method.latest_published?.published_by).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "an owner's read that lost its token",
+      (() => {
+        const { updated_at: _token, ...rest } = OWN_METHOD;
+        return rest;
+      })(),
+      "a stored method without `updated_at` that carries the owner's `draft_digest`",
+    ],
+    [
+      "a public read without its published version",
+      { ...PUBLIC_METHOD, latest_published: null },
+      "a stored method read as another organization's public method whose `latest_published` is not an object",
+    ],
+    [
+      "a public read whose version is not a number",
+      { ...PUBLIC_METHOD, latest_version: null },
+      "a stored method read as another organization's public method whose `latest_version` is not a positive integer",
+    ],
+  ])("throws a typed ApiResponseError hiding every link for %s", async (_label, body, fault) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+
+    const err = await makeClient()
+      .getMethod("mt_stats01")
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      `API GET /v1/methods/mt_stats01 answered 200 with ${fault}`,
+    );
+    expect((err as ApiResponseError).responseBody).not.toContain(SIGNED);
   });
 
   it("reads the caller's own method whole, with its visibility and categories", async () => {
@@ -394,6 +457,32 @@ describe("a public method's publish refusals", () => {
     });
 
     expect(result).toMatchObject({ outcome: "refused", reason: "a_later_reason" });
+  });
+
+  it.each([
+    ["a reason that is not a string", { reason: 7 }, "`reason` is not a string"],
+    ["no reason", { reason: undefined }, "`reason` is not a string"],
+    ["a message that is not a string", { message: null }, "`message` is not a string"],
+  ])("throws a typed ApiResponseError for a refusal with %s", async (_label, member, fault) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        outcome: "refused",
+        reason: "thumbnail_missing",
+        message: "m",
+        validation: VALID,
+        method: OWN_METHOD,
+        ...member,
+      }),
+    );
+
+    const err = await makeClient()
+      .publishMethod("mt_stats01", { expected_draft_updated_at: OWN_METHOD.updated_at })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      `API POST /v1/methods/mt_stats01/publish answered 200 with a publish result whose ${fault}`,
+    );
   });
 
   it("types the reasons it knows, and reads the reason open", () => {

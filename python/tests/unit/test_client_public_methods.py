@@ -12,6 +12,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from pydantic import ValidationError
 
 from pipelex_sdk.errors import ApiResponseError
 from pipelex_sdk.product_models import (
@@ -193,6 +194,22 @@ class TestClientPublicMethods:
 
         assert exc_info.value.problem.code == "client.response_unreadable"
         assert PublicMethodBodies.SIGNED not in (exc_info.value.response_body or "")
+
+    def test_an_owners_read_that_lost_its_token_is_refused_rather_than_read_as_public(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        """An answer without `updated_at` that still carries an owner-only member is a damaged owner read."""
+        body = {key: value for key, value in PublicMethodBodies.OWN_METHOD.items() if key != "updated_at"}
+        patch_send(api_client, wire_response(200, json_body=body))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.get_method("mt_stats01"))
+
+        unreadable = exc_info.value
+        assert unreadable.problem.code == "client.response_unreadable"
+        assert isinstance(unreadable.__cause__, ValidationError)
+        assert [failure["loc"] for failure in unreadable.__cause__.errors()] == [("updated_at",)]
+        assert PublicMethodBodies.SIGNED not in (unreadable.response_body or "")
 
     def test_versions_of_a_public_method_list_and_read_without_their_publisher(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher

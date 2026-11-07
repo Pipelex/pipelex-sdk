@@ -138,7 +138,8 @@ export interface MethodVersion extends MethodVersionSummary {
 
 /**
  * A saved method — `createMethod`, `writeDraft`, `renameMethod`, and the `method` of every
- * publish outcome; `getMethod` answers it with the draft's files (`MethodDetail`). Its draft is
+ * publish outcome; `getMethod` answers it with the draft's files (`MethodDetail`) for the caller's
+ * own method, and another organization's public one as a `PublicMethodDetail`. Its draft is
  * named by `draft_digest`; the latest published version is summarized in `latest_published`.
  *
  * The publish state a client shows is derived, never stored: never published
@@ -457,8 +458,9 @@ export type MethodPublishOutcome = "published" | "unchanged" | "refused";
  * - `storage_reference`: the method is public, and a `.mthds` file of the draft names a
  *   `pipelex-storage://` file, which other organizations cannot read.
  *
- * The last three refuse only a public method's publish, so that the card of a template never loses
- * its picture and every organization can run what it reads.
+ * `thumbnail_missing`, `thumbnail_invalid` and `storage_reference` refuse only a public method's
+ * publish, so that the card of a template never loses its picture and every organization can run
+ * what it reads.
  */
 export type MethodPublishRefusalReason =
   "invalid" | "not_runnable" | "thumbnail_missing" | "thumbnail_invalid" | "storage_reference";

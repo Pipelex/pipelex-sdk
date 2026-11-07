@@ -147,7 +147,7 @@ const method = await client.createMethod({ name: "Receipts", tree });
 
 ## Reading a tree
 
-`getMethod(methodId)` answers a `MethodDetail`: the method, with `files`, the draft's tree listed in tree path order. `getMethodVersion(methodId, version)` answers a `MethodVersion`: the version's summary, with the same `files`. Each file is a `SavedMethodFile`:
+`getMethod(methodId)` answers a `MethodDetail`: the method, with `files`, the draft's tree listed in tree path order; another organization's public method answers a `PublicMethodDetail`, its `files` that of its latest published version ([public-methods.md](./public-methods.md)). `getMethodVersion(methodId, version)` answers a `MethodVersion`: the version's summary, with the same `files`. Each file is a `SavedMethodFile`:
 
 | Field | Meaning |
 |---|---|

@@ -2922,8 +2922,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * another listing, `422` `request.malformed` for a cursor that does not decode, `500`
    * `runtime.misconfigured` when the templates organization the deployment names has no record or
    * a link cannot be signed, and `503` `runtime.unavailable`, safe to retry. A page whose `items`
-   * or `categories` is not an array, whose `next_cursor` is neither a string nor `null`, or whose
-   * `ordering` is neither a string nor `null` is an answer the SDK cannot read, thrown as an
+   * or `categories` is not an array, whose `next_cursor` or `ordering` is neither a string nor
+   * `null`, a template lacking a member a card is drawn from (a string `method_id`, `name` and
+   * `organization_name`, a positive integer `latest_version`, an array of string `categories`, and
+   * `thumbnails` each with a string `url` and positive integer `width` and `height`), and a
+   * category without a string `slug` and `label` are an answer the SDK cannot read, thrown as an
    * `ApiResponseError` too, its links redacted.
    */
   async listMethodTemplates(query: ListMethodTemplatesQuery = {}): Promise<MethodTemplatePage> {
@@ -2937,14 +2940,15 @@ export class PipelexApiClient implements HostedProtocolSurface {
     const res = withLinks(await this.requestProductAnswer("GET", endpoint, undefined));
     const page = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
     const { items, next_cursor: nextCursor, ordering, categories } = page;
-    let fault: string | undefined;
+    let fault: string | null = null;
     if (!Array.isArray(items)) fault = "`items` is not an array";
     else if (nextCursor !== null && typeof nextCursor !== "string") {
       fault = "`next_cursor` is neither a string nor null";
     } else if (ordering !== null && typeof ordering !== "string") {
       fault = "`ordering` is neither a string nor null";
     } else if (!Array.isArray(categories)) fault = "`categories` is not an array";
-    if (fault !== undefined) {
+    else fault = methodTemplatesFault(items) ?? methodCategoriesFault(categories);
+    if (fault !== null) {
       throw this.unreadableAnswer(
         "GET",
         `/${API_PREFIX}/${endpoint}`,
@@ -3002,17 +3006,31 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * erased; `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method
    * runs; and a `500` `runtime.unexpected` for a method whose tree the platform holds no record
    * of. An answer whose `files` is not a listing is an answer the SDK cannot read, thrown as an
-   * `ApiResponseError` too.
+   * `ApiResponseError` too, its links redacted, and so is one that lacks `updated_at` while it
+   * carries a member only the owner's read has (`draft_digest`, `created_by_user_id`,
+   * `input_data`, `pipe_output`, `copied_from`, `deletion_state`), which would otherwise pass for
+   * another organization's public method, and a public read without an integer `latest_version`
+   * and a `latest_published` object.
    */
   async getMethod(methodId: string): Promise<MethodDetail | PublicMethodDetail> {
     const endpoint = methodPath(methodId, "getMethod");
-    const res = await this.requestProductAnswer("GET", endpoint, undefined);
-    return this.readSavedTree<MethodDetail | PublicMethodDetail>(
+    const res = withLinks(await this.requestProductAnswer("GET", endpoint, undefined));
+    const method = this.readSavedTree<MethodDetail | PublicMethodDetail>(
       "GET",
       endpoint,
-      withLinks(res),
+      res,
       "a stored method",
     );
+    const fault = methodReadFault(method as unknown as Record<string, unknown>);
+    if (fault !== null) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a stored method ${fault}`,
+      );
+    }
+    return method;
   }
 
   /**
@@ -3568,8 +3586,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * judges as a public method's publish.
    *
    * An answer whose `outcome` is not one of the outcomes above, that carries no `method` object,
-   * or a refusal whose `validation` is not a verdict object with a boolean `is_valid`, is an answer
-   * the SDK cannot read, thrown as an `ApiResponseError` too.
+   * or a refusal whose `reason` or `message` is not a string or whose `validation` is not a verdict
+   * object with a boolean `is_valid`, is an answer the SDK cannot read, thrown as an
+   * `ApiResponseError` too.
    */
   async publishMethod(methodId: string, input: MethodPublishInput): Promise<MethodPublishResult> {
     const token: unknown = (input as Partial<MethodPublishInput> | undefined)
@@ -3597,12 +3616,18 @@ export class PipelexApiClient implements HostedProtocolSurface {
     // The refused arm carries the runner's verdict, whose problem items are read member by
     // member as `validate` reads them, so one malformed item never costs the caller the others.
     const validation = answer.validation;
-    if (!isPlainObject(validation) || typeof validation.is_valid !== "boolean") {
+    let fault: string | null = null;
+    if (typeof answer.reason !== "string") fault = "`reason` is not a string";
+    else if (typeof answer.message !== "string") fault = "`message` is not a string";
+    else if (!isPlainObject(validation) || typeof validation.is_valid !== "boolean") {
+      fault = "`validation` is not an object";
+    }
+    if (fault !== null) {
       throw this.unreadableAnswer(
         "POST",
         `/${API_PREFIX}/${endpoint}`,
         res,
-        "a publish result whose `validation` is not an object",
+        `a publish result whose ${fault}`,
       );
     }
     return {
@@ -5959,6 +5984,115 @@ function savedFilesFault(files: unknown): string | null {
     const size = file.size;
     if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
       return `holds an entry whose \`size\` is not a non-negative integer, at [${index}]`;
+    }
+  }
+  return null;
+}
+
+/** The members only the owner's read of a method carries, never another organization's. */
+const OWNER_ONLY_METHOD_MEMBERS = [
+  "draft_digest",
+  "created_by_user_id",
+  "input_data",
+  "pipe_output",
+  "copied_from",
+  "deletion_state",
+] as const;
+
+/**
+ * Why a method read is not one the SDK reads, or `null` when it is. The owner's read carries the
+ * draft's token, `updated_at`, which is what tells it from another organization's public method;
+ * so an answer without the token that still carries a member only the owner's read has is a
+ * damaged owner read rather than a public one, and a public read must carry the latest published
+ * version it is about.
+ */
+function methodReadFault(method: Record<string, unknown>): string | null {
+  if ("updated_at" in method) return null;
+  const ownerMember = OWNER_ONLY_METHOD_MEMBERS.find((member) => member in method);
+  if (ownerMember !== undefined) {
+    return `without \`updated_at\` that carries the owner's \`${ownerMember}\``;
+  }
+  if (!isPositiveInteger(method.latest_version)) {
+    return "read as another organization's public method whose `latest_version` is not a positive integer";
+  }
+  if (!isPlainObject(method.latest_published)) {
+    return "read as another organization's public method whose `latest_published` is not an object";
+  }
+  return null;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+/**
+ * Why the catalog's templates are not ones the SDK reads, or `null` when they are: each an object
+ * with what a card is drawn from, a string `method_id`, `name` and `organization_name`, a
+ * `description` that is a string or `null`, a positive integer `latest_version`, an array of string `categories`, and `thumbnails`, each with
+ * a string `path`, `media_type`, `sha256`, `url` and `expires_at` and a positive integer `width`
+ * and `height`.
+ */
+function methodTemplatesFault(items: unknown[]): string | null {
+  for (let index = 0; index < items.length; index += 1) {
+    const item: unknown = items[index];
+    if (!isPlainObject(item))
+      return `\`items\` holds an entry that is not an object, at [${index}]`;
+    for (const member of ["method_id", "name", "organization_name"]) {
+      if (typeof item[member] !== "string") {
+        return `\`items\` holds a template whose \`${member}\` is not a string, at [${index}]`;
+      }
+    }
+    if (
+      item.description !== null &&
+      item.description !== undefined &&
+      typeof item.description !== "string"
+    ) {
+      return `\`items\` holds a template whose \`description\` is neither a string nor null, at [${index}]`;
+    }
+    if (!isPositiveInteger(item.latest_version)) {
+      return `\`items\` holds a template whose \`latest_version\` is not a positive integer, at [${index}]`;
+    }
+    if (!isStringArray(item.categories)) {
+      return `\`items\` holds a template whose \`categories\` is not an array of strings, at [${index}]`;
+    }
+    const thumbnails = item.thumbnails;
+    if (!Array.isArray(thumbnails)) {
+      return `\`items\` holds a template whose \`thumbnails\` is not an array, at [${index}]`;
+    }
+    for (let position = 0; position < thumbnails.length; position += 1) {
+      const thumbnail: unknown = thumbnails[position];
+      const where = `at [${index}].thumbnails[${position}]`;
+      if (!isPlainObject(thumbnail))
+        return `\`items\` holds a thumbnail that is not an object, ${where}`;
+      for (const member of ["path", "media_type", "sha256", "url", "expires_at"]) {
+        if (typeof thumbnail[member] !== "string") {
+          return `\`items\` holds a thumbnail whose \`${member}\` is not a string, ${where}`;
+        }
+      }
+      for (const member of ["width", "height"]) {
+        if (!isPositiveInteger(thumbnail[member])) {
+          return `\`items\` holds a thumbnail whose \`${member}\` is not a positive integer, ${where}`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Why the catalog's categories are not ones the SDK reads, or `null`: each a string `slug` and `label`. */
+function methodCategoriesFault(categories: unknown[]): string | null {
+  for (let index = 0; index < categories.length; index += 1) {
+    const category: unknown = categories[index];
+    if (
+      !isPlainObject(category) ||
+      typeof category.slug !== "string" ||
+      typeof category.label !== "string"
+    ) {
+      return `\`categories\` holds an entry without a string \`slug\` and \`label\`, at [${index}]`;
     }
   }
   return null;

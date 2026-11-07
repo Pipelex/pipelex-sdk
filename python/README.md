@@ -167,7 +167,7 @@ else:
 
 ### Browse the template catalog
 
-The template catalog is the public methods every organization reads, in the order the platform serves, with the categories at least one template shows and each card's thumbnails behind short-lived links. Another organization's public method reads in a narrower shape, a `PublicMethodDetail` holding its latest published version and nothing of its draft, which runs and copies like any method; a public method's publish adds three refusals, still verdicts ([`docs/public-methods.md`](docs/public-methods.md)):
+The template catalog is the public methods every organization reads, in the order the platform serves, with the categories at least one template shows and each card's thumbnails behind short-lived links. Another organization's public method reads in a narrower shape, a `PublicMethodDetail` holding its latest published version and nothing of its draft, which runs and copies like any method; a public method's publish adds refusals of its own, still verdicts ([`docs/public-methods.md`](docs/public-methods.md)):
 
 ```python
 from pipelex_sdk.product_models import PublicMethodDetail

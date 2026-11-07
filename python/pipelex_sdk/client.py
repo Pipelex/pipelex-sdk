@@ -2245,7 +2245,8 @@ class PipelexAPIClient(MthdsAPIClient):
                 organization's internal one, and for a public one made internal again or being erased;
                 `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method runs; a
                 `500` `runtime.unexpected` for a method whose tree the platform holds no record of; a `200`
-                the SDK cannot read, a listing whose `sha256` is not 64 lowercase hex digits among them,
+                the SDK cannot read, a listing whose `sha256` is not 64 lowercase hex digits among them and an
+                answer without `updated_at` that carries a member only the owner's read has,
                 reported with every link redacted.
         """
         return await self._request_product("GET", _method_path(method_id, call="get_method"), read=read_method, carries_links=True)

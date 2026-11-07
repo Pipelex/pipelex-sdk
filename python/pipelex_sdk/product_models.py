@@ -254,7 +254,8 @@ class MethodCopiedFrom(BaseModel):
 
 class MethodData(BaseModel):
     """One saved method — `create_method`, `write_draft`, `rename_method`, and the `method` of every
-    publish outcome. `get_method` answers a `MethodDetail`, which adds the draft's files.
+    publish outcome. `get_method` answers a `MethodDetail` for the caller's own method, which adds the
+    draft's files, or a `PublicMethodDetail` for another organization's public one.
 
     Its draft is a tree of files, named here by its digest alone (`draft_digest`), with the form
     inputs (`input_data`); the latest published version is summarized in `latest_published`. The
@@ -367,17 +368,27 @@ class PublicMethodDetail(BaseModel):
     """The latest published version's tree, one file per entry in tree path order, each with a link to its bytes."""
 
 
+#: The members only the owner's read of a method carries, never another organization's.
+_OWNER_ONLY_METHOD_MEMBERS: frozenset[str] = frozenset(
+    {"draft_digest", "created_by_user_id", "input_data", "pipe_output", "copied_from", "deletion_state"}
+)
+
+
 def read_method(value: Any) -> MethodDetail | PublicMethodDetail:
     """Read the answer of `get_method`: the caller's own method whole, or another organization's public method in its narrower shape.
 
-    The two are told apart by the draft's token, `updated_at`, which only the owner's read carries. Each is
-    validated as its own model, so a refusal names its fields as that model's (`("files", 1, "sha256")`), and an
-    answer that is no object is refused as `MethodDetail` refuses one.
+    The owner's read carries the draft's token, `updated_at`, and members another organization never
+    reads (`draft_digest`, `created_by_user_id`, `input_data`, `pipe_output`, `copied_from`,
+    `deletion_state`). An answer carrying any of them is the owner's, so one that lost its token is
+    refused as a `MethodDetail` missing `updated_at` rather than passed off as a public read; only an
+    answer carrying none of them is read as a `PublicMethodDetail`. Each is validated as its own model,
+    so a refusal names its fields as that model's (`("files", 1, "sha256")`), and an answer that is no
+    object is refused as `MethodDetail` refuses one.
 
     Raises:
         ValidationError: The answer is neither shape.
     """
-    if isinstance(value, dict) and "updated_at" not in value:
+    if isinstance(value, dict) and "updated_at" not in value and _OWNER_ONLY_METHOD_MEMBERS.isdisjoint(cast("dict[str, Any]", value)):
         return PublicMethodDetail.model_validate(value)
     return MethodDetail.model_validate(value)
 
@@ -452,8 +463,9 @@ class MethodPublishOutcome(StrEnum):
 class MethodPublishRefusalReason(StrEnum):
     """Why a draft was not published.
 
-    The last three refuse only a public method's publish, so that the card of a template never loses
-    its picture and every organization can run what it reads.
+    `THUMBNAIL_MISSING`, `THUMBNAIL_INVALID` and `STORAGE_REFERENCE` refuse only a public method's
+    publish, so that the card of a template never loses its picture and every organization can run
+    what it reads.
     """
 
     INVALID = "invalid"

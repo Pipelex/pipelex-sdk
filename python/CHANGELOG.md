@@ -11,7 +11,7 @@
 
 ### Changed
 
-- **`get_method` returns `MethodDetail | PublicMethodDetail` (Breaking)**: another organization's public method reads as a `PublicMethodDetail`, its latest published version with that version's files and nothing of its draft, so code that reads the draft's `updated_at`, `draft_digest`, `input_data` or `copied_from` from `get_method` narrows first with `isinstance(method, MethodDetail)`; `pipelex_sdk.product_models.read_method` reads a body into the right model.
+- **`get_method` returns `MethodDetail | PublicMethodDetail` (Breaking)**: another organization's public method reads as a `PublicMethodDetail`, its latest published version with that version's files and nothing of its draft, so code that reads the draft's `updated_at`, `draft_digest`, `input_data` or `copied_from` from `get_method` narrows first with `isinstance(method, MethodDetail)`; `pipelex_sdk.product_models.read_method` reads a body into the right model, and an answer without `updated_at` that carries a member only the owner's read has is refused as a `MethodDetail` missing its token rather than read as public.
 - **`MethodVersionSummary.published_by` is optional (Breaking)**: it defaults to `None`, since another organization reading a public method's versions gets no publisher.
 - **`MethodPublishRefused.reason` is read open (Breaking)**: it is typed `MethodPublishRefusalReason | str`, so a reason a later platform adds arrives as its raw `str`, still a verdict, instead of making the answer unreadable, and a `match` over it needs a branch for a plain string.
 
