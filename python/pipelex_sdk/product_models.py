@@ -1036,8 +1036,8 @@ class MembershipsResponse(BaseModel):
 #
 # An organization may set up to two logos, two colour sets of three colours, an app style and a
 # typeface, which its shared method apps and the apps scaffolded from the method-app template wear.
-# Every member and every API key reads it with `get_branding`; an admin or a member writes it with
-# `update_organization_branding`. Both answer the same `OrganizationBranding`, which also says whether
+# Every member and every API key reads it with `get_branding`; a caller with the `admin` or the
+# `member` role, never a `runner`, writes it with `update_organization_branding`. Both answer the same `OrganizationBranding`, which also says whether
 # the organization holds the white-label entitlement. See `docs/organization-branding.md`.
 
 

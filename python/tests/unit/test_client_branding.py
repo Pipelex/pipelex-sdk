@@ -155,7 +155,8 @@ class TestClientBranding:
     def test_get_branding_keeps_an_id_it_does_not_know(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        # The platform holds an id to a shape, never to a list: a client reads an id it does not know as unset.
+        # The platform holds an id to a shape, never to a list, so the SDK keeps an id it does not know as it came;
+        # reading it as unset is the application's call, against the list it knows.
         patch_send(api_client, wire_response(200, json_body={**BrandingBodies.UNBRANDED, "style": "a-style-from-next-year", "typeface": "x" * 32}))
 
         branding = asyncio.run(api_client.get_branding())

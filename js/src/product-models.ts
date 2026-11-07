@@ -972,8 +972,8 @@ export interface MembershipsResponse {
 //
 // An organization may set up to two logos, two colour sets of three colours, an app style and a
 // typeface, which its shared method apps and the apps scaffolded from the method-app template
-// wear. Every member and every API key reads it with `getBranding`; an admin or a member writes
-// it with `updateOrganizationBranding`. Both answer the same `OrganizationBranding`, which also
+// wear. Every member and every API key reads it with `getBranding`; a caller with the `admin` or
+// the `member` role, never a `runner`, writes it with `updateOrganizationBranding`. Both answer the same `OrganizationBranding`, which also
 // says whether the organization holds the white-label entitlement. See
 // `docs/organization-branding.md`.
 

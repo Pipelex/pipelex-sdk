@@ -3276,9 +3276,9 @@ class PipelexAPIClient(MthdsAPIClient):
     async def update_organization_branding(self, org_id: str, update: OrganizationBrandingUpdate) -> OrganizationBranding:
         """Set or clear an organization's branding — `PATCH /v1/organizations/{org_id}/branding`.
 
-        An admin's or a member's write to the active organization. Only the fields `update` sets are sent: a
-        value sets it, an explicit `None` clears it, and a field left unset keeps its value
-        (`OrganizationBrandingUpdate`), so an empty update writes nothing. A new logo is the `pipelex-storage://`
+        A write to the active organization by the `admin` or the `member` role, never a `runner`. Only the
+        fields `update` sets are sent: a value sets it, an explicit `None` clears it, and a field left unset
+        keeps its value (`OrganizationBrandingUpdate`), so an empty update writes nothing. A new logo is the `pipelex-storage://`
         URI of a file the organization uploaded on its own, which the platform reads and measures, then copies
         under `branding/`: the answer's `uri` is that copy, and sending it back unchanged keeps the logo. The
         logo a write replaces or clears is erased. A style or a typeface is an id of the shape

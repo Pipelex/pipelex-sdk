@@ -7,7 +7,7 @@ An organization may carry a brand: up to two logos, a square one and a wide one,
 | Method | Route | Who may call it | Answer |
 |---|---|---|---|
 | `get_branding()` | `GET /v1/branding` | Every member of the active organization, `runner` included, by web session or API key | The active organization's `OrganizationBranding`. |
-| `update_organization_branding(org_id, update)` | `PATCH /v1/organizations/{org_id}/branding` | An admin or a member of the active organization, by web session | The `OrganizationBranding` as the write left it. |
+| `update_organization_branding(org_id, update)` | `PATCH /v1/organizations/{org_id}/branding` | A caller with the `admin` or the `member` role in the active organization, never a `runner`, by web session | The `OrganizationBranding` as the write left it. |
 
 Both answer the same model, so a client holds one type whichever it called. `get_branding` takes no organization id: it reads the caller's active organization.
 

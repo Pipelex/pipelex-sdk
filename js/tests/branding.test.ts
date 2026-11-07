@@ -224,7 +224,7 @@ describe("getBranding", () => {
     },
   );
 
-  it("keeps an id it does not know, which a client reads as unset", async () => {
+  it("keeps an id it does not know as it came, for the application to read as unset", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(200, {
