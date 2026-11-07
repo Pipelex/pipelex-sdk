@@ -1025,7 +1025,7 @@ class BrandingBodies:
         "height": 64.25,
     }
 
-    #: A branded team: one logo, a partial light set, a partial dark set.
+    #: A branded team: one logo, a partial light set, a partial dark set, a style and a typeface.
     BRANDED: ClassVar[dict[str, Any]] = {
         "org_id": ORG_ID,
         "org_name": "Acme Corp",
@@ -1033,9 +1033,13 @@ class BrandingBodies:
         "dark_colors": {"action": None, "accent": None, "header": "#e5e5e5"},
         "square_logo": SQUARE_LOGO,
         "wide_logo": None,
+        "style": "editorial",
+        "typeface": "source-sans-3",
+        "white_label": False,
     }
 
-    #: A personal workspace, or a team that set nothing: every colour and logo `None`.
+    #: A personal workspace, or a team that set nothing, a branding written before the style and the typeface
+    #: existed included: every colour, logo and choice `None`.
     UNBRANDED: ClassVar[dict[str, Any]] = {
         "org_id": ORG_ID,
         "org_name": "Ada's workspace",
@@ -1043,7 +1047,13 @@ class BrandingBodies:
         "dark_colors": {"action": None, "accent": None, "header": None},
         "square_logo": None,
         "wide_logo": None,
+        "style": None,
+        "typeface": None,
+        "white_label": False,
     }
+
+    #: `UNBRANDED` as a platform that predates the style, the typeface and the entitlement answers it.
+    BEFORE_CHOICES: ClassVar[dict[str, Any]] = {key: value for key, value in UNBRANDED.items() if key not in {"style", "typeface", "white_label"}}
 
     SQUARE_TOO_SMALL: ClassVar[str] = "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side."
     WIDE_TOO_SHORT: ClassVar[str] = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall."
@@ -1142,8 +1152,9 @@ class BrandingBodies:
         ),
     }
 
-    #: A colour that is not `#rrggbb`, refused by the body's validation and named by its dotted key.
-    COLOR_REFUSED: ClassVar[dict[str, Any]] = {
+    #: A colour that is not `#rrggbb` and a style of the wrong shape, refused by the body's validation: the problem
+    #: names the first field, and each refused field has its item in `errors`, a colour named by its dotted key.
+    FIELDS_REFUSED: ClassVar[dict[str, Any]] = {
         "type": "https://mthds.ai/errors/request.invalid",
         "title": "The request is invalid",
         "status": 422,
@@ -1152,8 +1163,11 @@ class BrandingBodies:
         "domain": "input",
         "retry": "no",
         "next_step": {"kind": "change_input", "detail": "Change the branding and send it again."},
+        "params": {"field": "dark_colors.header"},
+        "location": {"field": "dark_colors.header"},
         "errors": [
             {"code": "request.invalid", "detail": "String should match pattern '^#[0-9a-fA-F]{6}$'", "location": {"field": "dark_colors.header"}},
+            {"code": "request.invalid", "detail": "String should match pattern '^[a-z0-9-]{1,32}$'", "location": {"field": "style"}},
         ],
     }
 

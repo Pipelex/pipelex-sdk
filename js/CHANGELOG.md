@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.62.0] - 2026-11-07
+
+### Added
+
+- **`style`, `typeface` and `white_label` on `OrganizationBranding` (Breaking)**: `getBranding` and `updateOrganizationBranding` answer the app style and the typeface the team chose, each an id or `null`, and whether the organization holds the white-label entitlement, which Pipelex staff grant; an answer that leaves them out, as a platform that predates them sends, or sends another type reads as `null`, `null` and `false`. The three members are required, so code that builds an `OrganizationBranding` itself, such as a test fixture or a schema typed against it, now supplies them (`docs/organization-branding.md`).
+- **`style` and `typeface` on `OrganizationBrandingUpdate`**: an id of the shape `^[a-z0-9-]{1,32}$` sets each, `null` clears it and a key left out keeps it; the platform refuses another shape with a `422` `request.invalid` naming the field. The update has no `white_label` key.
+
+### Fixed
+
+- **The branding docs and docstrings**: they say that a member may write the branding as well as an admin, that `getBranding` answers `403` `pipelex.org.required` without an active organization, and that a colour refused alone is named by the problem's own `location.field` and `params.field` rather than an item of `errors`.
+
 ## [v0.61.0] - 2026-11-07
 
 ### Added
