@@ -22,7 +22,10 @@ const WIDE_UPLOAD_URI = `pipelex-storage://${ORG_ID}/assets/9a3c.svg`;
 const SQUARE_LOGO_URI = `pipelex-storage://${ORG_ID}/branding/3f9a1c2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b.png`;
 const WIDE_LOGO_URI = `pipelex-storage://${ORG_ID}/branding/8c7b6a5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d.svg`;
 
-/** A branded team as both routes answer it: one logo, a partial light set, a partial dark set. */
+/**
+ * A branded team as both routes answer it: one logo, a partial light set, a partial dark set, a
+ * style and a typeface.
+ */
 const BRANDED: OrganizationBranding = {
   org_id: ORG_ID,
   org_name: "Acme Corp",
@@ -36,10 +39,29 @@ const BRANDED: OrganizationBranding = {
     height: 512.0,
   },
   wide_logo: null,
+  style: "editorial",
+  typeface: "source-sans-3",
+  white_label: false,
 };
 
-/** A personal workspace, or a team that set nothing: every colour and logo null. */
+/**
+ * A personal workspace, or a team that set nothing, as the platform answers it, a branding written
+ * before the style and the typeface existed included: every colour, logo and choice null.
+ */
 const UNBRANDED: OrganizationBranding = {
+  org_id: ORG_ID,
+  org_name: "Ada's workspace",
+  colors: { action: null, accent: null, header: null },
+  dark_colors: { action: null, accent: null, header: null },
+  square_logo: null,
+  wide_logo: null,
+  style: null,
+  typeface: null,
+  white_label: false,
+};
+
+/** `UNBRANDED` as a platform that predates the style, the typeface and the entitlement answers it. */
+const BEFORE_CHOICES = {
   org_id: ORG_ID,
   org_name: "Ada's workspace",
   colors: { action: null, accent: null, header: null },
@@ -139,9 +161,12 @@ describe("getBranding", () => {
     expect(branding.dark_colors.header).toBe("#e5e5e5");
     expect(branding.square_logo?.width).toBe(512);
     expect(branding.wide_logo).toBeNull();
+    expect(branding.style).toBe("editorial");
+    expect(branding.typeface).toBe("source-sans-3");
+    expect(branding.white_label).toBe(false);
   });
 
-  it("reads an organization with no branding as every colour and logo null", async () => {
+  it("reads an organization with no branding as every colour, logo and choice null", async () => {
     const client = makeClient();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, UNBRANDED));
 
@@ -149,6 +174,87 @@ describe("getBranding", () => {
 
     expect(branding).toEqual(UNBRANDED);
     expect(branding.org_name).toBe("Ada's workspace");
+  });
+
+  it("reads an answer without the choices, as a platform that predates them sends, as unset", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, BEFORE_CHOICES));
+
+    const branding = await client.getBranding();
+
+    // Each member is present and what the type declares, never `undefined`.
+    expect(branding).toStrictEqual(UNBRANDED);
+    expect(branding.style).toBeNull();
+    expect(branding.typeface).toBeNull();
+    expect(branding.white_label).toBe(false);
+  });
+
+  it("reads the white-label entitlement, which only Pipelex staff grant", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...UNBRANDED, white_label: true }),
+    );
+
+    const branding = await client.getBranding();
+
+    expect(branding.white_label).toBe(true);
+  });
+
+  it.each([
+    ["null", { style: null, typeface: null, white_label: null }],
+    ["a number", { style: 3, typeface: 4, white_label: 1 }],
+    ["an object", { style: { id: "editorial" }, typeface: [], white_label: {} }],
+    ["a string where a boolean belongs", { style: null, typeface: null, white_label: "true" }],
+  ])(
+    "reads a choice sent as %s as unset, and the entitlement as not held",
+    async (_topic, choices) => {
+      const client = makeClient();
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        jsonResponse(200, { ...BRANDED, ...choices }),
+      );
+
+      const branding = await client.getBranding();
+
+      expect(branding).toStrictEqual({
+        ...BRANDED,
+        style: null,
+        typeface: null,
+        white_label: false,
+      });
+    },
+  );
+
+  it("keeps an id it does not know, which a client reads as unset", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        ...UNBRANDED,
+        style: "a-style-from-next-year",
+        typeface: "x".repeat(32),
+      }),
+    );
+
+    const branding = await client.getBranding();
+
+    expect(branding.style).toBe("a-style-from-next-year");
+    expect(branding.typeface).toBe("x".repeat(32));
+  });
+
+  it("keeps a member this SDK does not name", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...BRANDED, favicon: null }),
+    );
+
+    const branding = await client.getBranding();
+
+    expect(branding).toEqual({ ...BRANDED, favicon: null });
+  });
+
+  it("types the style, the typeface and the entitlement as always present", () => {
+    expectTypeOf<OrganizationBranding["style"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<OrganizationBranding["typeface"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<OrganizationBranding["white_label"]>().toEqualTypeOf<boolean>();
   });
 
   it("reads an SVG logo's fractional viewBox size as it was sent", async () => {
@@ -250,7 +356,46 @@ describe("updateOrganizationBranding", () => {
     expect(branding).toEqual(BRANDED);
   });
 
-  it("types every key of the update as optional and nullable", () => {
+  it("sets a style and a typeface, and hands back the branding as written", async () => {
+    const client = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, BRANDED));
+
+    const branding = await client.updateOrganizationBranding(ORG_ID, {
+      style: "editorial",
+      typeface: "source-sans-3",
+    });
+
+    expect(lastRequest(spy).body).toEqual({ style: "editorial", typeface: "source-sans-3" });
+    expect(branding.style).toBe("editorial");
+    expect(branding.typeface).toBe("source-sans-3");
+  });
+
+  it("clears a style with null and keeps the typeface it leaves out", async () => {
+    const client = makeClient();
+    const answer = { ...BRANDED, style: null };
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, answer));
+
+    const branding = await client.updateOrganizationBranding(ORG_ID, {
+      style: null,
+      typeface: undefined,
+    });
+
+    // `undefined` is a key left out, so the platform keeps the typeface.
+    expect(lastRequest(spy).body).toEqual({ style: null });
+    expect(branding.style).toBeNull();
+    expect(branding.typeface).toBe("source-sans-3");
+  });
+
+  it("reads the answer of a platform that predates the choices as getBranding reads it", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, BEFORE_CHOICES));
+
+    const branding = await client.updateOrganizationBranding(ORG_ID, { colors: null });
+
+    expect(branding).toStrictEqual(UNBRANDED);
+  });
+
+  it("types every key of the update as optional and nullable, white_label not among them", () => {
     expectTypeOf<OrganizationBrandingUpdate>().toEqualTypeOf<{
       colors?: { action?: string | null; accent?: string | null; header?: string | null } | null;
       dark_colors?: {
@@ -260,7 +405,42 @@ describe("updateOrganizationBranding", () => {
       } | null;
       square_logo?: string | null;
       wide_logo?: string | null;
+      style?: string | null;
+      typeface?: string | null;
     }>();
+    // The entitlement is Pipelex staff's to grant: no branding write names it.
+    expectTypeOf<OrganizationBrandingUpdate>().not.toHaveProperty("white_label");
+  });
+
+  it.each([
+    ["a colour that is not #rrggbb", "dark_colors.header", { dark_colors: { header: "#14213g" } }],
+    ["a style of the wrong shape", "style", { style: "Editorial" }],
+    ["a typeface of the wrong shape", "typeface", { typeface: "source sans" }],
+    [
+      "the white-label entitlement, which only Pipelex staff set",
+      "white_label",
+      { white_label: true },
+    ],
+  ])("hands back the refusal of %s, naming the field", async (_topic, field, input) => {
+    const client = makeClient();
+    // A lone refused field is the problem's own: no `errors`, the field in `params` and `location`.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse(422, {
+        ...problem("request.invalid", "Invalid request", "The request body is invalid."),
+        params: { field },
+        location: { field },
+      }),
+    );
+
+    const err = await caught(
+      client.updateOrganizationBranding(ORG_ID, input as OrganizationBrandingUpdate),
+    );
+
+    expect(err.status).toBe(422);
+    expect(err.code).toBe("request.invalid");
+    expect(err.problem.params).toEqual({ field });
+    expect(err.problem.location?.field).toBe(field);
+    expect(err.problem.errors).toBeUndefined();
   });
 
   it("names the logo refusal codes the platform sends", () => {
@@ -471,29 +651,39 @@ describe("updateOrganizationBranding", () => {
     expect(err.problem.errors).toBeUndefined();
   });
 
-  it("names a refused colour by its dotted key", async () => {
+  it("names several refused fields each in an item, a colour by its dotted key", async () => {
     const client = makeClient();
     const errors = [
       fieldItem("dark_colors.header", "String should match pattern '^#[0-9a-fA-F]{6}$'"),
+      fieldItem("style", "String should match pattern '^[a-z0-9-]{1,32}$'"),
     ];
+    // Several refused fields: the problem names the first, and each has its item in `errors`.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      problemResponse(
-        422,
-        problem(
+      problemResponse(422, {
+        ...problem(
           "request.invalid",
           "Invalid request",
           "Request body failed validation. See `errors` for the per-field breakdown.",
           errors,
         ),
-      ),
+        params: { field: "dark_colors.header" },
+        location: { field: "dark_colors.header" },
+      }),
     );
 
     const err = await caught(
-      client.updateOrganizationBranding(ORG_ID, { dark_colors: { header: "#14213g" } }),
+      client.updateOrganizationBranding(ORG_ID, {
+        dark_colors: { header: "#14213g" },
+        style: "Editorial",
+      }),
     );
 
     expect(err.code).toBe("request.invalid");
     expect(err.problem.errors).toEqual(errors);
+    expect(err.problem.errors?.map((item) => item.location?.field)).toEqual([
+      "dark_colors.header",
+      "style",
+    ]);
   });
 
   it.each([
@@ -533,7 +723,7 @@ describe("updateOrganizationBranding", () => {
       403,
       "auth.forbidden",
       "Forbidden",
-      "Your role in this organization is member: changing the organization's branding needs the admin role.",
+      "Your role in this organization is runner: it runs the organization's published versions and changes no branding.",
     ],
     [
       409,

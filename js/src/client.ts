@@ -4187,35 +4187,45 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * The branding of the caller's active organization — `GET /v1/branding`: its name, its light
-   * and dark colour sets and its two logos. Any role reads it, `runner` included, by web session
-   * or API key, so an app scaffolded from the method-app template reads its organization's
-   * branding with its own key. A personal workspace, or a team that set nothing, answers every
-   * colour and logo `null`. A logo's `uri` is a `pipelex-storage://` reference, which
-   * `resolveStorageUrl` turns into a short-lived link to its bytes.
+   * and dark colour sets, its two logos, its app style and typeface, and whether it holds the
+   * white-label entitlement. Any role reads it, `runner` included, by web session or API key, so
+   * an app scaffolded from the method-app template reads its organization's branding with its own
+   * key. A personal workspace, or a team that set nothing, answers every colour and logo `null`
+   * and no style or typeface. A logo's `uri` is a `pipelex-storage://` reference, which
+   * `resolveStorageUrl` turns into a short-lived link to its bytes. An answer without `style`,
+   * `typeface` or `white_label`, as a platform that predates them sends, reads as `null`, `null`
+   * and `false`.
    *
-   * Throws `ApiResponseError`: `400` when the caller has no active organization, `404` when its
-   * row is missing, and an answer that is not a JSON object, an empty one included.
+   * Throws `ApiResponseError`: `403` `pipelex.org.required` when the caller has no active
+   * organization, `404` when its row is missing, and an answer that is not a JSON object, an
+   * empty one included.
    */
   async getBranding(): Promise<OrganizationBranding> {
-    return this.requestProductObject("GET", "branding");
+    const answer = await this.requestProductObject<Record<string, unknown>>("GET", "branding");
+    return withCheckedBrandingChoices(answer);
   }
 
   /**
    * Set or clear an organization's branding — `PATCH /v1/organizations/{org_id}/branding`, an
-   * admin's write to the active organization. Every key of `input` is optional: a value sets it,
-   * `null` clears it, and a key left out keeps its value (`OrganizationBrandingUpdate`), so `{}`
-   * writes nothing. A new logo is the `pipelex-storage://` URI of a file the organization uploaded
-   * on its own, which the platform reads and measures, then copies under `branding/`: the answer's
-   * `uri` is that copy, and sending it back unchanged keeps the logo. The logo a write replaces or
-   * clears is erased. Answers the branding as the write left it.
+   * admin's or a member's write to the active organization. Every key of `input` is optional: a
+   * value sets it, `null` clears it, and a key left out keeps its value
+   * (`OrganizationBrandingUpdate`), so `{}` writes nothing. A new logo is the `pipelex-storage://`
+   * URI of a file the organization uploaded on its own, which the platform reads and measures, then
+   * copies under `branding/`: the answer's `uri` is that copy, and sending it back unchanged keeps
+   * the logo. The logo a write replaces or clears is erased. A style or a typeface is an id of the
+   * shape `^[a-z0-9-]{1,32}$`, stored whether or not it names one that exists. Answers the branding
+   * as the write left it, read as `getBranding` reads it.
    *
    * Throws `RequestArgumentError` for an organization id that is empty, `.` or `..`, before any
    * request. Throws `ApiResponseError`, refusing every change of the request when it refuses one:
    * `403` `pipelex.org.mismatch` when `orgId` is not the active organization, `403`
-   * `auth.forbidden` for a caller who is not its admin, `404` `pipelex.org.not_found` for a missing
-   * organization, `409` `pipelex.org.not_manageable` for a personal workspace, which has no
-   * branding, and `422` `request.invalid` for a colour that is not `#rrggbb` or a key the body does
-   * not know. A logo's refusal names its slot in its problem's `errors`, each item's
+   * `auth.forbidden` for a runner or a caller with no recognised role, `404`
+   * `pipelex.org.not_found` for a missing organization, `409` `pipelex.org.not_manageable` for a
+   * personal workspace, which has no branding, and `422` `request.invalid` for a colour that is
+   * not `#rrggbb`, a style or a typeface of another shape, or a key the body does not know, which
+   * names the field in `location.field`: the problem's own when it refuses one field alone, each
+   * item's of its `errors` when it refuses several. `white_label` is such a key, since only
+   * Pipelex staff grant it. A logo's refusal names its slot in its problem's `errors`, each item's
    * `location.field` being `square_logo` or `wide_logo` and its `detail` the sentence to show under
    * that slot: `422` `pipelex.storage.uri_invalid` for a URI that is not a storage URI, `403`
    * `pipelex.org.mismatch` for another organization's file, and `422` `request.invalid` with an
@@ -4228,7 +4238,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
     input: OrganizationBrandingUpdate,
   ): Promise<OrganizationBranding> {
     const segment = idPathSegment(orgId, "updateOrganizationBranding", ORG_ID_ARGUMENT);
-    return this.requestProductObject("PATCH", `organizations/${segment}/branding`, input);
+    const answer = await this.requestProductObject<Record<string, unknown>>(
+      "PATCH",
+      `organizations/${segment}/branding`,
+      input,
+    );
+    return withCheckedBrandingChoices(answer);
   }
 
   /**
@@ -6244,6 +6259,22 @@ function withCheckedUse(use: unknown): unknown {
     created_by: typeof use.created_by === "string" ? use.created_by : null,
     method_version: Number.isInteger(version) || version === "draft" ? version : null,
   };
+}
+
+/**
+ * A branding with its `style` and `typeface` kept only when each is a string, each read as `null`
+ * otherwise, and its `white_label` read as `true` only when it is `true`: when the answer leaves a
+ * member out, as a platform that predates it does, sends `null`, or sends any other type. So each
+ * is what `OrganizationBranding` declares, never `undefined`, and anything but the entitlement
+ * itself reads as no entitlement, which keeps Pipelex's mark. The rest is returned as it came.
+ */
+function withCheckedBrandingChoices(answer: Record<string, unknown>): OrganizationBranding {
+  return {
+    ...answer,
+    style: typeof answer.style === "string" ? answer.style : null,
+    typeface: typeof answer.typeface === "string" ? answer.typeface : null,
+    white_label: answer.white_label === true,
+  } as OrganizationBranding;
 }
 
 /**

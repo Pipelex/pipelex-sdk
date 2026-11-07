@@ -186,7 +186,7 @@ A malformed version suffix (`@0`, `@03`, `@Draft`, two suffixes) is a `422` `req
 
 ### The branding codes
 
-A refused branding write (`updateOrganizationBranding`) is one problem naming each logo or colour it refused as an item of its `errors`: the item's `location.field` is the logo's slot, `square_logo` or `wide_logo`, or the colour's dotted key, such as `colors.action`, and its `detail` the sentence a settings screen shows under that control. A logo the platform read and refused carries one item per broken rule, both slots at once, each item's code one the exported type `LogoRefusalCode` names (`logo_too_large`, `logo_not_square`, `logo_too_small`, …). [organization-branding.md](./organization-branding.md#when-a-write-is-refused) lists every code with a sentence of each.
+A refused branding write (`updateOrganizationBranding`) is one problem naming each field it refused by its `location.field`, the problem's own when it refuses one colour, style or typeface alone and an item of its `errors` per field otherwise: a colour by its dotted key, such as `colors.action`, a style or a typeface by its key, and a logo by its slot, `square_logo` or `wide_logo`, in an item whose `detail` is the sentence a settings screen shows under that control. A logo the platform read and refused carries one item per broken rule, both slots at once, each item's code one the exported type `LogoRefusalCode` names (`logo_too_large`, `logo_not_square`, `logo_too_small`, …). [organization-branding.md](./organization-branding.md#when-a-write-is-refused) lists every code with a sentence of each.
 
 ### The files codes
 

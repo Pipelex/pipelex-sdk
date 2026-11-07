@@ -970,10 +970,12 @@ export interface MembershipsResponse {
 
 // ── Organization branding (`/v1/branding`, `/v1/organizations/{id}/branding`) ──
 //
-// An organization may set up to two logos and two colour sets of three colours, which its shared
-// method apps and the apps scaffolded from the method-app template wear. Every member and every
-// API key reads it with `getBranding`; an admin writes it with `updateOrganizationBranding`. Both
-// answer the same `OrganizationBranding`. See `docs/organization-branding.md`.
+// An organization may set up to two logos, two colour sets of three colours, an app style and a
+// typeface, which its shared method apps and the apps scaffolded from the method-app template
+// wear. Every member and every API key reads it with `getBranding`; an admin or a member writes
+// it with `updateOrganizationBranding`. Both answer the same `OrganizationBranding`, which also
+// says whether the organization holds the white-label entitlement. See
+// `docs/organization-branding.md`.
 
 /**
  * One colour set: the button, accent and header colours, each `#rrggbb` in lower case, or `null`
@@ -1019,7 +1021,12 @@ export interface LogoDescriptor {
  * `colors` is the light set and `dark_colors` the dark one, used in dark mode only: a dark colour
  * that is `null` falls back to the light colour of the same role, and a light one that is `null`
  * to Pipelex's own palette. A logo is `null` when its slot is empty. A personal workspace, or a
- * team that set nothing, answers every colour and logo `null`.
+ * team that set nothing, answers every colour and logo `null`, no style and no typeface.
+ *
+ * `style` and `typeface` are ids the platform holds to a shape and never to a list, so a client
+ * reads an id it does not know as unset. The client reads both as `null`, and `white_label` as
+ * `false`, when the answer leaves them out, as a platform that predates them does, or sends a
+ * value of another type.
  */
 export interface OrganizationBranding {
   org_id: string;
@@ -1031,13 +1038,28 @@ export interface OrganizationBranding {
   square_logo: LogoDescriptor | null;
   /** The wide logo, at least one and a half times as wide as it is tall, for an app's header. */
   wide_logo: LogoDescriptor | null;
+  /**
+   * The id of the app style the team chose for its method apps, such as `editorial`: how their
+   * headings, panels, corners and spacing look. `null` when not set. Both themes share it, and a
+   * client applies it whenever one is set; it does not count towards whether an app is branded.
+   */
+  style: string | null;
+  /** The id of the typeface the team sets its apps' text in, such as `manrope`; `null` when not set. */
+  typeface: string | null;
+  /**
+   * Whether the organization holds the white-label entitlement: its method apps show no Pipelex
+   * mark anywhere a runner looks, branded or not. `false` for every other organization, a personal
+   * workspace included. Pipelex staff grant it; no branding write changes it, and
+   * `OrganizationBrandingUpdate` has no such key.
+   */
+  white_label: boolean;
 }
 
 /**
  * Changes to one colour set. A key set to a colour sets it, a key set to `null` clears it, and a
  * key left out keeps its value. A colour is `#rrggbb` in either case, stored in lower case; the
- * platform refuses anything else with a `422` `validation_failed` whose `errors[]` entry names the
- * key, such as `colors.action`.
+ * platform refuses anything else with a `422` `request.invalid` naming the key, such as
+ * `colors.action`, in `location.field` (see `OrganizationBrandingUpdate`).
  */
 export interface BrandingColorsUpdate {
   action?: string | null;
@@ -1059,12 +1081,23 @@ export interface BrandingColorsUpdate {
  *   `logo_not_an_upload`, so a logo cannot move between slots by its URI. The platform reads and
  *   measures an upload before it accepts it, keeps its own copy under `branding/`, whose URI it
  *   answers, and erases the copy a write replaces or clears; the upload is left as it is.
+ * - `style` and `typeface` take an id of one to 32 lower-case letters, digits and hyphens
+ *   (`^[a-z0-9-]{1,32}$`), stored as it is whether or not such a style or typeface exists, or
+ *   `null` to clear it. Writing one leaves the colours, the logos and the other as they are.
+ *
+ * A field the platform refuses is named in `location.field`: a colour by its dotted key, such as
+ * `colors.action`, a style or a typeface by its key. When it refuses one field alone, the problem
+ * itself names it, in `params.field` too; when it refuses several, each item of its `errors` names
+ * one. There is no `white_label` key: the entitlement is Pipelex staff's to grant, and the
+ * platform refuses a body naming it as it refuses any key it does not know.
  */
 export interface OrganizationBrandingUpdate {
   colors?: BrandingColorsUpdate | null;
   dark_colors?: BrandingColorsUpdate | null;
   square_logo?: string | null;
   wide_logo?: string | null;
+  style?: string | null;
+  typeface?: string | null;
 }
 
 // ── Billing (`/v1/billing/*`) ────────────────────────────────────────────
