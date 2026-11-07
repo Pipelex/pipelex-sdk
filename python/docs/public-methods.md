@@ -7,8 +7,9 @@ from pipelex_sdk.client import PipelexAPIClient
 
 async with PipelexAPIClient() as client:
     page = await client.list_method_templates(ordering="default", category="finance", limit=8)
-    for tab in page.categories:  # every category with a template
-        print(tab.slug, tab.label)
+    locale = "fr"
+    for tab in page.categories:  # every category with a template, in the reader's language, else in English
+        print(tab.slug, tab.labels.get(locale, tab.label))
     for template in page.items:
         # The thumbnail whose ratio is closest to a 2:1 card.
         card = min(template.thumbnails, key=lambda thumbnail: abs(thumbnail.width / thumbnail.height - 2), default=None)
@@ -25,16 +26,27 @@ async with PipelexAPIClient() as client:
 |---|---|---|
 | `list_method_templates(*, ordering=None, category=None, limit=None, cursor=None)` | `GET /v1/method-templates` | A `MethodTemplatePage`: `items`, `next_cursor`, `ordering`, `categories`. |
 | `iterate_method_templates(*, ordering=None, category=None, limit=None)` | the same, following the cursor | Every `MethodTemplate`, in the order served. |
+| `list_method_categories()` | `GET /v1/method-categories` | A `MethodCategoryList`: `categories`, the catalog's whole list. |
 
 **The order is the platform's.** An ordering is a named list an admin writes, such as `default` or one arm of a test. The templates it lists lead, in its order, and every other template follows by name, so a template appears as soon as it is public. `ordering` asks for one by name; an absent, unknown or malformed name serves `default`, and the page's `ordering` names the one served, `None` when there is none, the templates then listed by name. A client never sorts the cards: it keeps the order served.
 
-**A category filters and keeps the order.** `category` takes a slug of the catalog's list, such as `human-resources`, and keeps that category's templates in the same order; a slug no template shows keeps none. Whatever the filter, the page's `categories` names, in the catalog's order, every category at least one template shows, each a `MethodCategory` with its `slug` and its English `label`, so a tab bar drawn from it never shows an empty tab. A client translating the labels translates by slug and falls back on the label.
+**A category filters and keeps the order.** `category` takes a slug of the catalog's list, such as `human-resources`, and keeps that category's templates in the same order; a slug no template shows keeps none. Whatever the filter, the page's `categories` names, in the catalog's order, every category at least one template shows, so a tab bar drawn from it never shows an empty tab.
+
+**The categories are a list the platform keeps.** An admin of the platform adds, renames, reorders and removes the catalog's categories, with no release of any client, so a client never holds its own copy of the list. `list_method_categories` reads the whole list in its order, a category no template shows included; the page's `categories` is the part of it some template shows. Each is a `MethodCategory`:
+
+- `slug`, such as `human-resources`, which a manifest declares and never changes: a new meaning is a new slug;
+- `label`, the English label, which a client that does not translate shows;
+- `labels`, a `dict[str, str]` of the label in each language the platform holds one for, by language tag, such as `{"en": "Human resources", "fr": "Ressources humaines"}`, `labels["en"]` equalling `label`. A category stored before the platform spoke a language lacks a label in it, so a client shows `labels.get(locale, label)`.
+
+A template shows under the categories its manifest declares that are on the list. A slug off the list is kept on the method and its versions but shown under no tab, and appears as soon as an admin adds it to the list, with no new publish.
 
 **A card is the latest published version.** Each `MethodTemplate` carries `method_id`, `name`, `description` (`None` when it has none), `latest_version`, `categories` (slugs), `organization_name`, the display name of the organization holding it, and `thumbnails`, each a `MethodTemplateThumbnail`: the image's `path`, `media_type`, `width`, `height` and `sha256`, with a `url` signed by storage and its `expires_at`, about fifteen minutes after the read. The ratio is never declared: draw the thumbnail whose `width` and `height` come closest to your frame. The link is a bearer credential until it expires, so it stays out of logs and stored records: the model leaves `url` out of its `repr`, and an answer the SDK cannot read is raised with its links redacted.
 
 **Paging.** A page holds 50 templates by default and at most 200; a `limit` outside 1 to 200 is a `422` `request.invalid`. `next_cursor` resumes after the last template the page served, wherever the catalog now places it, so a template added or removed elsewhere between two pages neither repeats nor skips the ones around that point. The cursor holds neither the ordering nor the category: pass both again with it, as `iterate_method_templates` does. A cursor of another listing is a `422` `request.invalid` and one that does not decode a `422` `request.malformed`.
 
-**Refusals.** `500` `runtime.misconfigured` when the templates organization the deployment names has no record or a link cannot be signed, and `503` `runtime.unavailable`, safe to retry. A deployment that names no templates organization serves an empty catalog.
+**Who reads them.** Any member of any organization reads the catalog and the list of categories, with a web session or an API key, and every caller reads the same; a caller with no active organization is refused with a `403` `pipelex.org.required`.
+
+**Refusals.** `500` `runtime.misconfigured` when the templates organization the deployment names has no record or a link cannot be signed, and `503` `runtime.unavailable`, safe to retry. A deployment that names no templates organization serves an empty catalog. An answer the models cannot validate, such as a category without a string `slug`, `label` and `labels` of strings, is raised as an `ApiResponseError`.
 
 ## Reading another organization's public method
 
@@ -72,7 +84,7 @@ else:
 ## Visibility, categories and thumbnails on a method
 
 - **`visibility`**, on every method read (`MethodData`, `MethodDetail`, `PublicMethodDetail`): a `MethodVisibility`, `INTERNAL` or `PUBLIC`, read open, so a value a later platform adds arrives as its raw `str`. Absent from a platform that predates it, which means `INTERNAL`. The list rows (`MethodSummary`) do not carry it.
-- **`categories`**, on a method and on each version summary: the slugs the manifest declares under `[package]` that are on the catalog's list, in their declared order. The platform ignores a value it does not know, so a typo reads as no category.
+- **`categories`**, on a method and on each version summary: the slugs the manifest declares under `[package]`, each well-formed one once, in their declared order, whether or not they are on the catalog's list. The catalog shows a template under those on the list alone, so a typo shows under no tab.
 - **`thumbnails`**, on each version summary: the valid images directly under the tree's `thumbnails/` folder, each a `MethodThumbnail` (`path`, `media_type`, `width`, `height`, `sha256`), measured by the publish. A PNG, JPEG or WebP of at least 800 by 400 pixels is valid; an invalid image is simply not recorded.
 - **`description`**: the manifest's `description`, else the primary bundle's top-level `description`, else its main pipe's, a blank one counting as none at each step.
 
