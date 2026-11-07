@@ -423,8 +423,7 @@ describe("a public method's publish refusals", () => {
         jsonResponse(200, {
           outcome: "refused",
           reason,
-          message:
-            "The method is public, and its draft holds no thumbnail, so it was not published.",
+          message: "The method is public, and its publish was refused, so it was not published.",
           validation: VALID,
           method: OWN_METHOD,
         }),

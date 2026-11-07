@@ -177,9 +177,10 @@ for tab in page.categories:
     print(tab.slug, tab.label)
 async for template in client.iterate_method_templates(ordering="default"):  # every template, in the order served
     print(template.name, [thumbnail.width for thumbnail in template.thumbnails])
-read = await client.get_method(page.items[0].method_id)
-if isinstance(read, PublicMethodDetail):
-    print(read.latest_published.categories)
+if page.items:
+    read = await client.get_method(page.items[0].method_id)
+    if isinstance(read, PublicMethodDetail):
+        print(read.latest_published.categories)
 ```
 
 ### Find, link and zip the organization's files

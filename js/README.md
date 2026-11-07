@@ -184,8 +184,11 @@ const templates = await client.listMethodTemplates({ category: "human-resources"
 for (const tab of templates.categories) console.log(tab.slug, tab.label);
 // Another organization's public method reads in a narrower shape, its latest published version
 // and no draft: `updated_at` is what tells it from one of your own.
-const template = await client.getMethod(templates.items[0]!.method_id);
-if (!("updated_at" in template)) console.log(template.latest_published.categories);
+const first = templates.items[0];
+const template = first === undefined ? undefined : await client.getMethod(first.method_id);
+if (template !== undefined && !("updated_at" in template)) {
+  console.log(template.latest_published.categories);
+}
 
 // The organization's files, newest first: uploads, test files and the files runs made. Each row's
 // `uri` goes into a run's inputs as any address does. A filtered page can be empty and still carry

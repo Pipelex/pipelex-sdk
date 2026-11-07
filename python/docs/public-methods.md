@@ -10,10 +10,13 @@ async with PipelexAPIClient() as client:
     for tab in page.categories:  # every category with a template
         print(tab.slug, tab.label)
     for template in page.items:
-        card = template.thumbnails[0] if template.thumbnails else None  # pick the one closest to the shape you draw
+        # The thumbnail whose ratio is closest to a 2:1 card.
+        card = min(template.thumbnails, key=lambda thumbnail: abs(thumbnail.width / thumbnail.height - 2), default=None)
         print(template.name, template.description, card.url if card else None)
-    # A template copies into a team the caller may change methods in, from its latest published version.
-    copy = await client.copy_method(page.items[0].method_id, destination_org_id="org_team")
+    # From a web session, a template copies into a team the caller may change methods in, from its
+    # latest published version; an API key, which belongs to one organization, cannot copy.
+    if page.items:
+        await client.copy_method(page.items[0].method_id, destination_org_id="org_team")
 ```
 
 ## The catalog
@@ -51,10 +54,11 @@ A template is a public method, so its `method_id` opens on the method routes of 
 from pipelex_sdk.product_models import MethodDetail, MethodDraftInput
 
 method = await client.get_method(method_id)
-if not isinstance(method, MethodDetail):
+if isinstance(method, MethodDetail):
+    await client.write_draft(method.method_id, MethodDraftInput(contents=contents, expected_updated_at=method.updated_at))
+else:
     # Another organization's public method: read it, run it, copy it.
-    return method.latest_version
-await client.write_draft(method.method_id, MethodDraftInput(contents=contents, expected_updated_at=method.updated_at))
+    print(f"version {method.latest_version} of {method.org_id}'s method")
 ```
 
 **A version read leaves out its publisher.** `MethodVersionSummary.published_by` is optional, `None` when absent, for that reason: the publisher's user id no more crosses organizations than the method's `created_by_user_id` does.

@@ -9,11 +9,23 @@ const client = new PipelexApiClient();
 const page = await client.listMethodTemplates({ ordering: "default", category: "finance", limit: 8 });
 for (const tab of page.categories) console.log(tab.slug, tab.label); // every category with a template
 for (const template of page.items) {
-  const card = template.thumbnails[0]; // pick the one closest to the shape you draw
+  // The thumbnail whose ratio is closest to a 2:1 card.
+  const card = template.thumbnails.reduce<(typeof template.thumbnails)[number] | undefined>(
+    (best, thumbnail) =>
+      best === undefined ||
+      Math.abs(thumbnail.width / thumbnail.height - 2) < Math.abs(best.width / best.height - 2)
+        ? thumbnail
+        : best,
+    undefined,
+  );
   console.log(template.name, template.description, card?.url);
 }
-// A template copies into a team the caller may change methods in, from its latest published version.
-const copy = await client.copyMethod(page.items[0]!.method_id, { destination_org_id: "org_team" });
+// From a web session, a template copies into a team the caller may change methods in, from its
+// latest published version; an API key, which belongs to one organization, cannot copy.
+const first = page.items[0];
+if (first !== undefined) {
+  await client.copyMethod(first.method_id, { destination_org_id: "org_team" });
+}
 ```
 
 ## The catalog
@@ -49,11 +61,12 @@ A template is a public method, so its `method_id` opens on the method routes of 
 
 ```ts
 const method = await client.getMethod(methodId);
-if (!("updated_at" in method)) {
+if ("updated_at" in method) {
+  await client.writeDraft(method.method_id, { contents, expected_updated_at: method.updated_at });
+} else {
   // Another organization's public method: read it, run it, copy it.
-  return method.latest_version;
+  console.log(`version ${method.latest_version} of ${method.org_id}'s method`);
 }
-await client.writeDraft(method.method_id, { contents, expected_updated_at: method.updated_at });
 ```
 
 **A version read leaves out its publisher.** `MethodVersionSummary.published_by` is optional for that reason: the publisher's user id no more crosses organizations than the method's `created_by_user_id` does.

@@ -279,7 +279,7 @@ class TestClientPublicMethods:
         body = {
             "outcome": "refused",
             "reason": reason,
-            "message": "The method is public, and its draft holds no thumbnail, so it was not published.",
+            "message": "The method is public, and its publish was refused, so it was not published.",
             "validation": PublicMethodBodies.VALID_VERDICT,
             "method": PublicMethodBodies.OWN_METHOD,
         }

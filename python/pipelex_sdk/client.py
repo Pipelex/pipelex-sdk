@@ -2867,8 +2867,9 @@ class PipelexAPIClient(MthdsAPIClient):
             name: The copy's name, under the creation's rules; `None` keeps the original's.
             expected_draft_updated_at: The original's draft token (`MethodData.updated_at`) the caller last saw,
                 echoed verbatim: a draft that moved since is refused with a `409` `pipelex.catalog.update_conflict`, and
-                nothing is copied. `None` copies the draft as it stands when the request is served, and is what a
-                copy of another organization's public method sends.
+                nothing is copied. `None` copies the caller's own method's draft as it stands when the request is served,
+                and is what a copy of another organization's public method sends, which takes that method's latest
+                published version instead.
             idempotency_key: The copy's idempotency key, sent as the `Idempotency-Key` header, and not sent at all
                 when `None`. Generate one per copy the caller means to make (a `str(uuid.uuid4())` is a good key),
                 and keep it, with every other argument unchanged, across that copy's retries. The hosted API
