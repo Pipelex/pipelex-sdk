@@ -2924,8 +2924,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * a link cannot be signed, and `503` `runtime.unavailable`, safe to retry. A page whose `items`
    * or `categories` is not an array, whose `next_cursor` or `ordering` is neither a string nor
    * `null`, a template lacking a member a card is drawn from (a string `method_id`, `name` and
-   * `organization_name`, a positive integer `latest_version`, an array of string `categories`, and
-   * `thumbnails` each with a string `url` and positive integer `width` and `height`), and a
+   * `organization_name`, a `description` that is a string or `null`, a positive integer
+   * `latest_version`, an array of string `categories`, and `thumbnails` each with a string `path`,
+   * `media_type`, `sha256`, `url` and `expires_at` and a positive integer `width` and `height`), and a
    * category without a string `slug` and `label` are an answer the SDK cannot read, thrown as an
    * `ApiResponseError` too, its links redacted.
    */

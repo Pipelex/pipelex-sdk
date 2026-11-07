@@ -41,7 +41,7 @@ A template is a public method, so its `method_id` opens on the method routes of 
 |---|---|
 | `get_method(method_id)` | A `PublicMethodDetail`: the latest published version, never the draft |
 | `list_method_versions(method_id)`, `get_method_version(method_id, n)` | The published versions, each without `published_by` |
-| `start`, `execute`, `start_and_wait_for_result` with `method_id` | The bare id or `mt_…@<n>` runs, belongs to and is billed to the caller's organization; `mt_…@draft` is `404` |
+| `start`, `execute`, `start_and_wait` with `method_id` | The bare id or `mt_…@<n>` runs, belongs to and is billed to the caller's organization; `mt_…@draft` is `404` |
 | `copy_method(method_id, …)` | A copy of the latest published version (below) |
 | `write_draft`, `rename_method`, `publish_method`, `delete_method`, the examples | `404` `pipelex.catalog.not_found`: every write is the owner's |
 
