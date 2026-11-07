@@ -167,14 +167,16 @@ else:
 
 ### Browse the template catalog
 
-The template catalog is the public methods every organization reads, in the order the platform serves, with the categories at least one template shows and each card's thumbnails behind short-lived links. Another organization's public method reads in a narrower shape, a `PublicMethodDetail` holding its latest published version and nothing of its draft, which runs and copies like any method; a public method's publish adds refusals of its own, still verdicts ([`docs/public-methods.md`](docs/public-methods.md)):
+The template catalog is the public methods every organization reads, in the order the platform serves, with the categories at least one template shows, each labelled in every language the platform speaks, and each card's thumbnails behind short-lived links; `list_method_categories` reads the catalog's whole list of categories. Another organization's public method reads in a narrower shape, a `PublicMethodDetail` holding its latest published version and nothing of its draft, which runs and copies like any method; a public method's publish adds refusals of its own, still verdicts ([`docs/public-methods.md`](docs/public-methods.md)):
 
 ```python
 from pipelex_sdk.product_models import PublicMethodDetail
 
 page = await client.list_method_templates(category="human-resources", limit=8)
 for tab in page.categories:
-    print(tab.slug, tab.label)
+    print(tab.slug, tab.labels.get("fr", tab.label))  # the French label, else the English one
+category_list = await client.list_method_categories()  # every category, a category no template shows included
+print([category.slug for category in category_list.categories])
 async for template in client.iterate_method_templates(ordering="default"):  # every template, in the order served
     print(template.name, [thumbnail.width for thumbnail in template.thumbnails])
 if page.items:

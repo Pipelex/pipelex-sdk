@@ -181,7 +181,7 @@ class MethodVersionSummary(BaseModel):
     """The method's description at publish time, as the draft held it (see `MethodData.description`)."""
 
     categories: list[str] = Field(default_factory=list)
-    """The method's categories at publish time, as slugs of the catalog's list (see `MethodData.categories`);
+    """The method's categories at publish time, as its manifest declared them (see `MethodData.categories`);
     empty from a platform that predates them."""
 
     thumbnails: list[MethodThumbnail] = Field(default_factory=empty_list_factory_of(MethodThumbnail))
@@ -276,10 +276,10 @@ class MethodData(BaseModel):
     bundle, else its main pipe's, a blank one counting as none at each step."""
 
     categories: list[str] = Field(default_factory=list)
-    """The draft's categories, read from its manifest's `categories` under `[package]` and kept when they are
-    on the catalog's list, as slugs such as `human-resources`, in their declared order; empty for a draft with
-    no manifest or none the catalog knows, and from a platform that predates them. A person reads a
-    category's label, which `list_method_templates` names beside its slug."""
+    """The draft's categories, read from its manifest's `categories` under `[package]`: each well-formed slug, such
+    as `human-resources`, once, in its declared order, whether or not it is on the catalog's list; empty for a
+    draft with no manifest or none well-formed, and from a platform that predates them. The catalog shows a
+    template under those on its list alone, which `list_method_categories` reads, each category with its labels."""
 
     deletion_state: MethodDeletionState | None = None
     #: The editor's form inputs, saved with the draft and outside its digest.
@@ -351,7 +351,7 @@ class PublicMethodDetail(BaseModel):
     """The latest published version's description."""
 
     categories: list[str] = Field(default_factory=list)
-    """The latest published version's categories, as slugs of the catalog's list."""
+    """The latest published version's categories, as its manifest declared them."""
 
     created_at: str
     latest_version: StrictInt
@@ -603,16 +603,18 @@ class MethodPage(BaseModel):
     next_cursor: str | None
 
 
-# ── The template catalog (`/v1/method-templates`) ─────────────────────────
+# ── The template catalog (`/v1/method-templates`, `/v1/method-categories`) ─
 #
 # A template is a public method held by the organization the deployment names as its templates
 # organization, with a published version. Every organization reads the same catalog: the templates a
 # named ordering lists lead, in its order, and the others follow by name. A template reads, runs and
-# copies by its `method_id` as any public method does.
+# copies by its `method_id` as any public method does. The catalog's categories are a list an admin of
+# the platform keeps, in its order, each with a label in every language the platform speaks; a template
+# shows under the categories its manifest declares that are on the list.
 
 
 class MethodCategory(BaseModel):
-    """One category of the catalog's list: the slug a manifest declares, and the English label a person reads."""
+    """One category of the catalog's list: the slug a manifest declares, and the labels a person reads."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -620,7 +622,13 @@ class MethodCategory(BaseModel):
     """The stable slug, such as `human-resources`, which a method's `categories` hold."""
 
     label: str
-    """The English label, such as `Human resources`; a client translating by slug falls back on it."""
+    """The English label, such as `Human resources`: what a client that does not translate shows, and what one
+    that does falls back on for a language `labels` lacks."""
+
+    labels: dict[str, str]
+    """The label in each language the platform holds one for, by language tag, such as
+    `{"en": "Human resources", "fr": "Ressources humaines"}`; `labels["en"]` equals `label`. A category stored
+    before the platform spoke a language lacks a label in it, so read `labels.get(locale, label)`."""
 
 
 class MethodTemplateThumbnail(MethodThumbnail):
@@ -685,7 +693,17 @@ class MethodTemplatePage(BaseModel):
 
     categories: list[MethodCategory]
     """Every category at least one template shows, whatever the filter, in the catalog's order, each with its
-    label: the tabs a client draws, none of them ever empty."""
+    labels: the tabs a client draws, none of them ever empty."""
+
+
+class MethodCategoryList(BaseModel):
+    """The catalog's whole list of categories — `list_method_categories`: every category on it, in the catalog's
+    order, each with its labels, whether or not a template shows it.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    categories: list[MethodCategory]
 
 
 class MethodDeletionAccepted(BaseModel):

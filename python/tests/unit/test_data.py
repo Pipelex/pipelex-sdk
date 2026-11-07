@@ -317,7 +317,7 @@ class MethodCopyBodies:
 
 class PublicMethodBodies:
     """Public methods and the template catalog, as the platform serializes them (`MethodTemplatePage`,
-    `PublicMethodDetail`, `PublicMethodVersionSummary`, `PublicMethodVersionDetail`), and a method its owner reads
+    `MethodCategoryList`, `PublicMethodDetail`, `PublicMethodVersionSummary`, `PublicMethodVersionDetail`), and a method its owner reads
     with its visibility, its categories and its version's thumbnails.
 
     `@pipelex/sdk`'s `tests/public-methods.test.ts` answers its client with the same documents.
@@ -353,9 +353,18 @@ class PublicMethodBodies:
     }
 
     CATEGORIES: ClassVar[list[dict[str, Any]]] = [
-        {"slug": "finance", "label": "Finance"},
-        {"slug": "human-resources", "label": "Human resources"},
+        {"slug": "finance", "label": "Finance", "labels": {"en": "Finance", "fr": "Finance"}},
+        {"slug": "human-resources", "label": "Human resources", "labels": {"en": "Human resources", "fr": "Ressources humaines"}},
     ]
+
+    #: The catalog's whole list: a category no template shows, and one stored before French.
+    CATEGORY_LIST: ClassVar[dict[str, Any]] = {
+        "categories": [
+            {"slug": "legal", "label": "Legal", "labels": {"en": "Legal", "fr": "Juridique"}},
+            *CATEGORIES,
+            {"slug": "product", "label": "Product", "labels": {"en": "Product"}},
+        ]
+    }
 
     PAGE: ClassVar[dict[str, Any]] = {"items": [TEMPLATE], "next_cursor": None, "ordering": "default", "categories": CATEGORIES}
 

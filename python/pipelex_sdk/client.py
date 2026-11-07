@@ -127,6 +127,7 @@ from pipelex_sdk.product_models import (
     InvoiceView,
     Membership,
     MembershipsResponse,
+    MethodCategoryList,
     MethodCopyResultAdapter,
     MethodData,
     MethodDeletionAccepted,
@@ -2181,12 +2182,14 @@ class PipelexAPIClient(MthdsAPIClient):
         Returns:
             A `MethodTemplatePage`: the page's templates, `next_cursor` (`None` on the last page), the name of
             the ordering served (`None` when there is none, the templates then listed by name), and, whatever
-            the filter, every category at least one template shows, with its label, in the catalog's order,
-            so no tab drawn from it is ever empty. `iterate_method_templates` follows the cursor.
+            the filter, every category at least one template shows, with its labels, in the catalog's order,
+            so no tab drawn from it is ever empty; `list_method_categories` reads the whole list.
+            `iterate_method_templates` follows the cursor.
 
         Raises:
-            ApiResponseError: `422` `request.invalid` for a `limit` outside 1 to 200 or a cursor of another
-                listing; `422` `request.malformed` for a cursor that does not decode; `500`
+            ApiResponseError: `403` `pipelex.org.required` without an active organization; `422`
+                `request.invalid` for a `limit` outside 1 to 200 or a cursor of another listing; `422`
+                `request.malformed` for a cursor that does not decode; `500`
                 `runtime.misconfigured` when the templates organization the deployment names has no record or a
                 link cannot be signed; `503` `runtime.unavailable`, safe to retry; a `200` the SDK cannot read,
                 reported with every link redacted.
@@ -2215,6 +2218,27 @@ class PipelexAPIClient(MthdsAPIClient):
             lambda cursor: self.list_method_templates(ordering=ordering, category=category, limit=limit, cursor=cursor),
         ):
             yield template
+
+    async def list_method_categories(self) -> MethodCategoryList:
+        """The catalog's whole list of categories — `GET /v1/method-categories`.
+
+        Every category an admin of the platform put on the list, in the catalog's order, whether or not a
+        template shows it, the same for every caller. Each `MethodCategory` carries its `slug`, the one a
+        manifest declares, its English `label`, and its `labels` by language tag, which may lack a language the
+        platform added after the category was stored, so show `labels.get(locale, label)`. A template shows
+        under the categories its manifest declares that are on this list, so this is the list a method's
+        categories are picked from; `list_method_templates` names, on every page, only the categories some
+        template shows, for the tabs a client draws.
+
+        Returns:
+            A `MethodCategoryList`: its `categories`, in the catalog's order.
+
+        Raises:
+            ApiResponseError: `403` `pipelex.org.required` without an active organization; `503`
+                `runtime.unavailable`, safe to retry; a `200` the SDK cannot read, such as a category without a
+                string `slug`, `label` and `labels` of strings.
+        """
+        return await self._request_product("GET", "method-categories", read=MethodCategoryList.model_validate)
 
     async def get_method(self, method_id: str) -> MethodDetail | PublicMethodDetail:
         """Read one method with its files — `GET /v1/methods/{id}`.

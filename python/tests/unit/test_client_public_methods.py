@@ -1,6 +1,6 @@
-"""Tests for public methods and the template catalog — `list_method_templates` and its iterator, another organization's
-public method read in its narrower shape, a version read without its publisher, the visibility and categories a method
-carries, a copy naming the version it took, and the refusals of a public method's publish.
+"""Tests for public methods and the template catalog — `list_method_templates` and its iterator, `list_method_categories`,
+another organization's public method read in its narrower shape, a version read without its publisher, the visibility
+and categories a method carries, a copy naming the version it took, and the refusals of a public method's publish.
 
 The twin of `pipelex-sdk-js/tests/public-methods.test.ts`. `_send` is mocked; the bodies are the platform's own
 serialized shapes (`PublicMethodBodies`), so Pydantic's validation on the way back is part of what runs.
@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from pipelex_sdk.errors import ApiResponseError
 from pipelex_sdk.product_models import (
     MethodCategory,
+    MethodCategoryList,
     MethodCopied,
     MethodCopiedFrom,
     MethodDetail,
@@ -57,6 +58,7 @@ class TestClientPublicMethods:
         assert page.ordering == "default"
         assert page.next_cursor is None
         assert page.categories == [MethodCategory.model_validate(category) for category in PublicMethodBodies.CATEGORIES]
+        assert page.categories[1].labels == {"en": "Human resources", "fr": "Ressources humaines"}
         template = page.items[0]
         assert (template.method_id, template.name, template.latest_version) == ("mt_cv01", "CV Analyzer", 1)
         assert template.categories == ["human-resources"]
@@ -94,6 +96,7 @@ class TestClientPublicMethods:
             pytest.param({key: value for key, value in PublicMethodBodies.PAGE.items() if key != "ordering"}, id="no-ordering"),
             pytest.param({**PublicMethodBodies.PAGE, "categories": None}, id="categories-not-a-list"),
             pytest.param({**PublicMethodBodies.PAGE, "items": [{**PublicMethodBodies.TEMPLATE, "latest_version": "1"}]}, id="version-not-an-integer"),
+            pytest.param({**PublicMethodBodies.PAGE, "categories": [{"slug": "finance", "label": "Finance"}]}, id="category-without-labels"),
         ],
     )
     def test_list_method_templates_refuses_a_page_it_cannot_read_and_hides_every_link(
@@ -140,6 +143,77 @@ class TestClientPublicMethods:
             f"{BASE_URL}/v1/method-templates?ordering=default&category=finance&limit=1",
             f"{BASE_URL}/v1/method-templates?ordering=default&category=finance&limit=1&cursor=c1",
         ]
+
+    # ----- list_method_categories --------------------------------------------------------------
+
+    def test_list_method_categories_gets_the_whole_list_and_reads_it_in_its_order(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=PublicMethodBodies.CATEGORY_LIST))
+
+        category_list = asyncio.run(api_client.list_method_categories())
+
+        assert _sent_urls(send) == [f"{BASE_URL}/v1/method-categories"]
+        assert isinstance(category_list, MethodCategoryList)
+        assert [category.slug for category in category_list.categories] == ["legal", "finance", "human-resources", "product"]
+        assert category_list.categories == [MethodCategory.model_validate(category) for category in PublicMethodBodies.CATEGORY_LIST["categories"]]
+        legal = category_list.categories[0]
+        assert (legal.label, legal.labels) == ("Legal", {"en": "Legal", "fr": "Juridique"})
+
+    def test_list_method_categories_reads_a_category_lacking_a_language_which_a_client_shows_in_english(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body=PublicMethodBodies.CATEGORY_LIST))
+
+        category_list = asyncio.run(api_client.list_method_categories())
+
+        product = category_list.categories[-1]
+        assert product.labels == {"en": "Product"}
+        assert product.labels.get("fr", product.label) == "Product"
+
+    def test_list_method_categories_reads_an_empty_list(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body={"categories": []}))
+
+        category_list = asyncio.run(api_client.list_method_categories())
+
+        assert category_list.categories == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param({}, id="no-categories"),
+            pytest.param({"categories": {}}, id="categories-not-a-list"),
+            pytest.param({"categories": ["finance"]}, id="category-not-an-object"),
+            pytest.param({"categories": [{"slug": "finance", "labels": {"en": "Finance"}}]}, id="category-without-label"),
+            pytest.param({"categories": [{"slug": "finance", "label": "Finance"}]}, id="category-without-labels"),
+            pytest.param({"categories": [{"slug": "finance", "label": "Finance", "labels": ["Finance"]}]}, id="labels-not-an-object"),
+            pytest.param({"categories": [{"slug": "sales", "label": "Sales", "labels": {"en": "Sales", "fr": None}}]}, id="label-not-a-string"),
+        ],
+    )
+    def test_list_method_categories_refuses_a_list_it_cannot_read(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, body: dict[str, Any]
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body=body))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.list_method_categories())
+
+        unreadable = exc_info.value
+        assert str(unreadable) == "API GET /v1/method-categories answered 200 with a body that is not the answer the route returns"
+        assert unreadable.problem.code == "client.response_unreadable"
+
+    def test_list_method_categories_raises_the_platforms_refusal_of_a_caller_with_no_active_organization(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        patch_send(api_client, wire_response(403, json_body=problem_document("pipelex.org.required", 403, detail="Select an organization first")))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.list_method_categories())
+
+        assert exc_info.value.problem.code == "pipelex.org.required"
+        assert exc_info.value.status == 403
 
     # ----- another organization's public method ------------------------------------------------
 
