@@ -89,6 +89,7 @@ import type {
   ListMethodTemplatesQuery,
   ListMethodVersionsQuery,
   ListRunFilesQuery,
+  MethodCategoryList,
   MethodCopyInput,
   MethodCopyOutcome,
   MethodCopyResult,
@@ -2907,8 +2908,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * unknown or malformed name serves `default`, and the page's `ordering` names the one served,
    * `null` when there is none. `category` keeps one category's templates, by slug, in the same
    * order; an unknown slug keeps none. Whatever the filter, the page's `categories` names, with its
-   * label, every category at least one template shows, in the catalog's order, so no tab drawn
-   * from it is ever empty.
+   * labels, every category at least one template shows, in the catalog's order, so no tab drawn
+   * from it is ever empty; `listMethodCategories` reads the whole list.
    *
    * Each `MethodTemplate` carries the method's id and name, its latest published version's number,
    * description and categories, its organization's display name and each thumbnail with its size
@@ -2918,17 +2919,18 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Pass the page's `nextCursor` back as `cursor` with the same `ordering` and `category`, which the
    * cursor does not hold; `null` is the last page. `iterateMethodTemplates` follows it for you.
    *
-   * Throws `ApiResponseError`: `422` `request.invalid` for a `limit` outside 1 to 200 or a cursor of
-   * another listing, `422` `request.malformed` for a cursor that does not decode, `500`
-   * `runtime.misconfigured` when the templates organization the deployment names has no record or
-   * a link cannot be signed, and `503` `runtime.unavailable`, safe to retry. A page whose `items`
-   * or `categories` is not an array, whose `next_cursor` or `ordering` is neither a string nor
-   * `null`, a template lacking a member a card is drawn from (a string `method_id`, `name` and
-   * `organization_name`, a `description` that is a string or `null`, a positive integer
-   * `latest_version`, an array of string `categories`, and `thumbnails` each with a string `path`,
-   * `media_type`, `sha256`, `url` and `expires_at` and a positive integer `width` and `height`), and a
-   * category without a string `slug` and `label` are an answer the SDK cannot read, thrown as an
-   * `ApiResponseError` too, its links redacted.
+   * Throws `ApiResponseError`: `403` `pipelex.org.required` without an active organization, `422`
+   * `request.invalid` for a `limit` outside 1 to 200 or a cursor of another listing, `422`
+   * `request.malformed` for a cursor that does not decode, `500` `runtime.misconfigured` when the
+   * templates organization the deployment names has no record or a link cannot be signed, and
+   * `503` `runtime.unavailable`, safe to retry. A page whose `items` or `categories` is not an
+   * array, whose `next_cursor` or `ordering` is neither a string nor `null`, a template lacking a
+   * member a card is drawn from (a string `method_id`, `name` and `organization_name`, a
+   * `description` that is a string or `null`, a positive integer `latest_version`, an array of
+   * string `categories`, and `thumbnails` each with a string `path`, `media_type`, `sha256`, `url`
+   * and `expires_at` and a positive integer `width` and `height`), and a category without a string
+   * `slug` and `label` or whose `labels` is not an object of strings are an answer the SDK cannot
+   * read, thrown as an `ApiResponseError` too, its links redacted.
    */
   async listMethodTemplates(query: ListMethodTemplatesQuery = {}): Promise<MethodTemplatePage> {
     const search = productQuery({
@@ -2978,6 +2980,41 @@ export class PipelexApiClient implements HostedProtocolSurface {
     yield* followCursor("listMethodTemplates", (cursor) =>
       this.listMethodTemplates({ ...query, cursor }),
     );
+  }
+
+  /**
+   * The catalog's whole list of categories — `GET /v1/method-categories`: every category an admin
+   * of the platform put on it, in the catalog's order, whether or not a template shows it, the same
+   * for every caller. Each `MethodCategory` carries its `slug`, the one a manifest declares, its
+   * English `label`, and its `labels` by language tag, which may lack a language the platform
+   * added after the category was stored; show `labels[locale] ?? label`.
+   *
+   * A template shows under the categories its manifest declares that are on this list, so this is
+   * the list a method's categories are picked from. `listMethodTemplates` names, on every page, only
+   * the categories some template shows, for the tabs a client draws.
+   *
+   * Throws `ApiResponseError`: `403` `pipelex.org.required` without an active organization, and
+   * `503` `runtime.unavailable`, safe to retry. An answer whose `categories` is not an array, or
+   * holds a category without a string `slug` and `label` or whose `labels` is not an object of
+   * strings, is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async listMethodCategories(): Promise<MethodCategoryList> {
+    const endpoint = "method-categories";
+    const res = await this.requestProductAnswer("GET", endpoint, undefined);
+    const list = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const { categories } = list;
+    const fault = Array.isArray(categories)
+      ? methodCategoriesFault(categories)
+      : "`categories` is not an array";
+    if (fault !== null) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a list of categories whose ${fault}`,
+      );
+    }
+    return list as unknown as MethodCategoryList;
   }
 
   /**
@@ -6099,7 +6136,10 @@ function methodTemplatesFault(items: unknown[]): string | null {
   return null;
 }
 
-/** Why the catalog's categories are not ones the SDK reads, or `null`: each a string `slug` and `label`. */
+/**
+ * Why the catalog's categories are not ones the SDK reads, or `null`: each a string `slug` and
+ * `label`, and `labels`, an object whose every value is a string.
+ */
 function methodCategoriesFault(categories: unknown[]): string | null {
   for (let index = 0; index < categories.length; index += 1) {
     const category: unknown = categories[index];
@@ -6109,6 +6149,13 @@ function methodCategoriesFault(categories: unknown[]): string | null {
       typeof category.label !== "string"
     ) {
       return `\`categories\` holds an entry without a string \`slug\` and \`label\`, at [${index}]`;
+    }
+    const labels = category.labels;
+    if (
+      !isPlainObject(labels) ||
+      !Object.values(labels).every((label) => typeof label === "string")
+    ) {
+      return `\`categories\` holds an entry whose \`labels\` is not an object of strings, at [${index}]`;
     }
   }
   return null;

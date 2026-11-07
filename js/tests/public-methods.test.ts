@@ -1,6 +1,6 @@
 /**
- * Public methods and the template catalog: `listMethodTemplates` and its iterator, another
- * organization's public method read in its narrower shape, a version read without its publisher,
+ * Public methods and the template catalog: `listMethodTemplates` and its iterator,
+ * `listMethodCategories`, another organization's public method read in its narrower shape, a version read without its publisher,
  * the visibility and categories a method carries, a copy naming the version it took, and the
  * refusals of a public method's publish — all against a mocked fetch.
  */
@@ -14,6 +14,7 @@ import type {
   MethodDetail,
   MethodPublishRefusalReason,
   MethodPublishRefused,
+  MethodCategoryList,
   MethodTemplatePage,
   MethodVersionSummary,
   PublicMethodDetail,
@@ -66,9 +67,22 @@ const TEMPLATE = {
 };
 
 const CATEGORIES = [
-  { slug: "finance", label: "Finance" },
-  { slug: "human-resources", label: "Human resources" },
+  { slug: "finance", label: "Finance", labels: { en: "Finance", fr: "Finance" } },
+  {
+    slug: "human-resources",
+    label: "Human resources",
+    labels: { en: "Human resources", fr: "Ressources humaines" },
+  },
 ];
+
+/** The catalog's whole list: a category no template shows, and one stored before French. */
+const CATEGORY_LIST = {
+  categories: [
+    { slug: "legal", label: "Legal", labels: { en: "Legal", fr: "Juridique" } },
+    ...CATEGORIES,
+    { slug: "product", label: "Product", labels: { en: "Product" } },
+  ],
+};
 
 const PAGE = { items: [TEMPLATE], next_cursor: null, ordering: "default", categories: CATEGORIES };
 
@@ -224,8 +238,13 @@ describe("listMethodTemplates", () => {
     ],
     [
       "a category whose slug is no string",
-      { ...PAGE, categories: [{ slug: 5, label: "Finance" }] },
+      { ...PAGE, categories: [{ slug: 5, label: "Finance", labels: { en: "Finance" } }] },
       "`categories` holds an entry without a string `slug` and `label`, at [0]",
+    ],
+    [
+      "a category with no labels",
+      { ...PAGE, categories: [{ slug: "finance", label: "Finance" }] },
+      "`categories` holds an entry whose `labels` is not an object of strings, at [0]",
     ],
   ])("throws a typed ApiResponseError hiding every link for %s", async (_label, body, fault) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
@@ -277,6 +296,92 @@ describe("iterateMethodTemplates", () => {
       `${BASE_URL}/v1/method-templates?ordering=default&category=finance&limit=1`,
       `${BASE_URL}/v1/method-templates?ordering=default&category=finance&limit=1&cursor=c1`,
     ]);
+  });
+});
+
+describe("listMethodCategories", () => {
+  it("GETs /v1/method-categories and reads the whole list in its order", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, CATEGORY_LIST));
+
+    const list = await makeClient().listMethodCategories();
+
+    expect(requestedUrls(spy)).toEqual([`${BASE_URL}/v1/method-categories`]);
+    expect(list).toEqual(CATEGORY_LIST satisfies MethodCategoryList);
+    expectTypeOf(list).toEqualTypeOf<MethodCategoryList>();
+  });
+
+  it("reads a category lacking a language, which a client shows in English", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, CATEGORY_LIST));
+
+    const list = await makeClient().listMethodCategories();
+
+    const product = list.categories.find((category) => category.slug === "product");
+    expect(product?.labels).toEqual({ en: "Product" });
+    expect(product?.labels.fr ?? product?.label).toBe("Product");
+    expectTypeOf(product?.labels.fr).toEqualTypeOf<string | undefined>();
+  });
+
+  it("reads an empty list", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, { categories: [] }));
+
+    const list = await makeClient().listMethodCategories();
+
+    expect(list.categories).toEqual([]);
+  });
+
+  it.each([
+    ["categories that is not an array", { categories: {} }, "`categories` is not an array"],
+    ["no categories at all", {}, "`categories` is not an array"],
+    [
+      "a category that is no object",
+      { categories: ["finance"] },
+      "`categories` holds an entry without a string `slug` and `label`, at [0]",
+    ],
+    [
+      "a category with no label",
+      { categories: [{ slug: "finance", labels: { en: "Finance" } }] },
+      "`categories` holds an entry without a string `slug` and `label`, at [0]",
+    ],
+    [
+      "labels that is an array",
+      { categories: [{ slug: "finance", label: "Finance", labels: ["Finance"] }] },
+      "`categories` holds an entry whose `labels` is not an object of strings, at [0]",
+    ],
+    [
+      "a label in one language that is no string",
+      {
+        categories: [
+          ...CATEGORY_LIST.categories,
+          { slug: "sales", label: "Sales", labels: { en: "Sales", fr: null } },
+        ],
+      },
+      "`categories` holds an entry whose `labels` is not an object of strings, at [4]",
+    ],
+  ])("throws a typed ApiResponseError for %s", async (_label, body, fault) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+
+    const err = await makeClient()
+      .listMethodCategories()
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).message).toBe(
+      `API GET /v1/method-categories answered 200 with a list of categories whose ${fault}`,
+    );
+  });
+
+  it("throws the platform's refusal of a caller with no active organization", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse("pipelex.org.required", 403, { detail: "Select an organization first" }),
+    );
+
+    const err = await makeClient()
+      .listMethodCategories()
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).code).toBe("pipelex.org.required");
+    expect((err as ApiResponseError).status).toBe(403);
   });
 });
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.63.0] - 2026-11-08
+
+### Added
+
+- **`labels` on `MethodCategory` (Breaking)**: each category of a `listMethodTemplates` page carries `labels`, its label by language tag, such as `{ en: "Human resources", fr: "Ressources humaines" }`, typed `Partial<Record<string, string>>` because a category stored before the platform spoke a language lacks a label in it, so a client shows `labels[locale] ?? label`, `label` staying the English one. The member is required: code that builds a `MethodCategory` itself, such as a test fixture, now supplies it, and a category whose `labels` is not an object of strings, as a platform that predates it answers, is an answer the SDK cannot read (`docs/public-methods.md`).
+- **`listMethodCategories`**: reads `GET /v1/method-categories`, the catalog's whole list of categories in its order, a category no template shows included, as a `MethodCategoryList` of `MethodCategory`s with their labels; an answer whose `categories` is not an array of such categories is one the SDK cannot read, thrown as an `ApiResponseError`.
+
+### Changed
+
+- **A method's `categories` are its manifest's**: the docs of `categories` on a method, a version summary and another organization's public method say that the platform keeps every well-formed slug the manifest declares, on the catalog's list or not, and that the catalog shows a template under those on the list alone.
+
+### Fixed
+
+- **The template catalog's refusals**: the docs of `listMethodTemplates` say that it answers `403` `pipelex.org.required` without an active organization.
+
 ## [v0.62.0] - 2026-11-07
 
 ### Added

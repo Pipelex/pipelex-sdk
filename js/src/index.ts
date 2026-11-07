@@ -193,6 +193,7 @@ export type {
   ListMethodTemplatesQuery,
   ListMethodVersionsQuery,
   MethodCategory,
+  MethodCategoryList,
   MethodCopied,
   MethodCopiedFrom,
   MethodCopyInput,
