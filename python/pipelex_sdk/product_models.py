@@ -47,7 +47,7 @@ from pydantic import (
     model_validator,
 )
 
-from pipelex_sdk._pydantic_utils import empty_list_factory_of, none_when_it_does_not_fit
+from pipelex_sdk._pydantic_utils import empty_list_factory_of, false_when_it_does_not_fit, none_when_it_does_not_fit
 from pipelex_sdk.answer_reading import LenientProblem
 from pipelex_sdk.runs import RunStatus
 from pipelex_sdk.validation_models import PipelexValidationResult
@@ -1034,10 +1034,11 @@ class MembershipsResponse(BaseModel):
 
 # ── Organization branding (`/v1/branding`, `/v1/organizations/{id}/branding`) ──
 #
-# An organization may set up to two logos and two colour sets of three colours, which its shared
-# method apps and the apps scaffolded from the method-app template wear. Every member and every API
-# key reads it with `get_branding`; an admin writes it with `update_organization_branding`. Both
-# answer the same `OrganizationBranding`. See `docs/organization-branding.md`.
+# An organization may set up to two logos, two colour sets of three colours, an app style and a
+# typeface, which its shared method apps and the apps scaffolded from the method-app template wear.
+# Every member and every API key reads it with `get_branding`; an admin or a member writes it with
+# `update_organization_branding`. Both answer the same `OrganizationBranding`, which also says whether
+# the organization holds the white-label entitlement. See `docs/organization-branding.md`.
 
 
 class BrandingColors(BaseModel):
@@ -1091,7 +1092,12 @@ class OrganizationBranding(BaseModel):
     `colors` is the light set and `dark_colors` the dark one, used in dark mode only: a dark colour that
     is `None` falls back to the light colour of the same role, and a light one that is `None` to
     Pipelex's own palette. A logo is `None` when its slot is empty. A personal workspace, or a team that
-    set nothing, answers every colour and logo `None`.
+    set nothing, answers every colour and logo `None`, no style and no typeface.
+
+    `style` and `typeface` are ids the platform holds to a shape and never to a list, so a client reads an
+    id it does not know as unset. Read as `@pipelex/sdk` reads them: both read as `None`, and `white_label`
+    as `False`, when the answer leaves them out, as a platform that predates them does, or sends a value of
+    another type, and the branding still validates.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -1108,13 +1114,27 @@ class OrganizationBranding(BaseModel):
     wide_logo: LogoDescriptor | None
     """The wide logo, at least one and a half times as wide as it is tall, for an app's header."""
 
+    style: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
+    """The id of the app style the team chose for its method apps, such as `editorial`: how their headings,
+    panels, corners and spacing look. `None` when not set. Both themes share it, and a client applies it
+    whenever one is set; it does not count towards whether an app is branded."""
+
+    typeface: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
+    """The id of the typeface the team sets its apps' text in, such as `manrope`; `None` when not set."""
+
+    white_label: Annotated[StrictBool, WrapValidator(false_when_it_does_not_fit)] = False
+    """Whether the organization holds the white-label entitlement: its method apps show no Pipelex mark anywhere
+    a runner looks, branded or not. `False` for every other organization, a personal workspace included.
+    Pipelex staff grant it; no branding write changes it, and `OrganizationBrandingUpdate` has no such field."""
+
 
 class BrandingColorsUpdate(BaseModel):
     """Changes to one colour set — part of an `OrganizationBrandingUpdate`.
 
     A field set to a colour sets it, a field set to `None` clears it, and a field left unset keeps its value.
     A colour is `#rrggbb` in either case, stored in lower case; the platform refuses anything else with
-    a `422` `validation_failed` whose `errors[]` entry names the field, such as `colors.action`.
+    a `422` `request.invalid` naming the field, such as `colors.action`, in `location.field` (see
+    `OrganizationBrandingUpdate`).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1140,6 +1160,15 @@ class OrganizationBrandingUpdate(BaseModel):
       its URI. The platform reads and measures an upload before it accepts it, keeps its own copy under
       `branding/`, whose URI it answers, and erases the copy a write replaces or clears; the upload is left
       as it is.
+    - `style` and `typeface` take an id of one to 32 lower-case letters, digits and hyphens
+      (`^[a-z0-9-]{1,32}$`), stored as it is whether or not such a style or typeface exists, or `None` to
+      clear it. Writing one leaves the colours, the logos and the other as they are.
+
+    A field the platform refuses is named in `location.field`: a colour by its dotted key, such as
+    `colors.action`, a style or a typeface by its name. When it refuses one field alone, the problem itself
+    names it, in `params.field` too; when it refuses several, each item of its `errors` names one. There is
+    no `white_label` field: the entitlement is Pipelex staff's to grant, so the model refuses it at
+    construction, as the platform refuses a body naming it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1148,6 +1177,8 @@ class OrganizationBrandingUpdate(BaseModel):
     dark_colors: BrandingColorsUpdate | None = None
     square_logo: str | None = None
     wide_logo: str | None = None
+    style: str | None = None
+    typeface: str | None = None
 
 
 # ── Billing (`/v1/billing/*`) ────────────────────────────────────────────

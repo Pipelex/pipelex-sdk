@@ -1,13 +1,13 @@
 # An organization's branding
 
-An organization may carry a brand: up to two logos, a square one and a wide one, and two colour sets of three colours, the light set and an optional dark one. The webapp shows it on the organization's menu and on the apps of its methods, and an app scaffolded from a method-app template reads it with its API key to wear the same brand. A personal workspace never has one. The client reaches it on two routes of the hosted API, and the models are in `pipelex_sdk.product_models`. It is the twin of `@pipelex/sdk`'s `getBranding` and `updateOrganizationBranding`.
+An organization may carry a brand: up to two logos, a square one and a wide one, two colour sets of three colours, the light set and an optional dark one, an app style and a typeface. The webapp shows it on the organization's menu and on the apps of its methods, and an app scaffolded from a method-app template reads it with its API key to wear the same brand. A personal workspace never has one. Beside the brand, the branding says whether the organization holds the white-label entitlement, which Pipelex staff grant. The client reaches it on two routes of the hosted API, and the models are in `pipelex_sdk.product_models`. It is the twin of `@pipelex/sdk`'s `getBranding` and `updateOrganizationBranding`.
 
 ## The methods
 
 | Method | Route | Who may call it | Answer |
 |---|---|---|---|
 | `get_branding()` | `GET /v1/branding` | Every member of the active organization, `runner` included, by web session or API key | The active organization's `OrganizationBranding`. |
-| `update_organization_branding(org_id, update)` | `PATCH /v1/organizations/{org_id}/branding` | An admin of the active organization, by web session | The `OrganizationBranding` as the write left it. |
+| `update_organization_branding(org_id, update)` | `PATCH /v1/organizations/{org_id}/branding` | An admin or a member of the active organization, by web session | The `OrganizationBranding` as the write left it. |
 
 Both answer the same model, so a client holds one type whichever it called. `get_branding` takes no organization id: it reads the caller's active organization.
 
@@ -21,8 +21,17 @@ Both answer the same model, so a client holds one type whichever it called. `get
 | `dark_colors` | `BrandingColors` | The dark colour set, used in dark mode only. |
 | `square_logo` | `LogoDescriptor \| None` | The square logo, for the organization menu and small headers. |
 | `wide_logo` | `LogoDescriptor \| None` | The wide logo, for an app's header. |
+| `style` | `str \| None` | The id of the app style the team chose for its method apps, `None` when not set. |
+| `typeface` | `str \| None` | The id of the typeface the team sets its apps' text in, `None` when not set. |
+| `white_label` | `bool` | Whether the organization holds the white-label entitlement. |
 
 A `BrandingColors` always carries its three fields, each `#rrggbb` in lower case or `None` when not set: `action` is the button colour, `accent` the accent colour and `header` the header band's colour. A dark colour that is `None` falls back to the light colour of the same role, and a light one that is `None` to Pipelex's own palette for that theme.
+
+**The style and the typeface.** `style` is the id of the app style the team chose, such as `editorial`: how its method apps' headings, panels, corners and spacing look. `typeface` is the id of the typeface their text is set in, such as `manrope`. Both themes share them. The platform holds each to a shape, one to 32 lower-case letters, digits and hyphens (`^[a-z0-9-]{1,32}$`), and never to a list: the list of styles and typefaces lives in the form kernel's `@pipelex/mthds-form/brand` entry, so a client reads an id it does not know as unset, and a style added there needs no new SDK. Neither counts towards whether an app is branded, which stays a logo or a colour, since a branded app trades Pipelex's strip for the team's band and a style alone would leave that band carrying nothing of the team's; a client applies the style whenever one is set.
+
+**The white-label entitlement.** `white_label` is `True` when the organization holds the white-label option: its method apps show no Pipelex mark anywhere a runner looks, whether or not the team set a brand. It is `False` for every other organization, a personal workspace included. It is not part of the brand the team sets: Pipelex staff grant and withdraw it, no branding write changes it, and `OrganizationBrandingUpdate` has no such field.
+
+**A branding written before these fields existed** answers `style` and `typeface` `None` and `white_label` `False`. The client reads an answer that leaves any of the three out, as a platform that predates them sends, or that sends a value of another type, the same way, as `@pipelex/sdk` reads it: `style` and `typeface` as `None` and `white_label` as `False`, and the branding still validates.
 
 A `LogoDescriptor` is what the platform recorded when it accepted the logo:
 
@@ -43,7 +52,7 @@ Only the fields an `OrganizationBrandingUpdate` sets are sent: a value sets it, 
 from pipelex_sdk.product_models import BrandingColorsUpdate, OrganizationBrandingUpdate
 
 # Set the button and accent colours, keep the header colour, clear the whole dark set,
-# attach a square logo and remove the wide one.
+# attach a square logo, remove the wide one, choose a style and clear the typeface.
 branding = await client.update_organization_branding(
     org_id,
     OrganizationBrandingUpdate(
@@ -51,12 +60,15 @@ branding = await client.update_organization_branding(
         dark_colors=None,
         square_logo="pipelex-storage://<org_id>/assets/<file>.png",
         wide_logo=None,
+        style="editorial",
+        typeface=None,
     ),
 )
 ```
 
 - **Colours** (`BrandingColorsUpdate`): each of `action`, `accent` and `header` takes `#rrggbb` in either case, stored in lower case. `colors=None` or `dark_colors=None` clears all three colours of that set. The client does not check a colour itself: the platform does, and names the field it refused.
 - **Logos**: `square_logo` and `wide_logo` take one of three values. The `pipelex-storage://` URI of a file the organization uploaded on its own (`upload`) sets a new logo: the platform reads and measures it, then writes its own copy under `branding/`, and the answer's `uri` names that copy, never the upload, which the platform leaves as it is. The `uri` the branding answers for that slot, sent back unchanged, leaves the slot out of the write: nothing is read, and the slot keeps whatever logo the branding names when the write lands, so a save that resends the logo it read never puts back one a concurrent save replaced. `None` removes the logo. Any other URI is refused as `logo_not_an_upload`: a run's or a method's file, a `branding/` copy the slot no longer holds, and the other slot's logo too, so a logo cannot move between slots by its URI; upload it again for the other slot instead. Once the write has landed, the platform erases the `branding/` copy it replaced or cleared.
+- **Style and typeface**: `style` and `typeface` each take an id of one to 32 lower-case letters, digits and hyphens, stored as it is whether or not such a style or typeface exists, or `None` to clear it. Writing one leaves the colours, the logos and the other as they are. The client does not check an id itself: the platform does, and names the field it refused. There is no `white_label` field, so an update naming it is refused when it is built, as the platform refuses a body naming it.
 - **The rules a logo meets**: at most 1 MiB; a PNG, JPEG, WebP or SVG image by its bytes, whatever type the upload declared, an SVG in UTF-8 or, behind its byte-order mark, UTF-16; a still image, so never an animated PNG (an APNG) or an animated WebP; a raster of at most 4096 × 4096 pixels that decodes whole; a square logo's longer side at most 10% longer than its shorter, and a raster one at least 128 px on each side; a wide logo at least one and a half times as wide as it is tall, and a raster one at least 64 px tall. An SVG is measured from its root element, by its `width` and `height` when both are in absolute units, else by its `viewBox`, and each side must lie between 0.001 and 1,000,000, in pixels for a `width` or `height` and in the SVG's own units for a `viewBox`. It must declare no XML entities or external references and carry no active content: no `script` or `foreignObject` element, no element in the XHTML namespace, no `on…` event handler attribute, no `set` or `animate` that rewrites a link, no `xml-stylesheet` processing instruction, and no link but a reference inside the file (`#…`) or an embedded PNG, JPEG, GIF or WebP image (`data:image/…`), whether an `href`, an `xlink:href`, or a CSS `url()` or `src()`. Wherever a browser reads CSS, which is a `<style>` element's text and any attribute in no namespace or the SVG one, such as `style`, `fill` or `filter`, it must hold no `@import`, no `image()` or `image-set()`, and no escape (a backslash, which can spell a link out of sight). A `<style>` element itself is allowed, so the class-based styles a design tool exports pass, and so does a reference inside the file such as `fill:url(#grad)`; an attribute in another namespace, such as Inkscape's `inkscape:export-filename`, and a `data-*` one, such as the layer names Illustrator writes in `data-name`, are never read as CSS.
 
 The write sends no `Idempotency-Key`, as `rename_organization` sends none. A later write that should keep a logo leaves its field unset, or sends back the `uri` the branding answered.
@@ -67,15 +79,17 @@ A refused write changes nothing, whichever part of it was refused, and raises an
 
 | Status | `problem.code` | When |
 |---|---|---|
-| `403` | `auth.forbidden` | The caller is not the organization's admin. |
+| `403` | `auth.forbidden` | The caller is a runner, or holds no recognised role in the organization. |
 | `403` | `pipelex.org.mismatch` | `org_id` is not the caller's active organization, or a logo's URI is a file of another organization. |
 | `404` | `pipelex.org.not_found` | The organization does not exist. |
 | `409` | `pipelex.org.not_manageable` | The organization is a personal workspace, which has no branding. |
-| `422` | `request.invalid` | A colour is not `#rrggbb`, or a logo was refused. |
+| `422` | `request.invalid` | A colour is not `#rrggbb`, a style or a typeface is not an id of the shape `^[a-z0-9-]{1,32}$`, or a logo was refused. |
 | `422` | `pipelex.storage.uri_invalid` | A logo's URI is not a storage URI. |
 | `503` | `runtime.unavailable` | The platform's storage failed while reading or copying a logo, or its database failed or could not be reached, so the write may have landed or not. Its `retry` is `yes`: the same `update` sent again is safe, and `get_branding` reads what the branding holds. |
 
-**A refusal about a logo or a colour names it in its problem's `errors`**, one `ProblemItem` per refused logo or colour, so a settings screen shows each sentence under the control it concerns. Each item's `location.field` is the slot, `square_logo` or `wide_logo`, or the colour's dotted key, such as `colors.action` or `dark_colors.header`; its `detail` is the sentence to show. A logo the platform read and refused carries one item per broken rule, both slots answered in one refusal, each item's `code` one `LogoRefusalCode` (`pipelex_sdk.errors`) names:
+**A refused field is named by its `location.field`**, so a settings screen shows each sentence under the control it concerns: a colour by its dotted key, such as `colors.action` or `dark_colors.header`, and a style or a typeface by `style` or `typeface`. When the write refuses one such field alone, the problem itself names it, in `problem.location.field` and in `problem.params.field`, and carries no `errors`; when it refuses several, it names the first and carries one `ProblemItem` per refused field in `errors`, each with its own `location.field`.
+
+**A refusal about a logo names it in its problem's `errors`**, one `ProblemItem` per refused logo. Each item's `location.field` is the slot, `square_logo` or `wide_logo`; its `detail` is the sentence to show. A logo the platform read and refused carries one item per broken rule, both slots answered in one refusal, each item's `code` one `LogoRefusalCode` (`pipelex_sdk.errors`) names:
 
 | `code` | `LogoRefusalCode` | Example `detail` |
 |---|---|---|
@@ -99,4 +113,4 @@ except ApiResponseError as exc:
     under_square = [item.detail for item in exc.problem.errors or [] if item.location is not None and item.location.field == "square_logo"]
 ```
 
-`get_branding` raises `400` when the caller has no active organization and `404` when its organization's row is missing. Either method raises the `ApiResponseError` of an answer it cannot read for a `2xx` that is not the branding, an empty one included.
+`get_branding` raises `403` `pipelex.org.required` when the caller has no active organization and `404` when its organization's row is missing. Either method raises the `ApiResponseError` of an answer it cannot read for a `2xx` that is not the branding, an empty one included.

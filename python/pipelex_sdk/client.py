@@ -3259,43 +3259,48 @@ class PipelexAPIClient(MthdsAPIClient):
     async def get_branding(self) -> OrganizationBranding:
         """The branding of the caller's active organization — `GET /v1/branding`.
 
-        Its name, its light and dark colour sets and its two logos. Any role reads it, `runner` included,
-        by web session or API key, so an app scaffolded from a method-app template reads its organization's
-        branding with its own key. A personal workspace, or a team that set nothing, answers every colour
-        and logo `None`. A logo's `uri` is a `pipelex-storage://` reference, which `resolve_storage_url`
-        turns into a short-lived link to its bytes.
+        Its name, its light and dark colour sets, its two logos, its app style and typeface, and whether it
+        holds the white-label entitlement. Any role reads it, `runner` included, by web session or API key, so
+        an app scaffolded from a method-app template reads its organization's branding with its own key. A
+        personal workspace, or a team that set nothing, answers every colour and logo `None` and no style or
+        typeface. A logo's `uri` is a `pipelex-storage://` reference, which `resolve_storage_url` turns into
+        a short-lived link to its bytes. An answer without `style`, `typeface` or `white_label`, as a platform
+        that predates them sends, reads as `None`, `None` and `False`.
 
         Raises:
-            ApiResponseError: `400` when the caller has no active organization, `404` when its row is
-                missing, and an answer that is not the branding, an empty one included.
+            ApiResponseError: `403` `pipelex.org.required` when the caller has no active organization, `404`
+                when its row is missing, and an answer that is not the branding, an empty one included.
         """
         return await self._request_product("GET", "branding", read=OrganizationBranding.model_validate)
 
     async def update_organization_branding(self, org_id: str, update: OrganizationBrandingUpdate) -> OrganizationBranding:
         """Set or clear an organization's branding — `PATCH /v1/organizations/{org_id}/branding`.
 
-        An admin's write to the active organization. Only the fields `update` sets are sent: a value sets
-        it, an explicit `None` clears it, and a field left unset keeps its value (`OrganizationBrandingUpdate`),
-        so an empty update writes nothing. A new logo is the `pipelex-storage://` URI of a file the organization
-        uploaded on its own, which the platform reads and measures, then copies under `branding/`: the answer's
-        `uri` is that copy, and sending it back unchanged keeps the logo. The logo a write replaces or clears
-        is erased.
+        An admin's or a member's write to the active organization. Only the fields `update` sets are sent: a
+        value sets it, an explicit `None` clears it, and a field left unset keeps its value
+        (`OrganizationBrandingUpdate`), so an empty update writes nothing. A new logo is the `pipelex-storage://`
+        URI of a file the organization uploaded on its own, which the platform reads and measures, then copies
+        under `branding/`: the answer's `uri` is that copy, and sending it back unchanged keeps the logo. The
+        logo a write replaces or clears is erased. A style or a typeface is an id of the shape
+        `^[a-z0-9-]{1,32}$`, stored whether or not it names one that exists.
 
         Args:
             org_id: The active organization's `org_id`.
             update: What to set and what to clear.
 
         Returns:
-            The branding as the write left it.
+            The branding as the write left it, read as `get_branding` reads it.
 
         Raises:
             RequestArgumentError: `org_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`;
                 nothing is sent.
             ApiResponseError: The platform refuses every change of the request when it refuses one: `403`
                 `pipelex.org.mismatch` when `org_id` is not the active organization, `403` `auth.forbidden` for a
-                caller who is not its admin, `404` `pipelex.org.not_found` for a missing organization, `409`
-                `pipelex.org.not_manageable` for a personal workspace, which has no branding, and `422`
-                `request.invalid` for a colour that is not `#rrggbb`. A logo's refusal names its slot in its
+                runner or a caller with no recognised role, `404` `pipelex.org.not_found` for a missing
+                organization, `409` `pipelex.org.not_manageable` for a personal workspace, which has no branding,
+                and `422` `request.invalid` for a colour that is not `#rrggbb` or a style or a typeface of another
+                shape, which names the field in `location.field`: the problem's own when it refuses one field
+                alone, each item's of its `errors` when it refuses several. A logo's refusal names its slot in its
                 problem's `errors`, each item's `location.field` being `square_logo` or `wide_logo` and its
                 `detail` the sentence to show under that slot: `422` `pipelex.storage.uri_invalid` for a URI that
                 is not a storage URI, `403` `pipelex.org.mismatch` for another organization's file, and `422`
