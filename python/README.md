@@ -165,6 +165,33 @@ else:
     print(result.message, [reference.uri for reference in result.references])
 ```
 
+### Store a layout and read it on validate
+
+A layout is a data file a producer designed for one pipe of a published version, which the platform stores beside the method, keyed by the tree it was designed over, and carries on every validate by `method_id` that names `layouts` and resolves that tree, newest first; a write of the same tree, pipe, catalog and prompt hash replaces it, and `layouts` is `None` when none is stored, the host's signal to render the plain form ([`docs/method-layouts.md`](docs/method-layouts.md)):
+
+```python
+import uuid
+
+from pipelex_sdk.method_layout_models import LayoutProvenanceInput, MethodLayoutInput
+from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM, VALIDATION_VIEW_LAYOUTS, PipelexValidationReport
+
+version = await client.get_method_version("mt_123", 3)
+assert version.tree_digest is not None
+layout = MethodLayoutInput(
+    tree_digest=version.tree_digest,
+    pipe_ref="receipts.review_receipt",
+    catalog="composer",
+    prompt_hash="a1b2c3d4e5f6",
+    jsonl='{"op":"add","path":"/root","value":"page"}',  # the producer model's JSON patch lines, as emitted
+    provenance=LayoutProvenanceInput(producer="pipelex-method", model="claude-4.8-opus", style="editorial"),
+)
+layout_key = str(uuid.uuid4())  # one key per layout, made once and sent again unchanged on each retry
+stored = await client.store_method_layout("mt_123", 3, layout, idempotency_key=layout_key)
+report = await client.validate(method_id="mt_123@3", views=[VALIDATION_VIEW_INPUT_FORM, VALIDATION_VIEW_LAYOUTS])
+if isinstance(report, PipelexValidationReport) and report.layouts is not None:
+    print([(candidate.catalog, candidate.provenance.style) for candidate in report.layouts])
+```
+
 ### Browse the template catalog
 
 The template catalog is the public methods every organization reads, in the order the platform serves, with the categories at least one template shows and each card's thumbnails behind short-lived links; `list_method_categories` reads the catalog's whole list of categories. Each category carries its `labels` by language tag and may lack a language, in which case a client shows its English `label`. Another organization's public method reads in a narrower shape, a `PublicMethodDetail` holding its latest published version and nothing of its draft, which runs and copies like any method; a public method's publish adds refusals of its own, still verdicts ([`docs/public-methods.md`](docs/public-methods.md)):

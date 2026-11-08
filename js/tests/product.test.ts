@@ -1298,7 +1298,7 @@ describe("runs list / update", () => {
       "string",
     ],
     ["null", [null], "null"],
-    ["an array", [["mt_x"]], "object"],
+    ["an array", [["mt_x"]], "an array"],
   ] as const)(
     "listRuns refuses %s before any request, rather than list every method's runs",
     async (_, args, got) => {

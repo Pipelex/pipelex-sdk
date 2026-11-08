@@ -17,8 +17,9 @@ def none_when_it_does_not_fit(value: Any, handler: ValidatorFunctionWrapHandler)
 
     The wrap validator of every leniently read wire field that reads as `None` when unset: a run's stored
     problem (`pipelex_sdk.answer_reading.LenientProblem`), a status read's degradation (`pipelex_sdk.runs`), a
-    file use's creator and method version (`pipelex_sdk.product_models.FileUse`), and a branding's style and
-    typeface (`pipelex_sdk.product_models.OrganizationBranding`).
+    file use's creator and method version (`pipelex_sdk.product_models.FileUse`), a branding's style and
+    typeface (`pipelex_sdk.product_models.OrganizationBranding`), and a stored layout's seed and style
+    (`pipelex_sdk.method_layout_models.LayoutProvenance`).
     """
     try:
         return handler(value)
@@ -37,6 +38,19 @@ def false_when_it_does_not_fit(value: Any, handler: ValidatorFunctionWrapHandler
         return handler(value)
     except ValidationError:
         return False
+
+
+def zero_when_it_does_not_fit(value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+    """Validate `value`, or read it as `0` when it does not fit its declared type and bounds.
+
+    The wrap validator of a leniently read wire count whose unset reading is `0`: a stored layout's repair rounds
+    (`pipelex_sdk.method_layout_models.LayoutProvenance`), where a missing value, a negative one or one of another
+    type reads as the platform's default.
+    """
+    try:
+        return handler(value)
+    except ValidationError:
+        return 0
 
 
 def empty_list_factory_of(_: type[T]) -> Callable[[], list[T]]:

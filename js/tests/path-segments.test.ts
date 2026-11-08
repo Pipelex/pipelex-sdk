@@ -65,6 +65,19 @@ const METHOD_ID_ROUTES: IdRoute[] = [
     (client, id) => client.getMethodVersion(id, 2),
     (segment) => `${METHOD_URL(segment)}/versions/2`,
   ],
+  [
+    "storeMethodLayout",
+    (client, id) =>
+      client.storeMethodLayout(id, 2, {
+        tree_digest: `sha256:${"0".repeat(64)}`,
+        pipe_ref: "receipts.review",
+        catalog: "composer",
+        prompt_hash: "a1b2c3d4e5f6",
+        jsonl: "{}",
+        provenance: { producer: "pipelex-method", model: "claude-4.8-opus" },
+      }),
+    (segment) => `${METHOD_URL(segment)}/versions/2/layouts`,
+  ],
   ["deleteMethod", (client, id) => client.deleteMethod(id), METHOD_URL],
   [
     "createMethodExample",
