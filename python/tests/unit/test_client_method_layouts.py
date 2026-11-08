@@ -116,15 +116,38 @@ class TestClientMethodLayouts:
 
         assert exc_info.value.errors()[0]["type"] == "extra_forbidden"
 
-    def test_a_layout_read_back_is_written_again_without_its_stored_at(
-        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            pytest.param(MethodLayoutBodies.STORED, id="as-the-platform-stores-it"),
+            pytest.param(
+                {
+                    **MethodLayoutBodies.STORED,
+                    "generation": 3,
+                    "provenance": {**MethodLayoutBodies.STORED["provenance"], "temperature": 0.7},
+                },
+                id="with-a-field-a-later-platform-adds-at-each-level",
+            ),
+        ],
+    )
+    def test_a_layout_read_back_is_written_again_with_only_the_fields_the_write_takes(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, stored: dict[str, Any]
     ) -> None:
+        """`from_layout` drops `stored_at` and every extension field the reader kept, at both levels."""
         send = patch_send(api_client, wire_response(200, json_body=MethodLayoutBodies.STORED))
-        read_back = MethodLayout.model_validate(MethodLayoutBodies.STORED)
+        read_back = MethodLayout.model_validate(stored)
 
-        asyncio.run(api_client.store_method_layout(_METHOD_ID, 3, MethodLayoutInput.model_validate(read_back.model_dump(exclude={"stored_at"}))))
+        asyncio.run(api_client.store_method_layout(_METHOD_ID, 3, MethodLayoutInput.from_layout(read_back)))
 
         assert _sent_body(send) == MethodLayoutBodies.INPUT
+
+    @pytest.mark.parametrize("repair_rounds", [True, 1.0, "1"])
+    def test_the_write_refuses_a_repair_rounds_that_is_not_an_int(self, repair_rounds: object) -> None:
+        """A strict `int`, so a value pydantic would coerce is refused rather than sent as an altered count."""
+        with pytest.raises(ValidationError) as exc_info:
+            LayoutProvenanceInput.model_validate({**_REQUIRED_PROVENANCE, "repair_rounds": repair_rounds})
+
+        assert exc_info.value.errors()[0]["type"] == "int_type"
 
     @pytest.mark.parametrize("version", [0, -1, True, 2.0, "3", None])
     def test_store_method_layout_refuses_a_version_that_is_not_a_positive_integer(

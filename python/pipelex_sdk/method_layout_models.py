@@ -112,17 +112,18 @@ class LayoutProvenanceInput(BaseModel):
     style: str | None = None
     """The id of the app style the layout was designed under, of the shape `^[a-z0-9-]{1,32}$`."""
 
-    repair_rounds: int | None = None
-    """How many repair rounds the producer ran before the layout validated, from 0 to 100."""
+    repair_rounds: StrictInt | None = None
+    """How many repair rounds the producer ran before the layout validated, from 0 to 100. Strict, so a `bool`, a
+    `float` or a numeric string is refused when the input is built rather than sent as an altered count."""
 
 
 class MethodLayoutInput(BaseModel):
     """The write of `store_method_layout` — `POST /v1/methods/{id}/versions/{n}/layouts`: the stored layout without `stored_at`.
 
     Closed at both levels, as the route's body is, so a field the platform does not take, `stored_at` included, is
-    refused when the input is built. A layout read back is written again with
-    `MethodLayoutInput.model_validate(layout.model_dump(exclude={"stored_at"}))`. The bounds below are the platform's,
-    which refuses a field breaking one with a `422` `request.invalid` naming it.
+    refused when the input is built. A layout read back is written again with `MethodLayoutInput.from_layout(layout)`,
+    which keeps only the fields the write takes. The bounds below are the platform's, which refuses a field breaking one
+    with a `422` `request.invalid` naming it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -146,6 +147,25 @@ class MethodLayoutInput(BaseModel):
 
     provenance: LayoutProvenanceInput
     """How it was made."""
+
+    @classmethod
+    def from_layout(cls, layout: MethodLayout) -> MethodLayoutInput:
+        """The write that stores `layout` again, as `@pipelex/sdk` sends a layout read back.
+
+        Only the fields the write takes are copied, at both levels: `stored_at`, which the platform stamps, and every
+        field a later platform adds to a stored layout or its provenance, which `MethodLayout` keeps in `model_extra`,
+        are left out, so a layout read from a newer platform is written back rather than refused as an extra field.
+
+        Args:
+            layout: A layout as `store_method_layout` returned it or a validate report carried it.
+
+        Returns:
+            The input `store_method_layout` takes, holding the layout's own values.
+        """
+        provenance_fields: set[str] = set(LayoutProvenanceInput.model_fields)
+        include: dict[str, bool | set[str]] = dict.fromkeys(cls.model_fields, True)
+        include["provenance"] = provenance_fields
+        return cls.model_validate(layout.model_dump(include=include))
 
 
 def read_method_layouts(entries: object) -> list[MethodLayout] | None:
