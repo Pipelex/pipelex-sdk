@@ -254,7 +254,7 @@ _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEO
 # travels as a context variable, kept to the task that made it as the time limit above is.
 _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
 
-# The idempotency key of the `start`, the `copy_method`, the `rotate_webhook_secret` or the
+# The idempotency key of the `start`, the `copy_method`, the `store_method_layout`, the `rotate_webhook_secret` or the
 # `replay_run_webhook_delivery` in flight, which `_send` sends as the `Idempotency-Key` header. The base builds the
 # start's request deep inside its own `start`, so the key travels as a context variable, kept to the task that set it
 # as the time limit above is, and set only around the one request each of those methods sends.
@@ -668,7 +668,7 @@ class PipelexAPIClient(MthdsAPIClient):
         Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
         parses, so that an answer that route cannot read is reported as every other route reports it. Inside
         `_creating_run`, the error says whether the run the request may create may have started. While `start`,
-        `copy_method`, `rotate_webhook_secret` or `replay_run_webhook_delivery` holds an idempotency key
+        `copy_method`, `store_method_layout`, `rotate_webhook_secret` or `replay_run_webhook_delivery` holds an idempotency key
         (`_IDEMPOTENCY_KEY`), the request carries it as the `Idempotency-Key` header.
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
@@ -715,7 +715,8 @@ class PipelexAPIClient(MthdsAPIClient):
         with; this method streams the answer and reads its body itself, so that such a body is reported as the
         answer it is (`_undecodable_answer`), with its status and its headers. The headers are the base's
         (`Accept`, `User-Agent`, and `Content-Type` beside a body), plus the key the requests that carry one send,
-        `start`'s, `copy_method`'s, `rotate_webhook_secret`'s and `replay_run_webhook_delivery`'s: a unit test holds
+        `start`'s, `copy_method`'s, `store_method_layout`'s, `rotate_webhook_secret`'s and `replay_run_webhook_delivery`'s:
+        a unit test holds
         them to the ones the base's `_send` sends, so a header the base adds later fails that test rather than going
         missing here.
 
@@ -2862,7 +2863,9 @@ class PipelexAPIClient(MthdsAPIClient):
         endpoint = f"{_method_path(method_id, call='get_method_version')}/versions/{version}"
         return await self._request_product("GET", endpoint, read=MethodVersion.model_validate, carries_links=True)
 
-    async def store_method_layout(self, method_id: str, version: int, layout: MethodLayoutInput) -> MethodLayout:
+    async def store_method_layout(
+        self, method_id: str, version: int, layout: MethodLayoutInput, *, idempotency_key: str | None = None
+    ) -> MethodLayout:
         """Store a layout designed for one pipe of a published version of a method — `POST /v1/methods/{id}/versions/{n}/layouts`.
 
         A layout is a data file a producer designed over the version's input-form descriptor, in the vocabulary of a
@@ -2873,9 +2876,17 @@ class PipelexAPIClient(MthdsAPIClient):
         `layout.tree_digest` must be the digest of the tree `version` holds, its `MethodVersionSummary.tree_digest`: a
         producer designs over the descriptor of the version it was handed. **A write of the same identity replaces the
         layout**, the identity being `tree_digest`, `pipe_ref`, `catalog` and `prompt_hash`, and is answered the same
-        way whether it stored a new layout or replaced one, so sending the same write again is safe. A content keeps at
-        most 16 layouts, every pipe, catalog and prompt hash together; past the bound a write removes first what newer
-        prompts of the same pipe and catalog superseded (see `docs/method-layouts.md`).
+        way whether it stored a new layout or replaced one. A content keeps at most 16 layouts, every pipe, catalog and
+        prompt hash together; past the bound a write removes first what newer prompts of the same pipe and catalog
+        superseded (see `docs/method-layouts.md`).
+
+        `idempotency_key` is sent as the `Idempotency-Key` header, and nothing is sent when it is `None`. Under the same
+        key the hosted API answers a retry with the first write's stored answer and runs nothing, so a write whose
+        answer was lost, on a client timeout for instance, is sent again unchanged under the key it was first sent
+        with. Without a key the write runs again: it stamps the layout with a new `stored_at`, which moves it ahead of
+        every layout stored since, and applies the bound again, so a newer prompt of the same pipe and catalog stored
+        meanwhile can be the layout removed. A `200` and a `4xx` refusal are stored under the key alike; a `5xx` and a
+        refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh.
 
         The write changes the method, so it takes an `admin` or a `member` of the method's organization. The body is
         `layout`'s fields, closed at both levels as the route's body is, each `None` optional provenance field left out
@@ -2885,14 +2896,16 @@ class PipelexAPIClient(MthdsAPIClient):
             method_id: The method's bare catalog id.
             version: The number of the published version the layout was designed for, a positive integer.
             layout: The layout and how it was made.
+            idempotency_key: The write's idempotency key, 1 to 255 visible ASCII characters, kept with the layout
+                across that write's retries; `None` sends none.
 
         Returns:
             The layout as stored, with the `stored_at` the platform stamped.
 
         Raises:
             RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as `2.0`, a numeric
-                string and anything else that is not an `int` included — or `method_id` is refused as every method
-                route refuses it; nothing is sent.
+                string and anything else that is not an `int` included — `method_id` is refused as every method
+                route refuses it, or `idempotency_key` is not 1 to 255 visible ASCII characters; nothing is sent.
             ApiResponseError: The platform refused the write, which stores nothing: `422` `request.invalid` for a
                 field breaking its shape or bound, naming it in `params.field` and `location.field`
                 (`provenance.<field>` for one of the provenance's), and, naming `tree_digest`, for a digest that is
@@ -2900,9 +2913,11 @@ class PipelexAPIClient(MthdsAPIClient):
                 or a caller with no recognised role; `404` `pipelex.catalog.not_found` for an unknown method or
                 another organization's, its `params.resource` `method`, and for a version the method never published,
                 its `params.resource` `version`; `409` `pipelex.catalog.being_deleted` while the method's erasure is
-                pending, under way or stopped; and `500` `runtime.unexpected` for a version stored before methods were
-                trees, which names no tree. A `200` that does not read as a `MethodLayout` is an answer the SDK cannot
-                read, raised as an `ApiResponseError` too.
+                pending, under way or stopped; `500` `runtime.unexpected` for a version stored before methods were
+                trees, which names no tree; and, under an idempotency key, `409` `request.idempotency_conflict` for the
+                key sent with a different body and `409` `request.idempotency_key_in_use` while its earlier request is
+                still being handled. A `200` that does not read as a `MethodLayout` is an answer the SDK cannot read,
+                raised as an `ApiResponseError` too.
         """
         call = "store_method_layout"
         # Checked as an `object`, as `get_method_version` checks it: only an `int` puts a version number in the path.
@@ -2911,7 +2926,12 @@ class PipelexAPIClient(MthdsAPIClient):
             raise _argument_refusal(call, _LAYOUT_VERSION_ARGUMENT, repr(version), reason="not_a_positive_integer")
         endpoint = f"{_method_path(method_id, call=call)}/versions/{version}/layouts"
         body = layout.model_dump(mode="json", exclude_none=True)
-        return await self._request_product("POST", endpoint, body=body, read=MethodLayout.model_validate)
+        checked_idempotency_key = _idempotency_key_of(idempotency_key, request="store the layout")
+        key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
+        try:
+            return await self._request_product("POST", endpoint, body=body, read=MethodLayout.model_validate)
+        finally:
+            _IDEMPOTENCY_KEY.reset(key_token)
 
     async def copy_method(
         self,
@@ -4710,13 +4730,13 @@ def _json_body(body: object) -> bytes:
 
 
 def _idempotency_key_of(value: object, *, request: str = "start the run") -> str | None:
-    """The idempotency key a start, a method copy, a secret rotation or a delivery replay sends, or `None` when the
-    caller gave none.
+    """The idempotency key a start, a method copy, a layout write, a secret rotation or a delivery replay sends, or
+    `None` when the caller gave none.
 
     A key that is not a string of 1 to 255 visible ASCII characters is refused rather than dropped, an empty
     one included, since a request sent without the key its caller gave would lose the protection the caller
     asked for without a word. `request` says what the request does, as the refusal's last sentence names it
-    ("start the run", "copy the method", "rotate the secret", "replay the delivery"). Typed `object`, as
+    ("start the run", "copy the method", "store the layout", "rotate the secret", "replay the delivery"). Typed `object`, as
     `_normalized_selector` is, because this is the runtime boundary an untyped caller reaches. The characters are
     checked before the length, which then counts ASCII characters alone, so this message and `@pipelex/sdk`'s, which
     counts a character outside ASCII differently, read alike for every key; neither quotes the key, which a caller

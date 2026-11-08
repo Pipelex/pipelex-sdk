@@ -170,6 +170,8 @@ else:
 A layout is a data file a producer designed for one pipe of a published version, which the platform stores beside the method, keyed by the tree it was designed over, and carries on every validate by `method_id` that names `layouts` and resolves that tree, newest first; a write of the same tree, pipe, catalog and prompt hash replaces it, and `layouts` is `None` when none is stored, the host's signal to render the plain form ([`docs/method-layouts.md`](docs/method-layouts.md)):
 
 ```python
+import uuid
+
 from pipelex_sdk.method_layout_models import LayoutProvenanceInput, MethodLayoutInput
 from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM, VALIDATION_VIEW_LAYOUTS, PipelexValidationReport
 
@@ -183,7 +185,7 @@ layout = MethodLayoutInput(
     jsonl=jsonl,  # the producer model's JSON patch lines, as emitted
     provenance=LayoutProvenanceInput(producer="pipelex-method", model="claude-4.8-opus", style="editorial"),
 )
-stored = await client.store_method_layout("mt_123", 3, layout)
+stored = await client.store_method_layout("mt_123", 3, layout, idempotency_key=str(uuid.uuid4()))
 report = await client.validate(method_id="mt_123@3", views=[VALIDATION_VIEW_INPUT_FORM, VALIDATION_VIEW_LAYOUTS])
 if isinstance(report, PipelexValidationReport) and report.layouts is not None:
     print([(candidate.catalog, candidate.provenance.style) for candidate in report.layouts])

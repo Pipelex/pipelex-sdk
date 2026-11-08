@@ -327,6 +327,9 @@ class MethodLayoutBodies:
     #: The layout a producer writes: two JSON patch lines over the composer catalog.
     JSONL: ClassVar[str] = '{"op":"add","path":"/root","value":"page"}\n{"op":"add","path":"/elements/page","value":{"type":"Stack","children":[]}}'
 
+    #: The write's idempotency key, as `@pipelex/sdk`'s test sends it.
+    KEY: ClassVar[str] = "layout-write-7f3a"
+
     PROVENANCE: ClassVar[dict[str, Any]] = {
         "producer": "pipelex-method",
         "model": "claude-4.8-opus",

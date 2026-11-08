@@ -26,10 +26,11 @@ from tests.unit.conftest import BASE_URL, problem_document, refused_argument
 from tests.unit.test_data import MethodLayoutBodies
 
 if TYPE_CHECKING:
+    import httpx
     from pytest_mock import MockType
 
     from pipelex_sdk.client import PipelexAPIClient
-    from tests.unit.conftest import ResponseBuilder, SendPatcher
+    from tests.unit.conftest import RecordingClientBuilder, ResponseBuilder, SendPatcher
 
 _METHOD_ID = "mt_receipts01"
 _LAYOUTS_PATH = f"/v1/methods/{_METHOD_ID}/versions/3/layouts"
@@ -148,6 +149,42 @@ class TestClientMethodLayouts:
             LayoutProvenanceInput.model_validate({**_REQUIRED_PROVENANCE, "repair_rounds": repair_rounds})
 
         assert exc_info.value.errors()[0]["type"] == "int_type"
+
+    @pytest.mark.parametrize("key", [MethodLayoutBodies.KEY, None], ids=["keyed", "unkeyed"])
+    def test_store_method_layout_sends_its_key_as_the_idempotency_key_header_never_in_the_body(
+        self, recording_client: RecordingClientBuilder, key: str | None
+    ) -> None:
+        """A write sent again without a key runs again, so the key is what makes a retry answer as the first write."""
+        sent: list[httpx.Request] = []
+        client = recording_client(sent, 200, json_body=MethodLayoutBodies.STORED)
+
+        asyncio.run(client.store_method_layout(_METHOD_ID, 3, _layout_input(), idempotency_key=key))
+
+        [request] = sent
+        assert request.headers.get("idempotency-key") == key
+        assert json.loads(request.content) == MethodLayoutBodies.INPUT
+
+    @pytest.mark.parametrize(
+        ("key", "fault"),
+        [
+            pytest.param("", "this one is empty", id="empty"),
+            pytest.param("layout 42", "this one holds a character outside visible ASCII", id="space"),
+            pytest.param("k" * 256, "this one is 256 characters long", id="too-long"),
+            pytest.param(42, "this one is not a string", id="int"),
+        ],
+    )
+    def test_store_method_layout_refuses_a_malformed_key_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, key: object, fault: str
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=MethodLayoutBodies.STORED))
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            asyncio.run(api_client.store_method_layout(_METHOD_ID, 3, _layout_input(), idempotency_key=cast("str", key)))
+
+        message = str(exc_info.value)
+        assert fault in message
+        assert message.endswith("Leave it out to store the layout without one.")
+        send.assert_not_called()
 
     @pytest.mark.parametrize("version", [0, -1, True, 2.0, "3", None])
     def test_store_method_layout_refuses_a_version_that_is_not_a_positive_integer(

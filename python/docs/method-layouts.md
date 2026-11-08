@@ -5,6 +5,8 @@ A **layout** is a data file a producer designed for one pipe of a method: a tree
 The client reaches the write on the hosted API's `POST /v1/methods/{method_id}/versions/{version}/layouts` and the read on `POST /v1/validate`, under the `layouts` view. The models are in `pipelex_sdk/method_layout_models.py`: `MethodLayoutInput` and `LayoutProvenanceInput` for the write, `MethodLayout` and `LayoutProvenance` for what is stored; the view's token, `VALIDATION_VIEW_LAYOUTS`, is in `pipelex_sdk/validation_models.py` beside the runner's. The storage and the `layouts` token are a Pipelex hosted feature; the shapes are stated brand-neutrally, snake_case with no `pipelex_` prefix, as the input-form descriptor they are rendered over is. The conformance spec `pipelex-hosted-method-layouts.md`, in the workspace's `conformance` repository, states the contract. This page is the twin of `@pipelex/sdk`'s `docs/method-layouts.md`.
 
 ```python
+import uuid
+
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.method_layout_models import LayoutProvenanceInput, MethodLayoutInput
 from pipelex_sdk.validation_models import VALIDATION_VIEW_INPUT_FORM, VALIDATION_VIEW_LAYOUTS, PipelexValidationReport
@@ -24,6 +26,7 @@ async with PipelexAPIClient() as client:
             jsonl=jsonl,  # the producer model's JSON patch lines, as emitted
             provenance=LayoutProvenanceInput(producer="pipelex-method", model="claude-4.8-opus", style="editorial"),
         ),
+        idempotency_key=str(uuid.uuid4()),  # kept, with the layout, across this write's retries
     )
 
     # A host reads the descriptor and the layouts over it in one call.
@@ -62,7 +65,7 @@ async with PipelexAPIClient() as client:
 
 | Method | Route | Returns |
 |---|---|---|
-| `store_method_layout(method_id, version, layout)` | `POST /v1/methods/{id}/versions/{n}/layouts` | The `MethodLayout` as stored, with its `stored_at`. |
+| `store_method_layout(method_id, version, layout, *, idempotency_key=None)` | `POST /v1/methods/{id}/versions/{n}/layouts` | The `MethodLayout` as stored, with its `stored_at`. |
 
 It takes a bare catalog id, as every method route does, and refuses a suffixed one (`mt_…@3`) with a `RequestArgumentError` before anything is sent; `version` is the number of the published version the layout was designed for, and a value that is not a positive `int`, a `bool` or a `float` such as `2.0` included, is refused the same way.
 
@@ -70,7 +73,9 @@ It takes a bare catalog id, as every method route does, and refuses a suffixed o
 
 **`tree_digest` must be the tree the version holds**, its `MethodVersionSummary.tree_digest`, which `get_method_version` and `list_method_versions` read: a producer designs over the descriptor of the version it was handed, so a layout stating another tree describes content the version does not hold, and is refused.
 
-**A write of the same identity replaces the layout.** The answer is the same whether the write stored a new layout or replaced one, and the replaced layout is carried no more, so a write sent again, after a timeout for instance, is safe.
+**A write of the same identity replaces the layout.** The answer is the same whether the write stored a new layout or replaced one, and the replaced layout is carried no more.
+
+**A write is sent again under its idempotency key.** `idempotency_key` is sent as the `Idempotency-Key` header, and nothing is sent when it is `None`. Under the same key the hosted API answers a retry with the first write's stored answer and runs nothing, so a write whose answer was lost, on a client timeout for instance, is sent again unchanged under the key it was first sent with. Without a key the write runs again: it stamps the layout with a new `stored_at`, which moves it ahead of every layout stored since in the newest-first order, and applies the bound below again, so when another producer stored a newer prompt of the same pipe and catalog meanwhile, the resent layout can come back ahead of it and, at the bound, that newer layout can be the one removed. Generate one key per layout to store, a `str(uuid.uuid4())` for instance. A `200` and a `4xx` refusal are stored under the key alike; a `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh. A key is 1 to 255 visible ASCII characters, and anything else raises `RequestArgumentError` before any request.
 
 **A content keeps at most 16 layouts**, every pipe, catalog and prompt hash together, which is also the most a validate carries. Past the bound, a write removes first the layouts that newer prompt hashes of their own pipe and catalog superseded, the most superseded and then the oldest first, and the last layout of a pipe and catalog leaves only once more than 16 pipes and catalogs hold layouts. A host laying out several pipes, each in a composer and a result catalog, keeps every one's current layout while another takes new prompts.
 
@@ -87,6 +92,8 @@ Each raises an `ApiResponseError` carrying the platform's problem, and none stor
 | `403` | `auth.forbidden` | A `runner`, or a caller with no recognised role; its `params.requirement` is `member`. |
 | `404` | `pipelex.catalog.not_found` | No such method in the caller's organization, another organization's included, its `params.resource` `method`; or a version the method never published, its `params.resource` `version`. |
 | `409` | `pipelex.catalog.being_deleted` | The method's erasure is pending, under way or stopped. |
+| `409` | `request.idempotency_conflict` | The idempotency key was sent before with a different body; its `retry` is `no`. |
+| `409` | `request.idempotency_key_in_use` | The key's earlier request is still being handled; its `retry` is `yes`, under the same key in a few seconds. |
 | `500` | `runtime.unexpected` | The version was stored before methods were trees and names no tree, so it takes no layout. |
 
 A `200` that does not read as a `MethodLayout`, one whose `tree_digest`, `pipe_ref`, `catalog`, `prompt_hash`, `jsonl` or `stored_at` is not a string, or whose `provenance` is not an object with a string `producer` and `model`, is an answer the SDK cannot read, raised as an `ApiResponseError` coded `client.response_unreadable`.
