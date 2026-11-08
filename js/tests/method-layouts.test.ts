@@ -265,7 +265,7 @@ describe("storeMethodLayout", () => {
   it.each([
     ["no layout", undefined, "layout", "undefined"],
     ["a null layout", null, "layout", "null"],
-    ["a layout that is a list", [LAYOUT_INPUT], "layout", "an array"],
+    ["a layout that is a list", [LAYOUT_INPUT], "layout", "object"],
     [
       "a layout with no provenance",
       { ...LAYOUT_INPUT, provenance: undefined },

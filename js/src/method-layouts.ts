@@ -124,6 +124,31 @@ export interface MethodLayoutInput {
   provenance: LayoutProvenanceInput;
 }
 
+/**
+ * The members the write sends besides `provenance`, every one each time. Checked against
+ * `MethodLayoutInput` with `satisfies`, so a member the interface gains and this list lacks fails
+ * the build rather than being dropped from the body without a word.
+ */
+export const LAYOUT_INPUT_MEMBERS = {
+  tree_digest: true,
+  pipe_ref: true,
+  catalog: true,
+  prompt_hash: true,
+  jsonl: true,
+} as const satisfies Record<Exclude<keyof MethodLayoutInput, "provenance">, true>;
+
+/**
+ * The members of the write's provenance, `required` ones sent each time and `optional` ones only
+ * when given and not `null`, checked against `LayoutProvenanceInput` as `LAYOUT_INPUT_MEMBERS` is.
+ */
+export const PROVENANCE_INPUT_MEMBERS = {
+  producer: "required",
+  model: "required",
+  seed: "optional",
+  style: "optional",
+  repair_rounds: "optional",
+} as const satisfies Record<keyof LayoutProvenanceInput, "required" | "optional">;
+
 /** The members of a layout read as strings, in the order a fault names the first one missing. */
 const LAYOUT_STRING_MEMBERS = [
   "tree_digest",

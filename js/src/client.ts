@@ -39,7 +39,13 @@ import type {
   ValidateMethodSelector,
   ValidateView,
 } from "./models.js";
-import { methodLayoutFault, readMethodLayout, readMethodLayouts } from "./method-layouts.js";
+import {
+  LAYOUT_INPUT_MEMBERS,
+  PROVENANCE_INPUT_MEMBERS,
+  methodLayoutFault,
+  readMethodLayout,
+  readMethodLayouts,
+} from "./method-layouts.js";
 import type { MethodLayout, MethodLayoutInput } from "./method-layouts.js";
 import {
   assertArtifactSelection,
@@ -6393,44 +6399,33 @@ function withReadLayouts<T>(answer: T): T {
 /**
  * The body `storeMethodLayout` sends for `layout`: the members of `MethodLayoutInput` and nothing
  * else, since the route's body is closed at both levels, each provenance member that is `null` or
- * omitted left out for the platform's default. A layout or a provenance that is not an object is
+ * omitted left out for the platform's default. The members are `LAYOUT_INPUT_MEMBERS` and
+ * `PROVENANCE_INPUT_MEMBERS`, which the build holds to the interfaces. A layout or a provenance that is not an object is
  * refused with `RequestArgumentError` before anything is sent; every other member is sent as given,
  * for the platform to hold to its shapes, its `422` naming the member it refuses.
  */
 function methodLayoutBody(layout: unknown, call: string): Record<string, unknown> {
   if (!isPlainObject(layout)) {
-    throw argumentRefusal(call, LAYOUT_ARGUMENT, describeObjectArgument(layout), "not_an_object");
+    throw argumentRefusal(call, LAYOUT_ARGUMENT, describeNumberArgument(layout), "not_an_object");
   }
   const provenance = layout.provenance;
   if (!isPlainObject(provenance)) {
     throw argumentRefusal(
       call,
       LAYOUT_PROVENANCE_ARGUMENT,
-      describeObjectArgument(provenance),
+      describeNumberArgument(provenance),
       "not_an_object",
     );
   }
-  const sentProvenance: Record<string, unknown> = {
-    producer: provenance.producer,
-    model: provenance.model,
-  };
-  for (const member of ["seed", "style", "repair_rounds"] as const) {
-    if (provenance[member] != null) sentProvenance[member] = provenance[member];
+  const sentProvenance: Record<string, unknown> = {};
+  for (const [member, presence] of Object.entries(PROVENANCE_INPUT_MEMBERS)) {
+    const value = provenance[member];
+    if (presence === "required" || value != null) sentProvenance[member] = value;
   }
-  return {
-    tree_digest: layout.tree_digest,
-    pipe_ref: layout.pipe_ref,
-    catalog: layout.catalog,
-    prompt_hash: layout.prompt_hash,
-    jsonl: layout.jsonl,
-    provenance: sentProvenance,
-  };
-}
-
-/** How a refusal names a value given where an object was due: `null`, an array or its type. */
-function describeObjectArgument(value: unknown): string {
-  if (value === null) return "null";
-  return Array.isArray(value) ? "an array" : typeof value;
+  const body: Record<string, unknown> = {};
+  for (const member of Object.keys(LAYOUT_INPUT_MEMBERS)) body[member] = layout[member];
+  body.provenance = sentProvenance;
+  return body;
 }
 
 /**
