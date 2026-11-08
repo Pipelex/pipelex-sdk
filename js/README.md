@@ -190,7 +190,7 @@ await client.storeMethodLayout(created.method_id, 1, {
   prompt_hash: "a1b2c3d4e5f6",
   jsonl: '{"op":"add","path":"/root","value":"page"}',
   provenance: { producer: "pipelex-method", model: "claude-4.8-opus", style: "editorial" },
-});
+}, { idempotencyKey: crypto.randomUUID() }); // the same key on a retry answers as the first write
 const laidOut = await client.validate({ method_id: `${created.method_id}@1` }, false, {
   views: ["input_form", "layouts"],
 });

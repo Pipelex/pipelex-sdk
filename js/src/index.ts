@@ -30,6 +30,7 @@ export type {
   PipelexStartOptions,
   PipelexStartRequestOptions,
   MethodCopyRequestOptions,
+  MethodLayoutWriteOptions,
   PipelexValidateSource,
   ValidateMethodSelector,
   ValidateOptions,

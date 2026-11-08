@@ -483,6 +483,31 @@ export interface MethodCopyRequestOptions {
   idempotencyKey?: string | null;
 }
 
+/** Options for `storeMethodLayout`. */
+export interface MethodLayoutWriteOptions {
+  /**
+   * The write's idempotency key, sent as the `Idempotency-Key` header of
+   * `POST /v1/methods/{id}/versions/{n}/layouts`, and not sent at all when absent or `null`.
+   * Generate one per layout the caller means to store (a `crypto.randomUUID()` is a good key), and
+   * keep it, with the arguments unchanged, across that write's retries.
+   *
+   * A write sent again without a key runs again: it stamps the layout with a new `stored_at`, which
+   * moves it ahead of every layout stored since in the newest-first order, and applies the bound
+   * again, so a layout another producer stored meanwhile, a newer prompt of the same pipe and
+   * catalog included, can be the one removed. Under the same key the hosted API answers the retry
+   * with the first write's stored answer and runs nothing, so a write whose answer was lost, as on
+   * a client timeout, can be sent again unchanged. A `200` and a `4xx` refusal are stored alike; a
+   * `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends
+   * the write afresh. The same key with a different body is refused (`409`
+   * `request.idempotency_conflict`, whose `retry` is `no`), as is a key whose earlier request is
+   * still being handled (`409` `request.idempotency_key_in_use`, whose `retry` is `yes`).
+   *
+   * A key is held to the rule a start's is (`PipelexStartRequestOptions.idempotencyKey`): 1 to
+   * 255 visible ASCII characters, anything else a `RequestArgumentError` before any request.
+   */
+  idempotencyKey?: string | null;
+}
+
 /**
  * `start()` / `startAndWaitForResult()` options — the same, for the durable path, plus the start
  * request's own `idempotencyKey`.
@@ -947,11 +972,14 @@ function requireNameAndInputs(name: unknown, inputs: unknown, call: string, need
 
 /**
  * A caller's value as the refusal of a number argument names it: a number by its value, anything
- * else by its type, as `requireNonEmptyId` names a value, and `null` as itself. Never by `String`,
- * which throws for an object with no prototype and would replace the refusal with a `TypeError`.
+ * else by its type, as `requireNonEmptyId` names a value, `null` as itself and an array as one, so
+ * a refusal of a value that is not an object never answers an array with "got object". Never by
+ * `String`, which throws for an object with no prototype and would replace the refusal with a
+ * `TypeError`.
  */
 function describeNumberArgument(value: unknown): string {
   if (typeof value === "number") return String(value);
+  if (Array.isArray(value)) return "an array";
   return value === null ? "null" : typeof value;
 }
 
@@ -1201,8 +1229,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `url` is a fully resolved absolute URL. `mayStartRun` marks a request that may create a run,
    * whose errors then say whether it may have (see `RunCreation`).
    * `idempotencyKey`, already checked by `idempotencyKeyOf`, is sent as the
-   * `Idempotency-Key` header; only `start`, `copyMethod`, `rotateWebhookSecret` and
-   * `replayRunWebhookDelivery` pass one.
+   * `Idempotency-Key` header; only `start`, `copyMethod`, `storeMethodLayout`,
+   * `rotateWebhookSecret` and `replayRunWebhookDelivery` pass one.
    */
   private async requestRaw(
     method: HttpMethod,
@@ -3781,7 +3809,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `MethodVersionSummary.tree_digest`: a producer designs over the descriptor of the version it was
    * handed. **A write of the same identity replaces the layout**, the identity being `tree_digest`,
    * `pipe_ref`, `catalog` and `prompt_hash`, and is answered the same `200` whether it stored a new
-   * layout or replaced one, so sending the same write again is safe. A content keeps at most 16
+   * layout or replaced one. `options.idempotencyKey` is sent as the `Idempotency-Key` header, so a
+   * write whose answer was lost is sent again under the same key and answered as the first was; sent
+   * again without one, it runs again, with a new `stored_at` and the bound applied again
+   * (`MethodLayoutWriteOptions`). A content keeps at most 16
    * layouts, every pipe, catalog and prompt hash together; past the bound a write removes first what
    * newer prompts of the same pipe and catalog superseded (see `docs/method-layouts.md`).
    *
@@ -3800,13 +3831,18 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `params.resource` `method`, and for a version the method never published, its
    * `params.resource` `version`; `409` `pipelex.catalog.being_deleted` while the method's erasure is
    * pending, under way or stopped; and `500` `runtime.unexpected` for a version stored before
-   * methods were trees, which names no tree. An answer that does not read as a layout
-   * (`methodLayoutFault`) is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   * methods were trees, which names no tree. Under an idempotency key, `409`
+   * `request.idempotency_conflict` for the key sent with a different body and `409`
+   * `request.idempotency_key_in_use` while its earlier request is still being handled; a key that is
+   * not 1 to 255 visible ASCII characters is a `RequestArgumentError` before any request. An answer
+   * that does not read as a layout (`methodLayoutFault`) is an answer the SDK cannot read, thrown as
+   * an `ApiResponseError` too.
    */
   async storeMethodLayout(
     methodId: string,
     version: number,
     layout: MethodLayoutInput,
+    options: MethodLayoutWriteOptions = {},
   ): Promise<MethodLayout> {
     const call = "storeMethodLayout";
     if (!Number.isSafeInteger(version) || version < 1) {
@@ -3819,7 +3855,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
     }
     const endpoint = `${methodPath(methodId, call)}/versions/${version}/layouts`;
     const body = methodLayoutBody(layout, call);
-    const res = await this.requestProductAnswer("POST", endpoint, body);
+    const idempotencyKey = idempotencyKeyOf(options, "store the layout");
+    const res = await this.requestProductAnswer("POST", endpoint, body, { idempotencyKey });
     const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
     const stored = readMethodLayout(answer);
     if (stored === null) {
@@ -5987,13 +6024,14 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 const VISIBLE_ASCII = /^[\x21-\x7E]+$/;
 
 /**
- * The idempotency key a start, a method copy, a secret rotation or a delivery replay sends, or
+ * The idempotency key a start, a method copy, a layout write, a secret rotation or a delivery
+ * replay sends, or
  * `undefined` when the options carry none (absent or `null`). A key that is not a string of 1 to
  * 255 visible ASCII characters is refused with a `RequestArgumentError` rather than dropped, an
  * empty one included, since a request sent without the key its caller gave would lose the
  * protection the caller asked for without a word. `request` says what the request does, as the
- * refusal's last sentence names it ("start the run", "copy the method", "rotate the secret",
- * "replay the delivery"). The message never quotes the key, which a caller may derive from
+ * refusal's last sentence names it ("start the run", "copy the method", "store the layout",
+ * "rotate the secret", "replay the delivery"). The message never quotes the key, which a caller may derive from
  * something private. The Python SDK holds a key to the same rule, in the same words.
  */
 function idempotencyKeyOf(

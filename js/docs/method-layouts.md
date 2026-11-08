@@ -12,14 +12,19 @@ const client = new PipelexApiClient();
 
 // A producer has designed a layout over version 3's descriptor: store it beside that version.
 const version = await client.getMethodVersion("mt_abc123", 3);
-await client.storeMethodLayout("mt_abc123", 3, {
-  tree_digest: version.tree_digest!, // the tree the layout was designed over
-  pipe_ref: "receipts.review_receipt",
-  catalog: "composer",
-  prompt_hash: "a1b2c3d4e5f6",
-  jsonl, // the producer model's JSON patch lines, as emitted
-  provenance: { producer: "pipelex-method", model: "claude-4.8-opus", style: "editorial" },
-});
+await client.storeMethodLayout(
+  "mt_abc123",
+  3,
+  {
+    tree_digest: version.tree_digest!, // the tree the layout was designed over
+    pipe_ref: "receipts.review_receipt",
+    catalog: "composer",
+    prompt_hash: "a1b2c3d4e5f6",
+    jsonl, // the producer model's JSON patch lines, as emitted
+    provenance: { producer: "pipelex-method", model: "claude-4.8-opus", style: "editorial" },
+  },
+  { idempotencyKey: crypto.randomUUID() }, // kept, with the layout, across this write's retries
+);
 
 // A host reads the descriptor and the layouts over it in one call.
 const report = await client.validate({ method_id: "mt_abc123@3" }, false, {
@@ -60,7 +65,7 @@ if (report.is_valid) {
 
 | Method | Route | Answer |
 |---|---|---|
-| `storeMethodLayout(methodId, version, layout)` | `POST /v1/methods/{id}/versions/{n}/layouts` | The `MethodLayout` as stored, with its `stored_at`. |
+| `storeMethodLayout(methodId, version, layout, options?)` | `POST /v1/methods/{id}/versions/{n}/layouts` | The `MethodLayout` as stored, with its `stored_at`. |
 
 It takes a bare catalog id, as every method route does, and refuses a suffixed one (`mt_…@3`) with a `RequestArgumentError` before anything is sent; `version` is the number of the published version the layout was designed for, and a value that is not a positive integer is refused the same way.
 
@@ -68,7 +73,9 @@ It takes a bare catalog id, as every method route does, and refuses a suffixed o
 
 **`tree_digest` must be the tree the version holds**, its `MethodVersionSummary.tree_digest`, which `getMethodVersion` and `listMethodVersions` read: a producer designs over the descriptor of the version it was handed, so a layout stating another tree describes content the version does not hold, and is refused.
 
-**A write of the same identity replaces the layout.** The answer is the same `200` whether the write stored a new layout or replaced one, and the replaced layout is carried no more, so a write sent again, after a timeout for instance, is safe.
+**A write of the same identity replaces the layout.** The answer is the same `200` whether the write stored a new layout or replaced one, and the replaced layout is carried no more.
+
+**A write is sent again under its idempotency key.** `options.idempotencyKey` (`MethodLayoutWriteOptions`) is sent as the `Idempotency-Key` header, and nothing is sent when it is absent or `null`. Under the same key the hosted API answers a retry with the first write's stored answer and runs nothing, so a write whose answer was lost, on a client timeout for instance, is sent again unchanged under the key it was first sent with. Without a key the write runs again: it stamps the layout with a new `stored_at`, which moves it ahead of every layout stored since in the newest-first order, and applies the bound below again, so when another producer stored a newer prompt of the same pipe and catalog meanwhile, the resent layout can come back ahead of it and, at the bound, that newer layout can be the one removed. Generate one key per layout to store, a `crypto.randomUUID()` for instance. A `200` and a `4xx` refusal are stored under the key alike; a `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh. A key is 1 to 255 visible ASCII characters, and anything else is a `RequestArgumentError` before any request.
 
 **A content keeps at most 16 layouts**, every pipe, catalog and prompt hash together, which is also the most a validate carries. Past the bound, a write removes first the layouts that newer prompt hashes of their own pipe and catalog superseded, the most superseded and then the oldest first, and the last layout of a pipe and catalog leaves only once more than 16 pipes and catalogs hold layouts. A host laying out several pipes, each in a composer and a result catalog, keeps every one's current layout while another takes new prompts.
 
@@ -85,6 +92,8 @@ Each is an `ApiResponseError` carrying the platform's problem, and none stores a
 | `403` | `auth.forbidden` | A `runner`, or a caller with no recognised role; its `params.requirement` is `member`. |
 | `404` | `pipelex.catalog.not_found` | No such method in the caller's organization, another organization's included, its `params.resource` `method`; or a version the method never published, its `params.resource` `version`. |
 | `409` | `pipelex.catalog.being_deleted` | The method's erasure is pending, under way or stopped. |
+| `409` | `request.idempotency_conflict` | The idempotency key was sent before with a different body; its `retry` is `no`. |
+| `409` | `request.idempotency_key_in_use` | The key's earlier request is still being handled; its `retry` is `yes`, under the same key in a few seconds. |
 | `500` | `runtime.unexpected` | The version was stored before methods were trees and names no tree, so it takes no layout. |
 
 An answer that does not read as a layout, one whose `tree_digest`, `pipe_ref`, `catalog`, `prompt_hash`, `jsonl` or `stored_at` is not a string, or whose `provenance` is not an object with a string `producer` and `model`, is an answer the SDK cannot read, thrown as an `ApiResponseError` coded `client.response_unreadable` whose message names the member.

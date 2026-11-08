@@ -6,7 +6,12 @@
 
 - **`storeMethodLayout`**: stores a layout a producer designed for one pipe of a published version, `POST /v1/methods/{id}/versions/{n}/layouts`, and answers it as a `MethodLayout` with the `stored_at` the platform stamped; the body, a `MethodLayoutInput` with its `LayoutProvenanceInput`, is sent closed, a write of the same `tree_digest`, `pipe_ref`, `catalog` and `prompt_hash` replaces the layout, and the platform's refusals (`422` `request.invalid` naming the member, `tree_digest` for a tree that is not the version's, `403` `auth.forbidden` for a runner, `404` `pipelex.catalog.not_found` naming the method or the version, `409` `pipelex.catalog.being_deleted`) are `ApiResponseError`s (`docs/method-layouts.md`).
 - **`layouts` on `PipelexValidationReport`**: a validate by `method_id` whose `views` names `layouts` reads the layouts stored for the resolved tree, newest first, each entry checked as the write's answer is and one that does not read as a layout left out; the member is absent when there are none.
+- **`MethodLayoutWriteOptions`**: `storeMethodLayout`'s last argument, whose `idempotencyKey` is sent as the `Idempotency-Key` header, so a write whose answer was lost is sent again under the same key and answered as the first was; sent again without one, a write runs again, restamping the layout and applying the bound again.
 - **`ValidateView`**: names the `views` tokens this SDK knows, `input_form`, `output_form` and `layouts`; `ValidateOptions.views` still takes any other token as its raw string.
+
+### Changed
+
+- **An argument refusal names an array as one**: a refusal that names the type of the value it was given says "got an array" for an array rather than "got object", so `listRuns`, `iterateRuns` and `storeMethodLayout`, refusing an array where an object is due, no longer contradict themselves.
 
 ## [v0.63.0] - 2026-11-08
 

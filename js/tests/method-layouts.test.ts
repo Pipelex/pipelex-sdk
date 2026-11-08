@@ -13,6 +13,7 @@ import type {
   LayoutProvenance,
   MethodLayout,
   MethodLayoutInput,
+  MethodLayoutWriteOptions,
   PipelexValidationReport,
   ValidateOptions,
   ValidateView,
@@ -132,7 +133,12 @@ afterEach(() => {
 describe("the layout types", () => {
   it("types the write, the stored layout and the views tokens", () => {
     expectTypeOf<PipelexApiClient["storeMethodLayout"]>().toEqualTypeOf<
-      (methodId: string, version: number, layout: MethodLayoutInput) => Promise<MethodLayout>
+      (
+        methodId: string,
+        version: number,
+        layout: MethodLayoutInput,
+        options?: MethodLayoutWriteOptions,
+      ) => Promise<MethodLayout>
     >();
     expectTypeOf<MethodLayout["provenance"]>().toEqualTypeOf<LayoutProvenance>();
     expectTypeOf<LayoutProvenance["seed"]>().toEqualTypeOf<string | null>();
@@ -265,7 +271,7 @@ describe("storeMethodLayout", () => {
   it.each([
     ["no layout", undefined, "layout", "undefined"],
     ["a null layout", null, "layout", "null"],
-    ["a layout that is a list", [LAYOUT_INPUT], "layout", "object"],
+    ["a layout that is a list", [LAYOUT_INPUT], "layout", "an array"],
     [
       "a layout with no provenance",
       { ...LAYOUT_INPUT, provenance: undefined },
@@ -423,6 +429,82 @@ describe("storeMethodLayout", () => {
     const stored = await makeClient().storeMethodLayout(METHOD_ID, 3, LAYOUT_INPUT);
 
     expect(stored.provenance.repair_rounds).toBe(0);
+  });
+});
+
+describe("storeMethodLayout — the idempotency key", () => {
+  const KEY = "layout-write-7f3a";
+
+  /** The headers of the fetch call the spy recorded at `index`. */
+  function headersOf(spy: ReturnType<typeof vi.spyOn>, index = 0): Record<string, string> {
+    return (spy.mock.calls[index]![1] as RequestInit).headers as Record<string, string>;
+  }
+
+  it("sends the key as the Idempotency-Key header, never in the body", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, STORED));
+
+    await makeClient().storeMethodLayout(METHOD_ID, 3, LAYOUT_INPUT, { idempotencyKey: KEY });
+
+    expect(headersOf(spy)["Idempotency-Key"]).toBe(KEY);
+    expect(onlyRequest(spy).body).not.toHaveProperty("idempotency_key");
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["empty options", {}],
+    ["null", { idempotencyKey: null }],
+  ])("sends no Idempotency-Key header when the key is %s", async (_, options) => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, STORED));
+
+    await makeClient().storeMethodLayout(METHOD_ID, 3, LAYOUT_INPUT, options);
+
+    const names = Object.keys(headersOf(spy)).map((name) => name.toLowerCase());
+    expect(names).not.toContain("idempotency-key");
+  });
+
+  it("sends the same key and the same body on a caller's retry after a lost answer", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        problemResponse("runtime.unavailable", 503, { domain: "runtime", retry: "yes" }),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, STORED));
+    const client = makeClient();
+
+    await failureOf(() =>
+      client.storeMethodLayout(METHOD_ID, 3, LAYOUT_INPUT, { idempotencyKey: KEY }),
+    );
+    await client.storeMethodLayout(METHOD_ID, 3, LAYOUT_INPUT, { idempotencyKey: KEY });
+
+    expect(headersOf(spy, 0)["Idempotency-Key"]).toBe(KEY);
+    expect(headersOf(spy, 1)["Idempotency-Key"]).toBe(KEY);
+    const [first, retry] = spy.mock.calls.map((call) => (call[1] as RequestInit).body);
+    expect(retry).toBe(first);
+  });
+
+  it.each([
+    ["is empty", "", "this one is empty"],
+    ["holds a space", "layout 42", "this one holds a character outside visible ASCII"],
+    ["is longer than 255 characters", "k".repeat(256), "this one is 256 characters long"],
+    ["is not a string", 42 as unknown as string, "this one is not a string"],
+  ])("refuses a key that %s before anything is sent", async (_, idempotencyKey, fault) => {
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await failureOf(() =>
+      makeClient().storeMethodLayout(METHOD_ID, 3, LAYOUT_INPUT, { idempotencyKey }),
+    );
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    const message = (err as Error).message;
+    expect(message).toContain(fault);
+    expect(message).toContain("Leave it out to store the layout without one.");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("types the option as an optional string or null", () => {
+    expectTypeOf<MethodLayoutWriteOptions["idempotencyKey"]>().toEqualTypeOf<
+      string | null | undefined
+    >();
   });
 });
 
