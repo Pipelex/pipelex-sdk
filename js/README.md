@@ -183,6 +183,7 @@ if (copy.outcome === "copied") console.log(copy.method.copied_from); // the orig
 // method_id naming `layouts` then carries the layouts beside the descriptor, newest first, and
 // leaves `layouts` out when there are none: render the plain form then.
 const v1 = await client.getMethodVersion(created.method_id, 1);
+const layoutKey = crypto.randomUUID(); // one key per layout, sent again unchanged on each retry
 await client.storeMethodLayout(created.method_id, 1, {
   tree_digest: v1.tree_digest!,
   pipe_ref: "greeting.greet",
@@ -190,7 +191,7 @@ await client.storeMethodLayout(created.method_id, 1, {
   prompt_hash: "a1b2c3d4e5f6",
   jsonl: '{"op":"add","path":"/root","value":"page"}',
   provenance: { producer: "pipelex-method", model: "claude-4.8-opus", style: "editorial" },
-}, { idempotencyKey: crypto.randomUUID() }); // the same key on a retry answers as the first write
+}, { idempotencyKey: layoutKey });
 const laidOut = await client.validate({ method_id: `${created.method_id}@1` }, false, {
   views: ["input_form", "layouts"],
 });

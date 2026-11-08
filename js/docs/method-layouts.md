@@ -12,6 +12,10 @@ const client = new PipelexApiClient();
 
 // A producer has designed a layout over version 3's descriptor: store it beside that version.
 const version = await client.getMethodVersion("mt_abc123", 3);
+// The producer model's JSON patch lines, carried as emitted.
+const jsonl = '{"op":"add","path":"/root","value":"page"}';
+// One key per layout to store, made once and sent again unchanged on each retry of this write.
+const layoutKey = crypto.randomUUID();
 await client.storeMethodLayout(
   "mt_abc123",
   3,
@@ -20,10 +24,10 @@ await client.storeMethodLayout(
     pipe_ref: "receipts.review_receipt",
     catalog: "composer",
     prompt_hash: "a1b2c3d4e5f6",
-    jsonl, // the producer model's JSON patch lines, as emitted
+    jsonl,
     provenance: { producer: "pipelex-method", model: "claude-4.8-opus", style: "editorial" },
   },
-  { idempotencyKey: crypto.randomUUID() }, // kept, with the layout, across this write's retries
+  { idempotencyKey: layoutKey },
 );
 
 // A host reads the descriptor and the layouts over it in one call.
@@ -75,7 +79,7 @@ It takes a bare catalog id, as every method route does, and refuses a suffixed o
 
 **A write of the same identity replaces the layout.** The answer is the same `200` whether the write stored a new layout or replaced one, and the replaced layout is carried no more.
 
-**A write is sent again under its idempotency key.** `options.idempotencyKey` (`MethodLayoutWriteOptions`) is sent as the `Idempotency-Key` header, and nothing is sent when it is absent or `null`. Under the same key the hosted API answers a retry with the first write's stored answer and runs nothing, so a write whose answer was lost, on a client timeout for instance, is sent again unchanged under the key it was first sent with. Without a key the write runs again: it stamps the layout with a new `stored_at`, which moves it ahead of every layout stored since in the newest-first order, and applies the bound below again, so when another producer stored a newer prompt of the same pipe and catalog meanwhile, the resent layout can come back ahead of it and, at the bound, that newer layout can be the one removed. Generate one key per layout to store, a `crypto.randomUUID()` for instance. A `200` and a `4xx` refusal are stored under the key alike; a `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh. A key is 1 to 255 visible ASCII characters, and anything else is a `RequestArgumentError` before any request.
+**A write is sent again under its idempotency key.** `options.idempotencyKey` (`MethodLayoutWriteOptions`) is sent as the `Idempotency-Key` header, and nothing is sent when it is absent or `null`. Under the same key the hosted API answers a retry with the first write's stored answer and runs nothing, so a write whose answer was lost, on a client timeout for instance, is sent again unchanged under the key it was first sent with. Without a key the write runs again: it stamps the layout with a new `stored_at`, which moves it ahead of every layout stored since in the newest-first order, and applies the bound below again, so when another producer stored a newer prompt of the same pipe and catalog meanwhile, the resent layout can come back ahead of it and, at the bound, that newer layout can be the one removed. Generate one key per layout to store, a `crypto.randomUUID()` for instance. The write's `200` and its `4xx` refusals are stored under the key alike; a `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh, and neither are the key's own `409` answers below, so a retry after `request.idempotency_key_in_use` runs as the key's first request would. A key is 1 to 255 visible ASCII characters, and anything else is a `RequestArgumentError` before any request.
 
 **A content keeps at most 16 layouts**, every pipe, catalog and prompt hash together, which is also the most a validate carries. Past the bound, a write removes first the layouts that newer prompt hashes of their own pipe and catalog superseded, the most superseded and then the oldest first, and the last layout of a pipe and catalog leaves only once more than 16 pipes and catalogs hold layouts. A host laying out several pipes, each in a composer and a result catalog, keeps every one's current layout while another takes new prompts.
 

@@ -2885,8 +2885,10 @@ class PipelexAPIClient(MthdsAPIClient):
         answer was lost, on a client timeout for instance, is sent again unchanged under the key it was first sent
         with. Without a key the write runs again: it stamps the layout with a new `stored_at`, which moves it ahead of
         every layout stored since, and applies the bound again, so a newer prompt of the same pipe and catalog stored
-        meanwhile can be the layout removed. A `200` and a `4xx` refusal are stored under the key alike; a `5xx` and a
-        refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh.
+        meanwhile can be the layout removed. The write's `200` and its `4xx` refusals are stored under the key alike; a
+        `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh, and
+        neither are the key's own `409` answers (`request.idempotency_conflict`, `request.idempotency_key_in_use`), so a
+        retry after the second runs as the key's first request would.
 
         The write changes the method, so it takes an `admin` or a `member` of the method's organization. The body is
         `layout`'s fields, closed at both levels as the route's body is, each `None` optional provenance field left out

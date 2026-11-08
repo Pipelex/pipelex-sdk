@@ -15,6 +15,8 @@ async with PipelexAPIClient() as client:
     # A producer has designed a layout over version 3's descriptor: store it beside that version.
     version = await client.get_method_version("mt_abc123", 3)
     assert version.tree_digest is not None  # the tree the layout was designed over
+    jsonl = '{"op":"add","path":"/root","value":"page"}'  # the producer model's JSON patch lines, as emitted
+    layout_key = str(uuid.uuid4())  # one key per layout, made once and sent again unchanged on each retry
     await client.store_method_layout(
         "mt_abc123",
         3,
@@ -23,10 +25,10 @@ async with PipelexAPIClient() as client:
             pipe_ref="receipts.review_receipt",
             catalog="composer",
             prompt_hash="a1b2c3d4e5f6",
-            jsonl=jsonl,  # the producer model's JSON patch lines, as emitted
+            jsonl=jsonl,
             provenance=LayoutProvenanceInput(producer="pipelex-method", model="claude-4.8-opus", style="editorial"),
         ),
-        idempotency_key=str(uuid.uuid4()),  # kept, with the layout, across this write's retries
+        idempotency_key=layout_key,
     )
 
     # A host reads the descriptor and the layouts over it in one call.
@@ -75,7 +77,7 @@ It takes a bare catalog id, as every method route does, and refuses a suffixed o
 
 **A write of the same identity replaces the layout.** The answer is the same whether the write stored a new layout or replaced one, and the replaced layout is carried no more.
 
-**A write is sent again under its idempotency key.** `idempotency_key` is sent as the `Idempotency-Key` header, and nothing is sent when it is `None`. Under the same key the hosted API answers a retry with the first write's stored answer and runs nothing, so a write whose answer was lost, on a client timeout for instance, is sent again unchanged under the key it was first sent with. Without a key the write runs again: it stamps the layout with a new `stored_at`, which moves it ahead of every layout stored since in the newest-first order, and applies the bound below again, so when another producer stored a newer prompt of the same pipe and catalog meanwhile, the resent layout can come back ahead of it and, at the bound, that newer layout can be the one removed. Generate one key per layout to store, a `str(uuid.uuid4())` for instance. A `200` and a `4xx` refusal are stored under the key alike; a `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh. A key is 1 to 255 visible ASCII characters, and anything else raises `RequestArgumentError` before any request.
+**A write is sent again under its idempotency key.** `idempotency_key` is sent as the `Idempotency-Key` header, and nothing is sent when it is `None`. Under the same key the hosted API answers a retry with the first write's stored answer and runs nothing, so a write whose answer was lost, on a client timeout for instance, is sent again unchanged under the key it was first sent with. Without a key the write runs again: it stamps the layout with a new `stored_at`, which moves it ahead of every layout stored since in the newest-first order, and applies the bound below again, so when another producer stored a newer prompt of the same pipe and catalog meanwhile, the resent layout can come back ahead of it and, at the bound, that newer layout can be the one removed. Generate one key per layout to store, a `str(uuid.uuid4())` for instance. The write's `200` and its `4xx` refusals are stored under the key alike; a `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends the write afresh, and neither are the key's own `409` answers below, so a retry after `request.idempotency_key_in_use` runs as the key's first request would. A key is 1 to 255 visible ASCII characters, and anything else raises `RequestArgumentError` before any request.
 
 **A content keeps at most 16 layouts**, every pipe, catalog and prompt hash together, which is also the most a validate carries. Past the bound, a write removes first the layouts that newer prompt hashes of their own pipe and catalog superseded, the most superseded and then the oldest first, and the last layout of a pipe and catalog leaves only once more than 16 pipes and catalogs hold layouts. A host laying out several pipes, each in a composer and a result catalog, keeps every one's current layout while another takes new prompts.
 

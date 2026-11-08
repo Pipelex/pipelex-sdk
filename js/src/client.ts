@@ -496,11 +496,13 @@ export interface MethodLayoutWriteOptions {
    * again, so a layout another producer stored meanwhile, a newer prompt of the same pipe and
    * catalog included, can be the one removed. Under the same key the hosted API answers the retry
    * with the first write's stored answer and runs nothing, so a write whose answer was lost, as on
-   * a client timeout, can be sent again unchanged. A `200` and a `4xx` refusal are stored alike; a
-   * `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the same key sends
-   * the write afresh. The same key with a different body is refused (`409`
+   * a client timeout, can be sent again unchanged. The write's `200` and its `4xx` refusals are
+   * stored alike; a `5xx` and a refusal for its timing (a `408`, `425` or `429`) are not, so the
+   * same key sends the write afresh. The same key with a different body is refused (`409`
    * `request.idempotency_conflict`, whose `retry` is `no`), as is a key whose earlier request is
-   * still being handled (`409` `request.idempotency_key_in_use`, whose `retry` is `yes`).
+   * still being handled (`409` `request.idempotency_key_in_use`, whose `retry` is `yes`); these
+   * two are the key's own answers and are never stored, so a retry after the second runs as the
+   * key's first request would.
    *
    * A key is held to the rule a start's is (`PipelexStartRequestOptions.idempotencyKey`): 1 to
    * 255 visible ASCII characters, anything else a `RequestArgumentError` before any request.

@@ -182,10 +182,11 @@ layout = MethodLayoutInput(
     pipe_ref="receipts.review_receipt",
     catalog="composer",
     prompt_hash="a1b2c3d4e5f6",
-    jsonl=jsonl,  # the producer model's JSON patch lines, as emitted
+    jsonl='{"op":"add","path":"/root","value":"page"}',  # the producer model's JSON patch lines, as emitted
     provenance=LayoutProvenanceInput(producer="pipelex-method", model="claude-4.8-opus", style="editorial"),
 )
-stored = await client.store_method_layout("mt_123", 3, layout, idempotency_key=str(uuid.uuid4()))
+layout_key = str(uuid.uuid4())  # one key per layout, made once and sent again unchanged on each retry
+stored = await client.store_method_layout("mt_123", 3, layout, idempotency_key=layout_key)
 report = await client.validate(method_id="mt_123@3", views=[VALIDATION_VIEW_INPUT_FORM, VALIDATION_VIEW_LAYOUTS])
 if isinstance(report, PipelexValidationReport) and report.layouts is not None:
     print([(candidate.catalog, candidate.provenance.style) for candidate in report.layouts])
