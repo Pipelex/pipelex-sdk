@@ -37,7 +37,10 @@ import type {
   ResolveRequest,
   ResolveResponse,
   ValidateMethodSelector,
+  ValidateView,
 } from "./models.js";
+import { methodLayoutFault, readMethodLayout, readMethodLayouts } from "./method-layouts.js";
+import type { MethodLayout, MethodLayoutInput } from "./method-layouts.js";
 import {
   assertArtifactSelection,
   assertWaitOptions,
@@ -498,8 +501,13 @@ export interface ValidateOptions {
    * `"markdown"`, so both arms carry `rendered_markdown`.
    */
   render?: string[];
-  /** Structured-view opt-in tokens, e.g. `["input_form", "output_form"]`; sent only when given. */
-  views?: string[];
+  /**
+   * Structured-view opt-in tokens, e.g. `["input_form", "output_form"]`, or
+   * `["input_form", "layouts"]` for a stored method's descriptor and the layouts over it; sent
+   * verbatim, and only when given. A token this SDK does not know (`ValidateView`) is sent as its
+   * raw string.
+   */
+  views?: (ValidateView | (string & {}))[];
   /**
    * Per-call request ceiling; defaults to the 20-min execute ceiling. A positive number
    * no larger than 2147483647, the longest delay a timer honours, else a `RangeError`.
@@ -866,6 +874,20 @@ const COPY_DRAFT_TOKEN_ARGUMENT: CallArgument = {
   what:
     "an expected_draft_updated_at, the draft token the caller last read, the method's " +
     "`updated_at`, a string, or none",
+};
+
+/** What each argument of a layout write is, as a refusal of it names it. */
+const LAYOUT_VERSION_ARGUMENT: CallArgument = {
+  name: "version",
+  what: "a version number, the published version the layout was designed for, a positive integer",
+};
+const LAYOUT_ARGUMENT: CallArgument = {
+  name: "layout",
+  what: "the layout to store as an object, a MethodLayoutInput",
+};
+const LAYOUT_PROVENANCE_ARGUMENT: CallArgument = {
+  name: "provenance",
+  what: "the layout's provenance as an object naming at least its producer and its model",
 };
 
 /**
@@ -2048,7 +2070,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `options.views` is the sibling opt-in for *structured* views where `render`
    * carries *rendered text*. The two lists are independent, each resolving its own
    * tokens against its own supported set, and each supported token adds a same-named
-   * top-level field to the valid arm — `input_form` and `output_form`. Unlike
+   * top-level field to the valid arm — `input_form` and `output_form`, and on a hosted
+   * validate by `method_id`, `layouts`, the layouts stored for the resolved tree
+   * (`PipelexValidationReport.layouts`, absent when there are none), each entry read as
+   * `storeMethodLayout`'s answer is and one that does not read as a layout left out. Unlike
    * `render`, this client sends `views` ONLY when the caller asks: the point of an
    * opt-in view is that the default response stays byte-identical, and the
    * highest-frequency consumers (hook pipelines, CI gates, agent loops) never pay for
@@ -2117,8 +2142,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (res.status < 200 || res.status >= 300) {
       this.throwApiResponseError("POST", "validate", res);
     }
-    return withVerdictItems(
-      this.readObjectAnswer<PipelexValidationResult>("POST", "validate", res),
+    return withReadLayouts(
+      withVerdictItems(this.readObjectAnswer<PipelexValidationResult>("POST", "validate", res)),
     );
   }
 
@@ -3733,6 +3758,73 @@ export class PipelexApiClient implements HostedProtocolSurface {
       withLinks(res),
       "a published version",
     );
+  }
+
+  /**
+   * Store a layout designed for one pipe of a published version of a method —
+   * `POST /v1/methods/{id}/versions/{n}/layouts` — and answer it as stored, with the `stored_at` the
+   * platform stamped.
+   *
+   * A layout is a data file a producer designed over the version's input-form descriptor, in the
+   * vocabulary of a catalog of components. The platform stores it beside the method, keyed by the
+   * content it was designed for, and hands it back on every validate of the method by `method_id`
+   * that names `layouts` among its `views` and resolves the same tree
+   * (`PipelexValidationReport.layouts`). It never produces, parses or judges one.
+   *
+   * `layout.tree_digest` must be the digest of the tree `version` holds, its
+   * `MethodVersionSummary.tree_digest`: a producer designs over the descriptor of the version it was
+   * handed. **A write of the same identity replaces the layout**, the identity being `tree_digest`,
+   * `pipe_ref`, `catalog` and `prompt_hash`, and is answered the same `200` whether it stored a new
+   * layout or replaced one, so sending the same write again is safe. A content keeps at most 16
+   * layouts, every pipe, catalog and prompt hash together; past the bound a write removes first what
+   * newer prompts of the same pipe and catalog superseded (see `docs/method-layouts.md`).
+   *
+   * The write changes the method, so it takes an `admin` or a `member` of the method's
+   * organization. Takes a bare catalog id, as `getMethod` does, and the version number. Sends the
+   * members of `MethodLayoutInput` and nothing else, the route's body being closed at both levels,
+   * and leaves out each optional provenance member that is `null` or omitted, for the platform's
+   * default. Throws `RequestArgumentError` before any request for a `version` that is not a positive
+   * integer and for a `layout` or a `provenance` that is not an object; every other member is sent
+   * as given. Throws `ApiResponseError` when the platform refuses the write, which stores nothing:
+   * `422` `request.invalid` for a member breaking its shape or bound, naming it in `params.field`
+   * and `location.field` (`provenance.<member>` for one of the provenance's), and, naming
+   * `tree_digest`, for a digest that is not the tree the version holds; `403` `auth.forbidden`
+   * naming the `member` requirement for a `runner` or a caller with no recognised role; `404`
+   * `pipelex.catalog.not_found` for an unknown method or another organization's, its
+   * `params.resource` `method`, and for a version the method never published, its
+   * `params.resource` `version`; `409` `pipelex.catalog.being_deleted` while the method's erasure is
+   * pending, under way or stopped; and `500` `runtime.unexpected` for a version stored before
+   * methods were trees, which names no tree. An answer that does not read as a layout
+   * (`methodLayoutFault`) is an answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async storeMethodLayout(
+    methodId: string,
+    version: number,
+    layout: MethodLayoutInput,
+  ): Promise<MethodLayout> {
+    const call = "storeMethodLayout";
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw argumentRefusal(
+        call,
+        LAYOUT_VERSION_ARGUMENT,
+        describeNumberArgument(version),
+        "not_a_positive_integer",
+      );
+    }
+    const endpoint = `${methodPath(methodId, call)}/versions/${version}/layouts`;
+    const body = methodLayoutBody(layout, call);
+    const res = await this.requestProductAnswer("POST", endpoint, body);
+    const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
+    const stored = readMethodLayout(answer);
+    if (stored === null) {
+      throw this.unreadableAnswer(
+        "POST",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        `a layout ${methodLayoutFault(answer) ?? "that is not one"}`,
+      );
+    }
+    return stored;
   }
 
   /**
@@ -6279,6 +6371,66 @@ function withVerdictItems<T>(answer: T): T {
   if (answer.is_valid === false) read.errors = readProblemItems(answer.errors);
   else if (Object.hasOwn(answer, "warnings")) read.warnings = readProblemItems(answer.warnings);
   return read as T;
+}
+
+/**
+ * A valid verdict with its `layouts` read entry by entry (`readMethodLayouts`), only when the
+ * answer carries the key: each entry that reads as a layout is kept, in the answer's order, and a
+ * list left with none is removed, so `layouts` is either absent or holds at least one layout, as
+ * the platform sends it. Any other answer is returned as it came.
+ */
+function withReadLayouts<T>(answer: T): T {
+  if (!isPlainObject(answer) || answer.is_valid !== true || !Object.hasOwn(answer, "layouts")) {
+    return answer;
+  }
+  const read: Record<string, unknown> = { ...answer };
+  const layouts = readMethodLayouts(answer.layouts);
+  if (layouts.length === 0) delete read.layouts;
+  else read.layouts = layouts;
+  return read as T;
+}
+
+/**
+ * The body `storeMethodLayout` sends for `layout`: the members of `MethodLayoutInput` and nothing
+ * else, since the route's body is closed at both levels, each provenance member that is `null` or
+ * omitted left out for the platform's default. A layout or a provenance that is not an object is
+ * refused with `RequestArgumentError` before anything is sent; every other member is sent as given,
+ * for the platform to hold to its shapes, its `422` naming the member it refuses.
+ */
+function methodLayoutBody(layout: unknown, call: string): Record<string, unknown> {
+  if (!isPlainObject(layout)) {
+    throw argumentRefusal(call, LAYOUT_ARGUMENT, describeObjectArgument(layout), "not_an_object");
+  }
+  const provenance = layout.provenance;
+  if (!isPlainObject(provenance)) {
+    throw argumentRefusal(
+      call,
+      LAYOUT_PROVENANCE_ARGUMENT,
+      describeObjectArgument(provenance),
+      "not_an_object",
+    );
+  }
+  const sentProvenance: Record<string, unknown> = {
+    producer: provenance.producer,
+    model: provenance.model,
+  };
+  for (const member of ["seed", "style", "repair_rounds"] as const) {
+    if (provenance[member] != null) sentProvenance[member] = provenance[member];
+  }
+  return {
+    tree_digest: layout.tree_digest,
+    pipe_ref: layout.pipe_ref,
+    catalog: layout.catalog,
+    prompt_hash: layout.prompt_hash,
+    jsonl: layout.jsonl,
+    provenance: sentProvenance,
+  };
+}
+
+/** How a refusal names a value given where an object was due: `null`, an array or its type. */
+function describeObjectArgument(value: unknown): string {
+  if (value === null) return "null";
+  return Array.isArray(value) ? "an array" : typeof value;
 }
 
 /**

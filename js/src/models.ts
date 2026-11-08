@@ -20,6 +20,7 @@ import type {
   RunResultExecute,
   RunResultStart,
 } from "mthds/protocol";
+import type { MethodLayout } from "./method-layouts.js";
 import type { MethodTreeForm, NoMethodTree } from "./method-trees.js";
 
 export interface DictStuff {
@@ -183,6 +184,15 @@ export type PipelexValidateSource =
   | (MethodTreeForm & { method_ref?: never; method_id?: never })
   | (ValidateMethodSelector & NoMethodTree);
 
+/**
+ * The `views` tokens this SDK knows, each adding the same-named top-level member to the valid
+ * report: `input_form` and `output_form`, the runner's per-pipe form descriptors, and `layouts`, the
+ * hosted plane's stored layouts of a method validated by `method_id`. `ValidateOptions.views` reads
+ * them open: a token a later server adds is sent as its raw string, and a server ignores a token it
+ * does not know, never answering a `422` for one.
+ */
+export type ValidateView = "input_form" | "output_form" | "layouts";
+
 /** Per-pipe dry-run verdict in `validated_pipes[]` — mirror of pipelex's `DryRunStatus`. */
 export type DryRunStatus = "SUCCESS" | "FAILURE" | "SKIPPED";
 
@@ -309,6 +319,24 @@ export interface PipelexValidationReport {
    * through `views: ["output_form"]` and absent from any verdict that did not ask.
    */
   output_form?: OutputForm;
+  /**
+   * The layouts stored for the method's content, newest first by `stored_at`, at most 16: a
+   * Pipelex hosted extension, requested through `views: ["layouts"]` on a validate naming a stored
+   * method by `method_id`, and carried for every selector of that method resolving the same tree
+   * (the version it was written against, a later version holding the same tree, the draft holding
+   * it). Ask for `["input_form", "layouts"]` to receive the descriptor and the layouts over it in
+   * one answer.
+   *
+   * **Absent means none**: the member is left out when the validate names no `method_id`, when
+   * `views` does not name `layouts`, when no layout is stored for the resolved tree, and when the
+   * platform could not read them, so a host never reads an empty array and renders the plain form
+   * whenever it is absent. A platform that does not carry the view leaves it out too; its
+   * `GET /v1/version` does not list `method_layouts` among its `extensions`.
+   *
+   * Read entry by entry (`readMethodLayouts`): an entry that does not read as a layout is left
+   * out rather than failing the verdict, and a list left with none reads as absent.
+   */
+  layouts?: MethodLayout[];
   /** Pipes the runtime may skip when an optional slot resolves absent. */
   liftable_pipes: LiftablePipeEntry[];
   /**

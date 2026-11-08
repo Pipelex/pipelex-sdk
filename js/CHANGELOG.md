@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`storeMethodLayout`**: stores a layout a producer designed for one pipe of a published version, `POST /v1/methods/{id}/versions/{n}/layouts`, and answers it as a `MethodLayout` with the `stored_at` the platform stamped; the body, a `MethodLayoutInput` with its `LayoutProvenanceInput`, is sent closed, a write of the same `tree_digest`, `pipe_ref`, `catalog` and `prompt_hash` replaces the layout, and the platform's refusals (`422` `request.invalid` naming the member, `tree_digest` for a tree that is not the version's, `403` `auth.forbidden` for a runner, `404` `pipelex.catalog.not_found` naming the method or the version, `409` `pipelex.catalog.being_deleted`) are `ApiResponseError`s (`docs/method-layouts.md`).
+- **`layouts` on `PipelexValidationReport`**: a validate by `method_id` whose `views` names `layouts` reads the layouts stored for the resolved tree, newest first, each entry checked as the write's answer is and one that does not read as a layout left out; the member is absent when there are none.
+- **`ValidateView`**: names the `views` tokens this SDK knows, `input_form`, `output_form` and `layouts`; `ValidateOptions.views` still takes any other token as its raw string.
+
 ## [v0.63.0] - 2026-11-08
 
 ### Added
