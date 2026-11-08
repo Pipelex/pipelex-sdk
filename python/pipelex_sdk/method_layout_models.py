@@ -1,8 +1,9 @@
 """A method's stored layouts: the layout a producer designed for one pipe of a published version.
 
 The hosted platform stores a layout beside the method (`PipelexAPIClient.store_method_layout`,
-`POST /v1/methods/{id}/versions/{n}/layouts`) and hands it back on the validate of the method by id that names
-`layouts` among its `views` (`PipelexValidationReport.layouts`). The twin of `@pipelex/sdk`'s `method-layouts.ts`.
+`POST /v1/methods/{id}/versions/{n}/layouts`), reads it back by the version (`list_method_layouts`, `GET` of the same
+route) and hands it back on the validate of the method by id that names `layouts` among its `views`
+(`PipelexValidationReport.layouts`). The twin of `@pipelex/sdk`'s `method-layouts.ts`.
 
 A layout is a data file: a tree of elements written in the vocabulary of a catalog of components, every value bound to
 a path in the host's form state, carrying no field descriptions and no data of its own. A host renders it over the
@@ -14,8 +15,9 @@ plane's.
 Two models per shape, one for each direction. The write (`MethodLayoutInput`, `LayoutProvenanceInput`) is closed at
 both levels, as the route's body is, so a field the platform does not take is refused when the input is built. The
 reading (`MethodLayout`, `LayoutProvenance`) is extension-open and lenient where the platform has a default, and a
-report's `layouts` is read entry by entry (`read_method_layouts`), as `pipelex_sdk.problem_items` reads a verdict's
-items: a validate never loses its verdict, nor its other layouts, to one layout it cannot read.
+list of layouts is read entry by entry (`read_method_layouts`), as `pipelex_sdk.problem_items` reads a verdict's
+items: neither a validate nor a read of a version's layouts loses its other layouts, nor a validate its verdict, to
+one layout it cannot read.
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ class LayoutProvenance(BaseModel):
 
 
 class MethodLayout(BaseModel):
-    """One stored layout — what `store_method_layout` returns, and an entry of `PipelexValidationReport.layouts`.
+    """One stored layout — what `store_method_layout` returns, an entry of `list_method_layouts`'s `items` and of `PipelexValidationReport.layouts`.
 
     Its identity is `tree_digest`, `pipe_ref`, `catalog` and `prompt_hash` within one method: it belongs to the content
     it was designed for, never to a version number, so it is served for whatever selector of that method resolves the
@@ -88,6 +90,12 @@ class MethodLayout(BaseModel):
 
     stored_at: StrictStr
     """The moment the write that stored it landed, ISO 8601 in UTC."""
+
+    sample_json: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
+    """A written sample of the result the layout was designed over, as one JSON text the platform stores and never
+    reads, so a host can draw a designed result page before anyone has run the method; `None` when none was stored, and
+    from a platform that predates it. Parse it yourself, and treat it as untrusted: nothing but the JSON syntax was
+    checked."""
 
 
 class LayoutProvenanceInput(BaseModel):
@@ -148,6 +156,15 @@ class MethodLayoutInput(BaseModel):
     provenance: LayoutProvenanceInput
     """How it was made."""
 
+    sample_json: str | None = None
+    """A written sample of the result the layout was designed over, one JSON text of at most 64 KiB of UTF-8, which the
+    platform refuses if it does not parse. A `None` sample is not sent, and the write stores none, whatever the layout
+    it replaces held.
+
+    **Only a written sample belongs here, invented from the description of the result and holding no customer's data,
+    never a run's output.** A layout's readers include the method's runners and, for a public method, other
+    organizations, and the platform never reads the sample, so keeping that rule is the producer's."""
+
     @classmethod
     def from_layout(cls, layout: MethodLayout) -> MethodLayoutInput:
         """The write that stores `layout` again, as `@pipelex/sdk` sends a layout read back.
@@ -169,7 +186,7 @@ class MethodLayoutInput(BaseModel):
 
 
 def read_method_layouts(entries: object) -> list[MethodLayout] | None:
-    """A valid report's `layouts` read entry by entry, as `@pipelex/sdk` reads them.
+    """A list of layouts read entry by entry, as `@pipelex/sdk` reads them: a valid report's `layouts`, or the `items` of a version's.
 
     Args:
         entries: The list as the answer gave it.
@@ -197,3 +214,27 @@ def read_method_layouts(entries: object) -> list[MethodLayout] | None:
 MethodLayouts: TypeAlias = Annotated[list[MethodLayout] | None, BeforeValidator(read_method_layouts)]
 """A report's `layouts` as a model field: the list as it arrived, read by `read_method_layouts`, so a malformed entry
 never fails the verdict that carries it, and a list left with none reads as `None`."""
+
+
+def _readable_layout_items(entries: object) -> object:
+    """A version's `items` read entry by entry (`read_method_layouts`), so one it cannot read never costs the others.
+
+    A value that is no list is handed on as it came, for the field's own type to refuse: an answer whose `items` is
+    not a list is one the SDK cannot read.
+    """
+    if not isinstance(entries, list):
+        return entries
+    return read_method_layouts(cast("list[Any]", entries)) or []
+
+
+class MethodLayoutList(BaseModel):
+    """The layouts stored for a published version's content — what `list_method_layouts` returns.
+
+    Extension-open: a field a later platform adds rides `model_extra`.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    items: Annotated[list[MethodLayout], BeforeValidator(_readable_layout_items)]
+    """The layouts, newest first, at most 16, empty when none is stored. An entry that does not read as a layout is
+    left out."""

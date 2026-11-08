@@ -108,7 +108,7 @@ from pipelex_sdk.errors import (
     response_unreadable_problem,
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
-from pipelex_sdk.method_layout_models import MethodLayout
+from pipelex_sdk.method_layout_models import MethodLayout, MethodLayoutList
 from pipelex_sdk.model_reference_models import ModelCheckCategory, ModelReferenceVerdict, ModelReferenceVerdictAdapter
 from pipelex_sdk.prepare_inputs import PreparedInputs
 from pipelex_sdk.prepare_inputs import prepare_inputs as _prepare_inputs_impl
@@ -254,8 +254,8 @@ _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEO
 # travels as a context variable, kept to the task that made it as the time limit above is.
 _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
 
-# The idempotency key of the `start`, the `copy_method`, the `store_method_layout`, the `rotate_webhook_secret` or the
-# `replay_run_webhook_delivery` in flight, which `_send` sends as the `Idempotency-Key` header. The base builds the
+# The idempotency key of the `start`, the `copy_method`, the `store_method_layout`, the `set_method_layouts_off`, the
+# `rotate_webhook_secret` or the `replay_run_webhook_delivery` in flight, which `_send` sends as the `Idempotency-Key` header. The base builds the
 # start's request deep inside its own `start`, so the key travels as a context variable, kept to the task that set it
 # as the time limit above is, and set only around the one request each of those methods sends.
 _IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar("_IDEMPOTENCY_KEY", default=None)
@@ -668,7 +668,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
         parses, so that an answer that route cannot read is reported as every other route reports it. Inside
         `_creating_run`, the error says whether the run the request may create may have started. While `start`,
-        `copy_method`, `store_method_layout`, `rotate_webhook_secret` or `replay_run_webhook_delivery` holds an idempotency key
+        `copy_method`, `store_method_layout`, `set_method_layouts_off`, `rotate_webhook_secret` or
+        `replay_run_webhook_delivery` holds an idempotency key
         (`_IDEMPOTENCY_KEY`), the request carries it as the `Idempotency-Key` header.
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
@@ -715,7 +716,8 @@ class PipelexAPIClient(MthdsAPIClient):
         with; this method streams the answer and reads its body itself, so that such a body is reported as the
         answer it is (`_undecodable_answer`), with its status and its headers. The headers are the base's
         (`Accept`, `User-Agent`, and `Content-Type` beside a body), plus the key the requests that carry one send,
-        `start`'s, `copy_method`'s, `store_method_layout`'s, `rotate_webhook_secret`'s and `replay_run_webhook_delivery`'s:
+        `start`'s, `copy_method`'s, `store_method_layout`'s, `set_method_layouts_off`'s, `rotate_webhook_secret`'s and
+        `replay_run_webhook_delivery`'s:
         a unit test holds
         them to the ones the base's `_send` sends, so a header the base adds later fails that test rather than going
         missing here.
@@ -2870,15 +2872,17 @@ class PipelexAPIClient(MthdsAPIClient):
 
         A layout is a data file a producer designed over the version's input-form descriptor, in the vocabulary of a
         catalog of components. The platform stores it beside the method, keyed by the content it was designed for, and
-        hands it back on every validate of the method by `method_id` that names `layouts` among its `views` and resolves
-        the same tree (`PipelexValidationReport.layouts`). It never produces, parses or judges one.
+        hands it back through `list_method_layouts` and on every validate of the method by `method_id` that names
+        `layouts` among its `views` and resolves the same tree (`PipelexValidationReport.layouts`). It never produces,
+        parses or judges one.
 
         `layout.tree_digest` must be the digest of the tree `version` holds, its `MethodVersionSummary.tree_digest`: a
         producer designs over the descriptor of the version it was handed. **A write of the same identity replaces the
         layout**, the identity being `tree_digest`, `pipe_ref`, `catalog` and `prompt_hash`, and is answered the same
         way whether it stored a new layout or replaced one. A content keeps at most 16 layouts, every pipe, catalog and
         prompt hash together; past the bound a write removes first what newer prompts of the same pipe and catalog
-        superseded (see `docs/method-layouts.md`).
+        superseded (see `docs/method-layouts.md`). `layout.sample_json` keeps a written sample with the layout, never a
+        run's output.
 
         `idempotency_key` is sent as the `Idempotency-Key` header, and nothing is sent when it is `None`. Under the same
         key the hosted API answers a retry with the first write's stored answer and runs nothing, so a write whose
@@ -2891,8 +2895,8 @@ class PipelexAPIClient(MthdsAPIClient):
         retry after the second runs as the key's first request would.
 
         The write changes the method, so it takes an `admin` or a `member` of the method's organization. The body is
-        `layout`'s fields, closed at both levels as the route's body is, each `None` optional provenance field left out
-        for the platform's default.
+        `layout`'s fields, closed at both levels as the route's body is, `sample_json` and each optional provenance
+        field left out for the platform's default when it is `None`.
 
         Args:
             method_id: The method's bare catalog id.
@@ -2932,6 +2936,93 @@ class PipelexAPIClient(MthdsAPIClient):
         key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
         try:
             return await self._request_product("POST", endpoint, body=body, read=MethodLayout.model_validate)
+        finally:
+            _IDEMPOTENCY_KEY.reset(key_token)
+
+    async def list_method_layouts(self, method_id: str, version: int) -> MethodLayoutList:
+        """The layouts stored for the content of a published version of a method — `GET /v1/methods/{id}/versions/{n}/layouts`.
+
+        Newest first, at most 16, `items` empty when none is stored. It touches only the platform's database and calls no
+        runner, so it costs a host far less than the `layouts` view of `validate`, which dry-runs every pipe of the
+        method. It answers what is stored whatever `layouts_off` says: the switch is the host's to honour. Another
+        organization's public method reads too, with the layouts its builders stored, and a `runner` reads what it is
+        shown.
+
+        Args:
+            method_id: The method's bare catalog id.
+            version: The number of the published version, a positive integer.
+
+        Returns:
+            A `MethodLayoutList`, whose `items` hold each entry that reads as a `MethodLayout`: one that does not is left
+            out, so one layout the SDK cannot read never costs the caller the others.
+
+        Raises:
+            RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as `2.0`, a numeric
+                string and anything else that is not an `int` included — or `method_id` is refused as every method route
+                refuses it; nothing is sent.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method or another organization's internal
+                one, its `params.resource` `method`, and for a version the method never published, its `params.resource`
+                `version`; `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method is pending,
+                under way or stopped; `500` `runtime.unexpected` for a version stored before methods were trees, which
+                names no tree. A `200` whose `items` is not a list is an answer the SDK cannot read, raised as an
+                `ApiResponseError` too.
+        """
+        call = "list_method_layouts"
+        # Checked as an `object`, as `get_method_version` checks it: only an `int` puts a version number in the path.
+        candidate = cast("object", version)
+        if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
+            raise _argument_refusal(call, _LAYOUT_LIST_VERSION_ARGUMENT, repr(version), reason="not_a_positive_integer")
+        endpoint = f"{_method_path(method_id, call=call)}/versions/{version}/layouts"
+        return await self._request_product("GET", endpoint, read=MethodLayoutList.model_validate)
+
+    async def set_method_layouts_off(self, method_id: str, catalogs: list[str], *, idempotency_key: str | None = None) -> MethodData:
+        """Set which catalogs of a method have their layouts switched off — `PUT /v1/methods/{id}/layouts-off`.
+
+        `catalogs` is the whole list and replaces the one held, each catalog id once, at most 8, empty when every design
+        is on: to change one, read `layouts_off` and write the new list. The switch acts at once, with no publish, and
+        holds across every publish. A layout switched off is kept, and `list_method_layouts` still answers it; a host
+        draws the plain page instead. Like a rename, it never moves the draft token, so the `updated_at` a caller holds
+        stays valid.
+
+        The last write to land is the one held, and a write sent again without a key writes its list again, undoing a
+        switch that landed in between. `idempotency_key` is sent as the `Idempotency-Key` header, and nothing is sent
+        when it is `None`: under the same key the hosted API answers a retry with the first write's stored answer and
+        runs nothing, by the rule `store_method_layout` describes.
+
+        The write changes the method, so it takes an `admin` or a `member` of the method's organization.
+
+        Args:
+            method_id: The method's bare catalog id.
+            catalogs: The ids of the catalogs whose layouts no host draws, the whole list.
+            idempotency_key: The write's idempotency key, 1 to 255 visible ASCII characters, kept across that write's
+                retries; `None` sends none.
+
+        Returns:
+            The method, its `layouts_off` the list as held.
+
+        Raises:
+            RequestArgumentError: `catalogs` is not a list, `method_id` is refused as every method route refuses it, or
+                `idempotency_key` is not 1 to 255 visible ASCII characters; nothing is sent. The entries of `catalogs`
+                are sent as given.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method or another organization's, a public
+                one included; `403` `auth.forbidden` naming the `member` requirement for a `runner` or a caller with no
+                recognised role; `409` `pipelex.catalog.being_deleted` while the method's erasure is pending, under way
+                or stopped; `413` `request.too_large` for a list that would leave the method too large to publish, which
+                a list that does not grow never is; `422` `request.invalid` for more than 8 catalogs, a catalog named
+                twice or one that is not a slug; and, under an idempotency key, `409` `request.idempotency_conflict` for
+                the key sent with a different list and `409` `request.idempotency_key_in_use` while its earlier request
+                is still being handled.
+        """
+        call = "set_method_layouts_off"
+        endpoint = f"{_method_path(method_id, call=call)}/layouts-off"
+        # Checked as an `object`: the annotation is a promise to the type checker, and a string would be sent as one list.
+        candidate = cast("object", catalogs)
+        if not isinstance(candidate, list):
+            raise _argument_refusal(call, _LAYOUTS_OFF_CATALOGS_ARGUMENT, type(candidate).__name__, reason="not_a_list")
+        checked_idempotency_key = _idempotency_key_of(idempotency_key, request="set the layouts off")
+        key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
+        try:
+            return await self._request_product("PUT", endpoint, body={"catalogs": catalogs}, read=MethodData.model_validate)
         finally:
             _IDEMPOTENCY_KEY.reset(key_token)
 
@@ -4738,8 +4829,8 @@ def _idempotency_key_of(value: object, *, request: str = "start the run") -> str
     A key that is not a string of 1 to 255 visible ASCII characters is refused rather than dropped, an empty
     one included, since a request sent without the key its caller gave would lose the protection the caller
     asked for without a word. `request` says what the request does, as the refusal's last sentence names it
-    ("start the run", "copy the method", "store the layout", "rotate the secret", "replay the delivery"). Typed `object`, as
-    `_normalized_selector` is, because this is the runtime boundary an untyped caller reaches. The characters are
+    ("start the run", "copy the method", "store the layout", "set the layouts off", "rotate the secret", "replay the
+    delivery"). Typed `object`, as `_normalized_selector` is, because this is the runtime boundary an untyped caller reaches. The characters are
     checked before the length, which then counts ASCII characters alone, so this message and `@pipelex/sdk`'s, which
     counts a character outside ASCII differently, read alike for every key; neither quotes the key, which a caller
     may derive from something private.
@@ -5084,6 +5175,12 @@ _COPY_DRAFT_TOKEN_ARGUMENT = _Argument(
 
 #: What the version of a layout write is, as a refusal of it names it.
 _LAYOUT_VERSION_ARGUMENT = _Argument(name="version", what="a version number, the published version the layout was designed for, a positive integer")
+
+#: What the version of a read of a version's layouts is, as a refusal of it names it.
+_LAYOUT_LIST_VERSION_ARGUMENT = _Argument(name="version", what="a version number, the published version whose layouts to read, a positive integer")
+
+#: What the list of a write of the layouts switched off is, as a refusal of it names it.
+_LAYOUTS_OFF_CATALOGS_ARGUMENT = _Argument(name="catalogs", what="the ids of the catalogs to switch off as a list, the whole list, empty for none")
 
 #: The ids that are dot segments, which the URL resolves before the request leaves.
 _DOT_SEGMENTS = frozenset({".", ".."})

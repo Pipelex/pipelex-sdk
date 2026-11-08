@@ -1,8 +1,9 @@
 /**
  * A method's stored layouts: the write that stores a layout beside a published version
  * (`storeMethodLayout`, `POST /v1/methods/{id}/versions/{n}/layouts`), its closed body, its
- * refusals and its answer, and the `layouts` a validate by `method_id` carries when `views` names
- * `layouts` — all against a mocked fetch. The type-level assertions bite in
+ * refusals and its answer, the direct read of a version's layouts (`listMethodLayouts`), the switch
+ * that turns a method's pages off (`setMethodLayoutsOff`), and the `layouts` a validate by
+ * `method_id` carries when `views` names `layouts` — all against a mocked fetch. The type-level assertions bite in
  * `npm run typecheck:test`, which `make check` runs.
  */
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
@@ -11,8 +12,12 @@ import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError, RequestArgumentError } from "../src/errors.js";
 import type {
   LayoutProvenance,
+  MethodData,
   MethodLayout,
   MethodLayoutInput,
+  MethodLayoutList,
+  MethodLayoutListOptions,
+  MethodLayoutsOffOptions,
   MethodLayoutWriteOptions,
   PipelexValidationReport,
   ValidateOptions,
@@ -24,6 +29,7 @@ const BASE_URL = "http://localhost:8081";
 const METHOD_ID = "mt_receipts01";
 const LAYOUTS_URL = `${BASE_URL}/v1/methods/${METHOD_ID}/versions/3/layouts`;
 const LAYOUTS_PATH = `/v1/methods/${METHOD_ID}/versions/3/layouts`;
+const LAYOUTS_OFF_URL = `${BASE_URL}/v1/methods/${METHOD_ID}/layouts-off`;
 const DIGEST = "sha256:5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47";
 
 function makeClient(): PipelexApiClient {
@@ -96,6 +102,24 @@ const STORED: MethodLayout = {
     repair_rounds: 1,
   },
   stored_at: "2026-11-08T09:00:00.123456+00:00",
+  sample_json: null,
+};
+
+/** A written sample of the result, as one JSON text. */
+const SAMPLE_JSON = '{"merchant":"Corner Bakery","total":12.5}';
+
+/** The method as the platform answers the switch: its own fields and the list as held. */
+const SWITCHED_METHOD = {
+  method_id: METHOD_ID,
+  org_id: "org_team",
+  created_by_user_id: "user_1",
+  name: "Receipts",
+  created_at: "2026-11-01T09:00:00+00:00",
+  updated_at: "2026-11-02T09:00:00+00:00",
+  draft_digest: DIGEST,
+  latest_version: 3,
+  latest_published: null,
+  layouts_off: ["composer"],
 };
 
 /** An older layout of the same content, written under another prompt and no style. */
@@ -429,6 +453,333 @@ describe("storeMethodLayout", () => {
     const stored = await makeClient().storeMethodLayout(METHOD_ID, 3, LAYOUT_INPUT);
 
     expect(stored.provenance.repair_rounds).toBe(0);
+  });
+});
+
+describe("storeMethodLayout — the written sample", () => {
+  it("sends sample_json when given and answers it as stored", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { ...STORED, sample_json: SAMPLE_JSON }));
+
+    const stored = await makeClient().storeMethodLayout(METHOD_ID, 3, {
+      ...LAYOUT_INPUT,
+      sample_json: SAMPLE_JSON,
+    });
+
+    expect(onlyRequest(spy).body).toEqual({ ...LAYOUT_INPUT, sample_json: SAMPLE_JSON });
+    expect(stored.sample_json).toBe(SAMPLE_JSON);
+  });
+
+  it.each([
+    ["omitted", {}],
+    ["null", { sample_json: null }],
+  ])("leaves out a sample that is %s", async (_name, sample) => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, STORED));
+
+    await makeClient().storeMethodLayout(METHOD_ID, 3, { ...LAYOUT_INPUT, ...sample });
+
+    expect(onlyRequest(spy).body).not.toHaveProperty("sample_json");
+  });
+
+  it("sends the sample of a layout read back", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { ...STORED, sample_json: SAMPLE_JSON }));
+
+    await makeClient().storeMethodLayout(METHOD_ID, 3, { ...STORED, sample_json: SAMPLE_JSON });
+
+    expect(onlyRequest(spy).body).toEqual({ ...LAYOUT_INPUT, sample_json: SAMPLE_JSON });
+  });
+
+  it.each([
+    ["absent, as a platform that predates it answers", undefined],
+    ["null", null],
+    ["of another type", { total: 12.5 }],
+  ])("reads a sample that is %s as null", async (_name, sample) => {
+    const { sample_json: _dropped, ...answer } = STORED;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, sample === undefined ? answer : { ...answer, sample_json: sample }),
+    );
+
+    const stored = await makeClient().storeMethodLayout(METHOD_ID, 3, LAYOUT_INPUT);
+
+    expect(stored.sample_json).toBeNull();
+  });
+});
+
+describe("listMethodLayouts", () => {
+  it("GETs the version's layouts and reads them newest first", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        jsonResponse(200, { items: [{ ...STORED, sample_json: SAMPLE_JSON }, OLDER] }),
+      );
+
+    const list = await makeClient().listMethodLayouts(METHOD_ID, 3);
+
+    const { url, method } = onlyRequest(spy);
+    expect(url).toBe(LAYOUTS_URL);
+    expect(method).toBe("GET");
+    expect(list.items).toEqual([{ ...STORED, sample_json: SAMPLE_JSON }, OLDER]);
+  });
+
+  it("answers an empty list when none is stored", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, { items: [] }));
+
+    await expect(makeClient().listMethodLayouts(METHOD_ID, 3)).resolves.toEqual({ items: [] });
+  });
+
+  it("leaves out an entry that does not read as a layout, keeping the others in order", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { items: [STORED, { ...OLDER, jsonl: 4 }, "no layout", OLDER] }),
+    );
+
+    const list = await makeClient().listMethodLayouts(METHOD_ID, 3);
+
+    expect(list.items).toEqual([STORED, OLDER]);
+  });
+
+  it("reads each entry's optional members as the platform's defaults", async () => {
+    const { sample_json: _dropped, ...withoutSample } = STORED;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        items: [
+          {
+            ...withoutSample,
+            provenance: {
+              producer: "pipelex-method",
+              model: "claude-4.8-opus",
+              repair_rounds: "x",
+            },
+          },
+        ],
+      }),
+    );
+
+    const list = await makeClient().listMethodLayouts(METHOD_ID, 3);
+
+    expect(list.items[0]?.sample_json).toBeNull();
+    expect(list.items[0]?.provenance).toEqual({
+      producer: "pipelex-method",
+      model: "claude-4.8-opus",
+      seed: null,
+      style: null,
+      repair_rounds: 0,
+    });
+  });
+
+  it.each([
+    ["no items", {}],
+    ["items that are not an array", { items: { first: STORED } }],
+  ])("refuses an answer with %s as one it cannot read", async (_name, body) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+
+    const err = await failureOf(() => makeClient().listMethodLayouts(METHOD_ID, 3));
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).problem.code).toBe("client.response_unreadable");
+    expect((err as Error).message).toContain("`items` is not an array");
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, "3", null])(
+    "refuses the version %s before sending anything",
+    async (version) => {
+      const spy = vi.spyOn(globalThis, "fetch");
+
+      const err = await failureOf(() =>
+        makeClient().listMethodLayouts(METHOD_ID, version as number),
+      );
+
+      expect(err).toBeInstanceOf(RequestArgumentError);
+      expect((err as Error).message).toContain(
+        "listMethodLayouts() takes a version number, the published version whose layouts to read",
+      );
+      expect((err as ProblemError).problem.params).toEqual({
+        argument: "version",
+        reason: "not_a_positive_integer",
+      });
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("refuses a suffixed method id before sending anything", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await failureOf(() => makeClient().listMethodLayouts(`${METHOD_ID}@3`, 3));
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a method never published or unknown", 404, "pipelex.catalog.not_found"],
+    ["a method being erased", 409, "pipelex.catalog.being_deleted"],
+    ["a version that predates trees", 500, "runtime.unexpected"],
+  ])("throws the platform's refusal of %s", async (_name, status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(code, status));
+
+    const err = await failureOf(() => makeClient().listMethodLayouts(METHOD_ID, 3));
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).status).toBe(status);
+    expect((err as ApiResponseError).problem.code).toBe(code);
+  });
+
+  it("passes the caller's signal to the request", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason as Error));
+      });
+    });
+    const controller = new AbortController();
+    const reason = new Error("the page moved on");
+
+    const pending = failureOf(() =>
+      makeClient().listMethodLayouts(METHOD_ID, 3, { signal: controller.signal }),
+    );
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    controller.abort(reason);
+
+    await expect(pending).resolves.toBe(reason);
+  });
+
+  it("types its answer and its option", () => {
+    expectTypeOf<ReturnType<PipelexApiClient["listMethodLayouts"]>>().toEqualTypeOf<
+      Promise<MethodLayoutList>
+    >();
+    expectTypeOf<MethodLayoutListOptions["signal"]>().toEqualTypeOf<AbortSignal | undefined>();
+  });
+});
+
+describe("setMethodLayoutsOff", () => {
+  it("PUTs the whole list, closed, and answers the method", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, SWITCHED_METHOD));
+
+    const method = await makeClient().setMethodLayoutsOff(METHOD_ID, ["composer"]);
+
+    const { url, method: verb, body } = onlyRequest(spy);
+    expect(url).toBe(LAYOUTS_OFF_URL);
+    expect(verb).toBe("PUT");
+    expect(body).toEqual({ catalogs: ["composer"] });
+    expect(method.layouts_off).toEqual(["composer"]);
+  });
+
+  it("sends an empty list, which switches every design on", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { ...SWITCHED_METHOD, layouts_off: [] }));
+
+    const method = await makeClient().setMethodLayoutsOff(METHOD_ID, []);
+
+    expect(onlyRequest(spy).body).toEqual({ catalogs: [] });
+    expect(method.layouts_off).toEqual([]);
+  });
+
+  it("sends entries as given, for the platform to refuse naming them", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, SWITCHED_METHOD));
+
+    await makeClient().setMethodLayoutsOff(METHOD_ID, ["composer", "composer", "Not A Slug"]);
+
+    expect(onlyRequest(spy).body).toEqual({ catalogs: ["composer", "composer", "Not A Slug"] });
+  });
+
+  it.each([
+    ["a string", "composer", "string"],
+    ["null", null, "null"],
+    ["an object", { catalogs: ["composer"] }, "object"],
+  ])("refuses %s before sending anything", async (_name, catalogs, got) => {
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await failureOf(() =>
+      makeClient().setMethodLayoutsOff(METHOD_ID, catalogs as unknown as string[]),
+    );
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toBe(
+      "setMethodLayoutsOff() takes the ids of the catalogs to switch off as an array, the whole list, " +
+        `empty for none; got ${got}.`,
+    );
+    expect((err as ProblemError).problem.params).toEqual({
+      argument: "catalogs",
+      reason: "not_a_list",
+    });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a suffixed method id before sending anything", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await failureOf(() => makeClient().setMethodLayoutsOff(`${METHOD_ID}@3`, []));
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("sends the key as the Idempotency-Key header, never in the body", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, SWITCHED_METHOD));
+
+    await makeClient().setMethodLayoutsOff(METHOD_ID, ["composer"], { idempotencyKey: "off-1" });
+
+    const [, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("Idempotency-Key")).toBe("off-1");
+    expect(onlyRequest(spy).body).toEqual({ catalogs: ["composer"] });
+  });
+
+  it.each([
+    ["absent", {}],
+    ["null", { idempotencyKey: null }],
+  ])("sends no header when the key is %s", async (_name, options) => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, SWITCHED_METHOD));
+
+    await makeClient().setMethodLayoutsOff(METHOD_ID, ["composer"], options);
+
+    const [, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).has("Idempotency-Key")).toBe(false);
+  });
+
+  it("refuses a malformed key before any request, naming what it does", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+
+    const err = await failureOf(() =>
+      makeClient().setMethodLayoutsOff(METHOD_ID, [], { idempotencyKey: "" }),
+    );
+
+    expect(err).toBeInstanceOf(RequestArgumentError);
+    expect((err as Error).message).toContain("Leave it out to set the layouts off without one.");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a runner", 403, "auth.forbidden"],
+    ["an unknown method", 404, "pipelex.catalog.not_found"],
+    ["a method being erased", 409, "pipelex.catalog.being_deleted"],
+    ["a list that would not fit", 413, "request.too_large"],
+    ["a catalog named twice", 422, "request.invalid"],
+  ])("throws the platform's refusal of %s", async (_name, status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(problemResponse(code, status));
+
+    const err = await failureOf(() => makeClient().setMethodLayoutsOff(METHOD_ID, ["composer"]));
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).status).toBe(status);
+    expect((err as ApiResponseError).problem.code).toBe(code);
+  });
+
+  it("refuses an answer that is not an object as one it cannot read", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, ["composer"]));
+
+    const err = await failureOf(() => makeClient().setMethodLayoutsOff(METHOD_ID, []));
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    expect((err as ApiResponseError).problem.code).toBe("client.response_unreadable");
+  });
+
+  it("types the method's field and the option", () => {
+    expectTypeOf<MethodData["layouts_off"]>().toEqualTypeOf<string[] | undefined>();
+    expectTypeOf<MethodLayoutsOffOptions["idempotencyKey"]>().toEqualTypeOf<
+      string | null | undefined
+    >();
   });
 });
 

@@ -357,7 +357,28 @@ class MethodLayoutBodies:
         "jsonl": JSONL,
         "provenance": PROVENANCE,
         "stored_at": "2026-11-08T09:00:00.123456+00:00",
+        "sample_json": None,
     }
+
+    #: A written sample of the result, as one JSON text.
+    SAMPLE_JSON: ClassVar[str] = '{"merchant":"Corner Bakery","total":12.5}'
+
+    #: The method as the platform answers the switch: its own fields and the list as held.
+    SWITCHED_METHOD: ClassVar[dict[str, Any]] = {
+        "method_id": "mt_receipts01",
+        "org_id": "org_team",
+        "created_by_user_id": "user_1",
+        "name": "Receipts",
+        "created_at": "2026-11-01T09:00:00+00:00",
+        "updated_at": "2026-11-02T09:00:00+00:00",
+        "draft_digest": DIGEST,
+        "latest_version": 3,
+        "latest_published": None,
+        "layouts_off": ["composer"],
+    }
+
+    #: The key a write of the switch sends.
+    OFF_KEY: ClassVar[str] = "off-1"
 
     #: An older layout of the same content, written under another prompt and no style.
     OLDER: ClassVar[dict[str, Any]] = {

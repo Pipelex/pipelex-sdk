@@ -1,7 +1,8 @@
 /**
  * A method's stored layouts: the layout a producer designed for one pipe of a published version,
  * which the hosted platform stores beside the method (`storeMethodLayout`,
- * `POST /v1/methods/{id}/versions/{n}/layouts`) and hands back on the validate of the method by id
+ * `POST /v1/methods/{id}/versions/{n}/layouts`), reads back by the version
+ * (`listMethodLayouts`, `GET` of the same route) and hands back on the validate of the method by id
  * that names `layouts` among its `views` (`PipelexValidationReport.layouts`).
  *
  * A layout is a data file: a tree of elements written in the vocabulary of a catalog of
@@ -13,7 +14,8 @@
  * and the `layouts` token are the hosted plane's.
  *
  * The readers here check a layout member by member, as `readProblemItems` checks a verdict's
- * items: a validate never loses its verdict, nor its other layouts, to one layout it cannot read.
+ * items: neither a validate nor a read of a version's layouts loses its other layouts, nor a
+ * validate its verdict, to one layout it cannot read.
  */
 
 import { isPlainObject } from "./records.js";
@@ -40,8 +42,8 @@ export interface LayoutProvenance {
 }
 
 /**
- * One stored layout — what `storeMethodLayout` answers, and an entry of
- * `PipelexValidationReport.layouts`.
+ * One stored layout — what `storeMethodLayout` answers, an entry of `listMethodLayouts`'s `items`,
+ * and an entry of `PipelexValidationReport.layouts`.
  *
  * Its identity is `tree_digest`, `pipe_ref`, `catalog` and `prompt_hash` within one method: it
  * belongs to the content it was designed for, never to a version number, so it is served for
@@ -73,6 +75,21 @@ export interface MethodLayout {
   provenance: LayoutProvenance;
   /** The moment the write that stored it landed, ISO 8601 in UTC: the one member the platform sets. */
   stored_at: string;
+  /**
+   * A written sample of the result the layout was designed over, as one JSON text the platform
+   * stores and never reads, so a host can draw a designed result page before anyone has run the
+   * method; `null` when none was stored, and from a platform that predates it. Parse it yourself,
+   * and treat it as untrusted: nothing but the JSON syntax was checked.
+   */
+  sample_json: string | null;
+}
+
+/**
+ * The layouts stored for a published version's content — what `listMethodLayouts` answers. `items`
+ * is newest first, at most 16, and empty when none is stored.
+ */
+export interface MethodLayoutList {
+  items: MethodLayout[];
 }
 
 /**
@@ -95,7 +112,8 @@ export interface LayoutProvenanceInput {
 /**
  * The write — `storeMethodLayout`, `POST /v1/methods/{id}/versions/{n}/layouts`: the stored layout
  * without `stored_at`. The wire body is closed at both levels, so the client sends these members
- * and nothing else; a `MethodLayout` read back can be passed as it is, its `stored_at` left out.
+ * and nothing else; a `MethodLayout` read back can be passed as it is, its `stored_at` left out and
+ * its `sample_json` sent when it holds one.
  * The bounds below are the platform's, which refuses a member breaking one with a `422`
  * `request.invalid` naming it, `provenance.<member>` for one of the provenance's.
  */
@@ -122,20 +140,36 @@ export interface MethodLayoutInput {
   jsonl: string;
   /** How it was made. */
   provenance: LayoutProvenanceInput;
+  /**
+   * A written sample of the result the layout was designed over, one JSON text of at most 64 KiB of
+   * UTF-8, which the platform refuses if it does not parse. A `null` or omitted sample is not sent,
+   * and the write stores none, whatever the layout it replaces held.
+   *
+   * **Only a written sample belongs here, invented from the description of the result and holding
+   * no customer's data, never a run's output.** A layout's readers include the method's runners
+   * and, for a public method, other organizations, and the platform never reads the sample, so
+   * keeping that rule is the producer's.
+   */
+  sample_json?: string | null;
 }
 
 /**
- * The members the write sends besides `provenance`, every one each time. Checked against
- * `MethodLayoutInput` with `satisfies`, so a member the interface gains and this list lacks fails
- * the build rather than being dropped from the body without a word.
+ * The members the write takes besides `provenance`, `required` ones sent each time and `optional`
+ * ones only when given and not `null`. Checked against `MethodLayoutInput` with `satisfies`, so a
+ * member the interface gains and this list lacks fails the build rather than being dropped from
+ * the body without a word.
  */
 export const LAYOUT_INPUT_MEMBERS = {
-  tree_digest: true,
-  pipe_ref: true,
-  catalog: true,
-  prompt_hash: true,
-  jsonl: true,
-} as const satisfies Record<Exclude<keyof MethodLayoutInput, "provenance">, true>;
+  tree_digest: "required",
+  pipe_ref: "required",
+  catalog: "required",
+  prompt_hash: "required",
+  jsonl: "required",
+  sample_json: "optional",
+} as const satisfies Record<
+  Exclude<keyof MethodLayoutInput, "provenance">,
+  "required" | "optional"
+>;
 
 /**
  * The members of the write's provenance, `required` ones sent each time and `optional` ones only
@@ -186,10 +220,10 @@ export function methodLayoutFault(value: unknown): string | null {
 
 /**
  * `value` read as a stored layout, or `null` when it does not read as one (`methodLayoutFault`).
- * The provenance's `seed` and `style` are kept only when each is a string, and read as `null`
- * otherwise, and its `repair_rounds` only when it is a non-negative integer, and read as `0`
- * otherwise: the platform's own defaults, so each member is what `LayoutProvenance` declares. The
- * rest is returned as it came.
+ * The layout's `sample_json` and the provenance's `seed` and `style` are kept only when each is a
+ * string, and read as `null` otherwise, and its `repair_rounds` only when it is a non-negative
+ * integer, and read as `0` otherwise: the platform's own defaults, so each member is what
+ * `MethodLayout` and `LayoutProvenance` declare. The rest is returned as it came.
  */
 export function readMethodLayout(value: unknown): MethodLayout | null {
   if (methodLayoutFault(value) !== null) return null;
@@ -197,6 +231,7 @@ export function readMethodLayout(value: unknown): MethodLayout | null {
   const { seed, style, repair_rounds: rounds } = layout.provenance;
   return {
     ...layout,
+    sample_json: typeof layout.sample_json === "string" ? layout.sample_json : null,
     provenance: {
       ...layout.provenance,
       seed: typeof seed === "string" ? seed : null,
@@ -207,9 +242,10 @@ export function readMethodLayout(value: unknown): MethodLayout | null {
 }
 
 /**
- * A valid report's `layouts` read entry by entry: each entry that reads as a layout
- * (`readMethodLayout`), in the answer's order, newest first as the platform sends them, and
- * anything else left out. A value that is not an array reads as no layout.
+ * A list of layouts read entry by entry, a valid report's `layouts` or `listMethodLayouts`'s
+ * `items`: each entry that reads as a layout (`readMethodLayout`), in the answer's order, newest
+ * first as the platform sends them, and anything else left out. A value that is not an array reads
+ * as no layout.
  */
 export function readMethodLayouts(value: unknown): MethodLayout[] {
   if (!Array.isArray(value)) return [];
