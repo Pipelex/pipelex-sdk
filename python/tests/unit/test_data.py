@@ -315,6 +315,72 @@ class MethodCopyBodies:
     LIMIT: ClassVar[dict[str, Any]] = {"name": "max_stored_files", "value": 200, "reached": 201}
 
 
+class MethodLayoutBodies:
+    """A layout stored beside a published version, as a producer writes it and as the platform answers the write and
+    carries it on a validate by `method_id` naming `layouts` (`MethodLayout`).
+
+    `@pipelex/sdk`'s `tests/method-layouts.test.ts` answers its client with the same documents.
+    """
+
+    DIGEST: ClassVar[str] = "sha256:5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47"
+
+    #: The layout a producer writes: two JSON patch lines over the composer catalog.
+    JSONL: ClassVar[str] = '{"op":"add","path":"/root","value":"page"}\n{"op":"add","path":"/elements/page","value":{"type":"Stack","children":[]}}'
+
+    PROVENANCE: ClassVar[dict[str, Any]] = {
+        "producer": "pipelex-method",
+        "model": "claude-4.8-opus",
+        "seed": "a quiet ledger",
+        "style": "editorial",
+        "repair_rounds": 1,
+    }
+
+    #: The write's body, every field given.
+    INPUT: ClassVar[dict[str, Any]] = {
+        "tree_digest": DIGEST,
+        "pipe_ref": "receipts.review_receipt",
+        "catalog": "composer",
+        "prompt_hash": "a1b2c3d4e5f6",
+        "jsonl": JSONL,
+        "provenance": PROVENANCE,
+    }
+
+    #: The layout as stored.
+    STORED: ClassVar[dict[str, Any]] = {
+        "pipe_ref": "receipts.review_receipt",
+        "catalog": "composer",
+        "prompt_hash": "a1b2c3d4e5f6",
+        "tree_digest": DIGEST,
+        "jsonl": JSONL,
+        "provenance": PROVENANCE,
+        "stored_at": "2026-11-08T09:00:00.123456+00:00",
+    }
+
+    #: An older layout of the same content, written under another prompt and no style.
+    OLDER: ClassVar[dict[str, Any]] = {
+        **STORED,
+        "prompt_hash": "0f0e0d0c0b0a",
+        "provenance": {**PROVENANCE, "seed": None, "style": None, "repair_rounds": 0},
+        "stored_at": "2026-11-07T09:00:00+00:00",
+    }
+
+    #: A valid verdict of a validate by `method_id`, before the platform adds any layout.
+    VALID_VERDICT: ClassVar[dict[str, Any]] = {
+        "is_valid": True,
+        "bundle_blueprint": {"domain": "receipts"},
+        "pipe_io_contracts": {},
+        "input_form": {},
+        "liftable_pipes": [],
+        "graph_spec": None,
+        "validated_pipes": [{"pipe_ref": "receipts.review_receipt", "status": "SUCCESS"}],
+        "warnings": [],
+        "pending_signatures": [],
+        "is_runnable": True,
+        "message": "MTHDS content validated successfully",
+        "rendered_markdown": "# Valid",
+    }
+
+
 class PublicMethodBodies:
     """Public methods and the template catalog, as the platform serializes them (`MethodTemplatePage`,
     `MethodCategoryList`, `PublicMethodDetail`, `PublicMethodVersionSummary`, `PublicMethodVersionDetail`), and a method its owner reads

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ValidationError
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, MethodErrorCode, RequestArgumentError
 from pipelex_sdk.execute_result import PipelexExecuteResult
+from pipelex_sdk.method_layout_models import MethodLayoutInput
 from pipelex_sdk.product_models import (
     MethodData,
     MethodDetail,
@@ -40,7 +41,7 @@ from pipelex_sdk.product_models import (
 from pipelex_sdk.runs import PipelexRunResultStart, RunPublic, RunRead
 from pipelex_sdk.validation_models import PipelexInvalidReport, PipelexValidationReport
 from tests.unit.conftest import BASE_URL, problem_document, refused_argument
-from tests.unit.test_data import MethodVersionBodies
+from tests.unit.test_data import MethodLayoutBodies, MethodVersionBodies
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -65,6 +66,10 @@ _SUFFIXED_ID_ROUTES: list[tuple[str, MethodRouteCall]] = [
     ("publish_method", lambda client: client.publish_method(_SUFFIXED_ID, expected_draft_updated_at="t")),
     ("list_method_versions", lambda client: client.list_method_versions(_SUFFIXED_ID)),
     ("get_method_version", lambda client: client.get_method_version(_SUFFIXED_ID, 3)),
+    (
+        "store_method_layout",
+        lambda client: client.store_method_layout(_SUFFIXED_ID, 3, MethodLayoutInput.model_validate(MethodLayoutBodies.INPUT)),
+    ),
     ("copy_method", lambda client: client.copy_method(_SUFFIXED_ID, destination_org_id="org_team")),
     ("delete_method", lambda client: client.delete_method(_SUFFIXED_ID)),
 ]

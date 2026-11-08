@@ -17,9 +17,10 @@ import httpx
 import pytest
 
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
+from pipelex_sdk.method_layout_models import MethodLayoutInput
 from pipelex_sdk.product_models import MethodDraftInput, OrganizationBrandingUpdate, UpdateRunInput
 from tests.unit.conftest import BASE_URL
-from tests.unit.test_data import MethodExampleBodies
+from tests.unit.test_data import MethodExampleBodies, MethodLayoutBodies
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -74,6 +75,12 @@ _ROUTES: list[tuple[str, str, IdRouteCall, IdRouteUrl]] = [
         "get_method_version",
         lambda client, id_: client.get_method_version(id_, 2),
         lambda seg: f"{_METHODS_URL}/{seg}/versions/2",
+    ),
+    (
+        _A_METHOD_ID,
+        "store_method_layout",
+        lambda client, id_: client.store_method_layout(id_, 2, MethodLayoutInput.model_validate(MethodLayoutBodies.INPUT)),
+        lambda seg: f"{_METHODS_URL}/{seg}/versions/2/layouts",
     ),
     (_A_METHOD_ID, "delete_method", lambda client, id_: client.delete_method(id_), lambda seg: f"{_METHODS_URL}/{seg}"),
     (
