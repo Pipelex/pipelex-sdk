@@ -82,6 +82,18 @@ _ROUTES: list[tuple[str, str, IdRouteCall, IdRouteUrl]] = [
         lambda client, id_: client.store_method_layout(id_, 2, MethodLayoutInput.model_validate(MethodLayoutBodies.INPUT)),
         lambda seg: f"{_METHODS_URL}/{seg}/versions/2/layouts",
     ),
+    (
+        _A_METHOD_ID,
+        "list_method_layouts",
+        lambda client, id_: client.list_method_layouts(id_, 2),
+        lambda seg: f"{_METHODS_URL}/{seg}/versions/2/layouts",
+    ),
+    (
+        _A_METHOD_ID,
+        "set_method_layouts_off",
+        lambda client, id_: client.set_method_layouts_off(id_, []),
+        lambda seg: f"{_METHODS_URL}/{seg}/layouts-off",
+    ),
     (_A_METHOD_ID, "delete_method", lambda client, id_: client.delete_method(id_), lambda seg: f"{_METHODS_URL}/{seg}"),
     (
         _A_METHOD_ID,

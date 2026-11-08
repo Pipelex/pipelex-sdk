@@ -46,7 +46,7 @@ import {
   readMethodLayout,
   readMethodLayouts,
 } from "./method-layouts.js";
-import type { MethodLayout, MethodLayoutInput } from "./method-layouts.js";
+import type { MethodLayout, MethodLayoutInput, MethodLayoutList } from "./method-layouts.js";
 import {
   assertArtifactSelection,
   assertWaitOptions,
@@ -483,6 +483,31 @@ export interface MethodCopyRequestOptions {
   idempotencyKey?: string | null;
 }
 
+/** Options for `listMethodLayouts`. */
+export interface MethodLayoutListOptions {
+  /**
+   * Caller-driven cancellation, such as an `AbortSignal.timeout(…)` for a page that can do without
+   * the layouts; the abort reason propagates untouched.
+   */
+  signal?: AbortSignal;
+}
+
+/** Options for `setMethodLayoutsOff`. */
+export interface MethodLayoutsOffOptions {
+  /**
+   * The write's idempotency key, sent as the `Idempotency-Key` header of
+   * `PUT /v1/methods/{id}/layouts-off`, and not sent at all when absent or `null`. Generate one per
+   * switch the caller means to make (a `crypto.randomUUID()` is a good key), and keep it, with the
+   * arguments unchanged, across that write's retries.
+   *
+   * The write is the whole list, so a write sent again without a key writes that list again, and
+   * undoes a switch that landed in between. Under the same key the hosted API answers the retry
+   * with the first write's stored answer and runs nothing. The rest of the rule, a key's form and
+   * its `409`s included, is `MethodLayoutWriteOptions.idempotencyKey`'s.
+   */
+  idempotencyKey?: string | null;
+}
+
 /** Options for `storeMethodLayout`. */
 export interface MethodLayoutWriteOptions {
   /**
@@ -914,6 +939,14 @@ const LAYOUT_VERSION_ARGUMENT: CallArgument = {
   name: "version",
   what: "a version number, the published version the layout was designed for, a positive integer",
 };
+const LAYOUT_LIST_VERSION_ARGUMENT: CallArgument = {
+  name: "version",
+  what: "a version number, the published version whose layouts to read, a positive integer",
+};
+const LAYOUTS_OFF_CATALOGS_ARGUMENT: CallArgument = {
+  name: "catalogs",
+  what: "the ids of the catalogs to switch off as an array, the whole list, empty for none",
+};
 const LAYOUT_ARGUMENT: CallArgument = {
   name: "layout",
   what: "the layout to store as an object, a MethodLayoutInput",
@@ -1232,7 +1265,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * whose errors then say whether it may have (see `RunCreation`).
    * `idempotencyKey`, already checked by `idempotencyKeyOf`, is sent as the
    * `Idempotency-Key` header; only `start`, `copyMethod`, `storeMethodLayout`,
-   * `rotateWebhookSecret` and `replayRunWebhookDelivery` pass one.
+   * `setMethodLayoutsOff`, `rotateWebhookSecret` and `replayRunWebhookDelivery` pass one.
    */
   private async requestRaw(
     method: HttpMethod,
@@ -1394,13 +1427,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * A methods-catalog route answering one stored method (`createMethod`, `writeDraft`,
-   * `renameMethod`), read as `readObjectAnswer` reads it.
+   * `renameMethod`, `setMethodLayoutsOff`), read as `readObjectAnswer` reads it.
    */
   private async requestMethodData(
     method: HttpMethod,
     endpoint: string,
     body?: unknown,
-    options: { timeoutMs?: number } = {},
+    options: { timeoutMs?: number; idempotencyKey?: string } = {},
   ): Promise<MethodData> {
     const res = await this.requestProductAnswer(method, endpoint, body, options);
     return this.readObjectAnswer<MethodData>(method, endpoint, res);
@@ -3803,8 +3836,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * A layout is a data file a producer designed over the version's input-form descriptor, in the
    * vocabulary of a catalog of components. The platform stores it beside the method, keyed by the
-   * content it was designed for, and hands it back on every validate of the method by `method_id`
-   * that names `layouts` among its `views` and resolves the same tree
+   * content it was designed for, and hands it back through `listMethodLayouts` and on every validate
+   * of the method by `method_id` that names `layouts` among its `views` and resolves the same tree
    * (`PipelexValidationReport.layouts`). It never produces, parses or judges one.
    *
    * `layout.tree_digest` must be the digest of the tree `version` holds, its
@@ -3817,12 +3850,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * (`MethodLayoutWriteOptions`). A content keeps at most 16
    * layouts, every pipe, catalog and prompt hash together; past the bound a write removes first what
    * newer prompts of the same pipe and catalog superseded (see `docs/method-layouts.md`).
+   * `layout.sample_json` keeps a written sample with the layout, never a run's output.
    *
    * The write changes the method, so it takes an `admin` or a `member` of the method's
    * organization. Takes a bare catalog id, as `getMethod` does, and the version number. Sends the
    * members of `MethodLayoutInput` and nothing else, the route's body being closed at both levels,
-   * and leaves out each optional provenance member that is `null` or omitted, for the platform's
-   * default. Throws `RequestArgumentError` before any request for a `version` that is not a positive
+   * and leaves out `sample_json` and each optional provenance member that is `null` or omitted, for
+   * the platform's default. Throws `RequestArgumentError` before any request for a `version` that is not a positive
    * integer and for a `layout` or a `provenance` that is not an object; every other member is sent
    * as given. Throws `ApiResponseError` when the platform refuses the write, which stores nothing:
    * `422` `request.invalid` for a member breaking its shape or bound, naming it in `params.field`
@@ -3870,6 +3904,104 @@ export class PipelexApiClient implements HostedProtocolSurface {
       );
     }
     return stored;
+  }
+
+  /**
+   * The layouts stored for the content of a published version of a method —
+   * `GET /v1/methods/{id}/versions/{n}/layouts` — newest first, at most 16, `items` empty when none
+   * is stored. It touches only the platform's database and calls no runner, so it costs a host far
+   * less than the `layouts` view of `validate`, which dry-runs every pipe of the method.
+   *
+   * It answers what is stored whatever `layouts_off` says: the switch is the host's to honour.
+   * Another organization's public method reads too, with the layouts its builders stored, and a
+   * `runner` reads what it is shown. Takes a bare catalog id, as `getMethod` does, and the version
+   * number. `options.signal` cancels the read. Throws `RequestArgumentError` for a `version` that is
+   * not a positive integer, before any request.
+   *
+   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown method or another
+   * organization's internal one, its `params.resource` `method`, and for a version the method never
+   * published, its `params.resource` `version`; `409` `pipelex.catalog.being_deleted` while the
+   * erasure of the caller's own method is pending, under way or stopped; `500` `runtime.unexpected`
+   * for a version stored before methods were trees, which names no tree. An answer whose `items` is
+   * not an array is an answer the SDK cannot read, thrown as an `ApiResponseError` too; an entry
+   * that does not read as a layout is left out (`readMethodLayouts`), so one layout it cannot read
+   * never costs the caller the others.
+   */
+  async listMethodLayouts(
+    methodId: string,
+    version: number,
+    options: MethodLayoutListOptions = {},
+  ): Promise<MethodLayoutList> {
+    const call = "listMethodLayouts";
+    if (!Number.isSafeInteger(version) || version < 1) {
+      throw argumentRefusal(
+        call,
+        LAYOUT_LIST_VERSION_ARGUMENT,
+        describeNumberArgument(version),
+        "not_a_positive_integer",
+      );
+    }
+    const endpoint = `${methodPath(methodId, call)}/versions/${version}/layouts`;
+    const res = await this.requestProductAnswer("GET", endpoint, undefined, {
+      signal: options.signal,
+    });
+    const answer = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    if (!Array.isArray(answer.items)) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a list of layouts whose `items` is not an array",
+      );
+    }
+    return { ...answer, items: readMethodLayouts(answer.items) };
+  }
+
+  /**
+   * Set which catalogs of a method have their layouts switched off —
+   * `PUT /v1/methods/{id}/layouts-off` — and return the method, its `layouts_off` the list as held.
+   *
+   * `catalogs` is the whole list and replaces the one held, each catalog id once, at most 8, empty
+   * when every design is on: to change one, read `layouts_off` and write the new list. The switch
+   * acts at once, with no publish, and holds across every publish. A layout switched off is kept,
+   * and `listMethodLayouts` still answers it; a host draws the plain page instead. Like a rename, it
+   * never moves the draft token, so the `updated_at` a caller holds stays valid.
+   *
+   * The last write to land is the one held. `options.idempotencyKey` is sent as the
+   * `Idempotency-Key` header, so a write whose answer was lost is sent again under the same key and
+   * answered as the first was (`MethodLayoutsOffOptions`).
+   *
+   * The write changes the method, so it takes an `admin` or a `member` of the method's
+   * organization. Takes a bare catalog id, as `getMethod` does. Throws `RequestArgumentError` before
+   * any request for `catalogs` that is not an array; its entries are sent as given. Throws
+   * `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown method or another
+   * organization's, a public one included; `403` `auth.forbidden` naming the `member` requirement
+   * for a `runner` or a caller with no recognised role; `409` `pipelex.catalog.being_deleted` while
+   * the method's erasure is pending, under way or stopped; `413` `request.too_large` for a list that
+   * would leave the method too large to publish, which a list that does not grow never is; and
+   * `422` `request.invalid` for more than 8 catalogs, a catalog named twice or one that is not a
+   * slug. Under an idempotency key, `409` `request.idempotency_conflict` for the key sent with a
+   * different list and `409` `request.idempotency_key_in_use` while its earlier request is still
+   * being handled; a key that is not 1 to 255 visible ASCII characters is a `RequestArgumentError`
+   * before any request.
+   */
+  async setMethodLayoutsOff(
+    methodId: string,
+    catalogs: readonly string[],
+    options: MethodLayoutsOffOptions = {},
+  ): Promise<MethodData> {
+    const call = "setMethodLayoutsOff";
+    const endpoint = `${methodPath(methodId, call)}/layouts-off`;
+    if (!Array.isArray(catalogs)) {
+      throw argumentRefusal(
+        call,
+        LAYOUTS_OFF_CATALOGS_ARGUMENT,
+        describeNumberArgument(catalogs),
+        "not_a_list",
+      );
+    }
+    const idempotencyKey = idempotencyKeyOf(options, "set the layouts off");
+    return this.requestMethodData("PUT", endpoint, { catalogs }, { idempotencyKey });
   }
 
   /**
@@ -6026,14 +6158,14 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 const VISIBLE_ASCII = /^[\x21-\x7E]+$/;
 
 /**
- * The idempotency key a start, a method copy, a layout write, a secret rotation or a delivery
- * replay sends, or
+ * The idempotency key a start, a method copy, a layout write, a write of the layouts switched off,
+ * a secret rotation or a delivery replay sends, or
  * `undefined` when the options carry none (absent or `null`). A key that is not a string of 1 to
  * 255 visible ASCII characters is refused with a `RequestArgumentError` rather than dropped, an
  * empty one included, since a request sent without the key its caller gave would lose the
  * protection the caller asked for without a word. `request` says what the request does, as the
  * refusal's last sentence names it ("start the run", "copy the method", "store the layout",
- * "rotate the secret", "replay the delivery"). The message never quotes the key, which a caller may derive from
+ * "set the layouts off", "rotate the secret", "replay the delivery"). The message never quotes the key, which a caller may derive from
  * something private. The Python SDK holds a key to the same rule, in the same words.
  */
 function idempotencyKeyOf(
@@ -6436,10 +6568,23 @@ function withReadLayouts<T>(answer: T): T {
   return read as T;
 }
 
+/** `source`'s members that `members` lists, each `optional` one left out when `null` or omitted. */
+function sentMembers(
+  members: Record<string, "required" | "optional">,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const sent: Record<string, unknown> = {};
+  for (const [member, presence] of Object.entries(members)) {
+    const value = source[member];
+    if (presence === "required" || value != null) sent[member] = value;
+  }
+  return sent;
+}
+
 /**
  * The body `storeMethodLayout` sends for `layout`: the members of `MethodLayoutInput` and nothing
- * else, since the route's body is closed at both levels, each provenance member that is `null` or
- * omitted left out for the platform's default. The members are `LAYOUT_INPUT_MEMBERS` and
+ * else, since the route's body is closed at both levels, `sample_json` and each provenance member
+ * that is `null` or omitted left out for the platform's default. The members are `LAYOUT_INPUT_MEMBERS` and
  * `PROVENANCE_INPUT_MEMBERS`, which the build holds to the interfaces. A layout or a provenance that is not an object is
  * refused with `RequestArgumentError` before anything is sent; every other member is sent as given,
  * for the platform to hold to its shapes, its `422` naming the member it refuses.
@@ -6457,14 +6602,8 @@ function methodLayoutBody(layout: unknown, call: string): Record<string, unknown
       "not_an_object",
     );
   }
-  const sentProvenance: Record<string, unknown> = {};
-  for (const [member, presence] of Object.entries(PROVENANCE_INPUT_MEMBERS)) {
-    const value = provenance[member];
-    if (presence === "required" || value != null) sentProvenance[member] = value;
-  }
-  const body: Record<string, unknown> = {};
-  for (const member of Object.keys(LAYOUT_INPUT_MEMBERS)) body[member] = layout[member];
-  body.provenance = sentProvenance;
+  const body = sentMembers(LAYOUT_INPUT_MEMBERS, layout);
+  body.provenance = sentMembers(PROVENANCE_INPUT_MEMBERS, provenance);
   return body;
 }
 

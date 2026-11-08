@@ -1,5 +1,6 @@
-"""Tests for a method's stored layouts — `store_method_layout`, its closed body, its refusals and its answer, and the
-`layouts` a validate by `method_id` carries when `views` names `layouts`.
+"""Tests for a method's stored layouts — `store_method_layout`, its closed body, its refusals and its answer, the direct
+read of a version's layouts (`list_method_layouts`), the switch that turns a method's pages off
+(`set_method_layouts_off`), and the `layouts` a validate by `method_id` carries when `views` names `layouts`.
 
 The twin of `pipelex-sdk-js/tests/method-layouts.test.ts`. `_send` is mocked; the bodies are the platform's own
 serialized shapes (`MethodLayoutBodies`), so Pydantic's validation on the way back is part of what runs.
@@ -15,7 +16,8 @@ import pytest
 from pydantic import ValidationError
 
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
-from pipelex_sdk.method_layout_models import LayoutProvenanceInput, MethodLayout, MethodLayoutInput, read_method_layouts
+from pipelex_sdk.method_layout_models import LayoutProvenanceInput, MethodLayout, MethodLayoutInput, MethodLayoutList, read_method_layouts
+from pipelex_sdk.product_models import MethodData, MethodDetail, PublicMethodDetail, read_method
 from pipelex_sdk.validation_models import (
     VALIDATION_VIEW_INPUT_FORM,
     VALIDATION_VIEW_LAYOUTS,
@@ -34,6 +36,7 @@ if TYPE_CHECKING:
 
 _METHOD_ID = "mt_receipts01"
 _LAYOUTS_PATH = f"/v1/methods/{_METHOD_ID}/versions/3/layouts"
+_LAYOUTS_OFF_PATH = f"/v1/methods/{_METHOD_ID}/layouts-off"
 _REQUIRED_PROVENANCE: dict[str, Any] = {"producer": "pipelex-method", "model": "claude-4.8-opus"}
 
 
@@ -282,6 +285,270 @@ class TestClientMethodLayouts:
         layout = MethodLayout.model_validate({**MethodLayoutBodies.STORED, "provenance": {**MethodLayoutBodies.PROVENANCE, "repair_rounds": rounds}})
 
         assert layout.provenance.repair_rounds == 0
+
+    # ----- the written sample --------------------------------------------------------------------
+
+    def test_store_method_layout_sends_a_written_sample_and_returns_it_as_stored(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        answer = {**MethodLayoutBodies.STORED, "sample_json": MethodLayoutBodies.SAMPLE_JSON}
+        send = patch_send(api_client, wire_response(200, json_body=answer))
+        layout = MethodLayoutInput.model_validate({**MethodLayoutBodies.INPUT, "sample_json": MethodLayoutBodies.SAMPLE_JSON})
+
+        stored = asyncio.run(api_client.store_method_layout(_METHOD_ID, 3, layout))
+
+        assert _sent_body(send) == {**MethodLayoutBodies.INPUT, "sample_json": MethodLayoutBodies.SAMPLE_JSON}
+        assert stored.sample_json == MethodLayoutBodies.SAMPLE_JSON
+
+    def test_store_method_layout_leaves_out_a_sample_that_is_none(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=MethodLayoutBodies.STORED))
+
+        asyncio.run(api_client.store_method_layout(_METHOD_ID, 3, _layout_input()))
+
+        assert "sample_json" not in _sent_body(send)
+
+    def test_a_layout_read_back_keeps_its_sample_when_written_again(self) -> None:
+        read_back = MethodLayout.model_validate({**MethodLayoutBodies.STORED, "sample_json": MethodLayoutBodies.SAMPLE_JSON})
+
+        assert MethodLayoutInput.from_layout(read_back).sample_json == MethodLayoutBodies.SAMPLE_JSON
+
+    @pytest.mark.parametrize(
+        "sample",
+        [pytest.param(None, id="none"), pytest.param({"total": 12.5}, id="of-another-type"), pytest.param(4, id="a-number")],
+    )
+    def test_a_sample_that_does_not_fit_reads_as_none(self, sample: object) -> None:
+        assert MethodLayout.model_validate({**MethodLayoutBodies.STORED, "sample_json": sample}).sample_json is None
+
+    def test_a_sample_a_platform_that_predates_it_leaves_out_reads_as_none(self) -> None:
+        answer = {key: value for key, value in MethodLayoutBodies.STORED.items() if key != "sample_json"}
+
+        assert MethodLayout.model_validate(answer).sample_json is None
+
+    # ----- the direct read ------------------------------------------------------------------------
+
+    def test_list_method_layouts_gets_the_versions_layouts_newest_first(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        newest = {**MethodLayoutBodies.STORED, "sample_json": MethodLayoutBodies.SAMPLE_JSON}
+        send = patch_send(api_client, wire_response(200, json_body={"items": [newest, MethodLayoutBodies.OLDER]}))
+
+        answer = asyncio.run(api_client.list_method_layouts(_METHOD_ID, 3))
+
+        assert _sent_method(send) == "GET"
+        assert _sent_url(send) == f"{BASE_URL}{_LAYOUTS_PATH}"
+        assert _sent_body(send) is None
+        assert isinstance(answer, MethodLayoutList)
+        assert [layout.prompt_hash for layout in answer.items] == ["a1b2c3d4e5f6", "0f0e0d0c0b0a"]
+        assert answer.items[0].sample_json == MethodLayoutBodies.SAMPLE_JSON
+
+    def test_list_method_layouts_answers_an_empty_list_when_none_is_stored(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body={"items": []}))
+
+        assert asyncio.run(api_client.list_method_layouts(_METHOD_ID, 3)).items == []
+
+    def test_list_method_layouts_leaves_out_an_entry_that_does_not_read_keeping_the_others_in_order(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        items = [MethodLayoutBodies.STORED, {**MethodLayoutBodies.OLDER, "jsonl": 4}, "no layout", MethodLayoutBodies.OLDER]
+        patch_send(api_client, wire_response(200, json_body={"items": items}))
+
+        answer = asyncio.run(api_client.list_method_layouts(_METHOD_ID, 3))
+
+        assert [layout.prompt_hash for layout in answer.items] == ["a1b2c3d4e5f6", "0f0e0d0c0b0a"]
+
+    def test_list_method_layouts_holding_no_readable_entry_is_an_empty_list(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body={"items": ["no layout"]}))
+
+        assert asyncio.run(api_client.list_method_layouts(_METHOD_ID, 3)).items == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [pytest.param({}, id="no-items"), pytest.param({"items": {"first": MethodLayoutBodies.STORED}}, id="items-that-are-not-a-list")],
+    )
+    def test_list_method_layouts_refuses_an_answer_it_cannot_read(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, body: dict[str, Any]
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body=body))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.list_method_layouts(_METHOD_ID, 3))
+
+        assert exc_info.value.problem.code == "client.response_unreadable"
+
+    @pytest.mark.parametrize("version", [0, -1, True, 2.0, "3", None])
+    def test_list_method_layouts_refuses_a_version_that_is_not_a_positive_integer(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, version: object
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body={"items": []}))
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            asyncio.run(api_client.list_method_layouts(_METHOD_ID, cast("int", version)))
+
+        assert str(exc_info.value) == (
+            f"list_method_layouts() takes a version number, the published version whose layouts to read, a positive integer; got {version!r}."
+        )
+        assert refused_argument(exc_info.value) == {"argument": "version", "reason": "not_a_positive_integer"}
+        send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("status", "code"),
+        [
+            pytest.param(404, "pipelex.catalog.not_found", id="unknown-method-or-version"),
+            pytest.param(409, "pipelex.catalog.being_deleted", id="being-erased"),
+            pytest.param(500, "runtime.unexpected", id="a-version-that-predates-trees"),
+        ],
+    )
+    def test_list_method_layouts_raises_each_refusal_as_its_problem(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, status: int, code: str
+    ) -> None:
+        patch_send(api_client, wire_response(status, json_body=problem_document(code, status)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.list_method_layouts(_METHOD_ID, 3))
+
+        assert exc_info.value.status == status
+        assert exc_info.value.problem.code == code
+
+    # ----- the off switch -------------------------------------------------------------------------
+
+    def test_set_method_layouts_off_puts_the_whole_list_and_returns_the_method(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=MethodLayoutBodies.SWITCHED_METHOD))
+
+        method = asyncio.run(api_client.set_method_layouts_off(_METHOD_ID, ["composer"]))
+
+        assert _sent_method(send) == "PUT"
+        assert _sent_url(send) == f"{BASE_URL}{_LAYOUTS_OFF_PATH}"
+        assert _sent_body(send) == {"catalogs": ["composer"]}
+        assert isinstance(method, MethodData)
+        assert method.layouts_off == ["composer"]
+
+    def test_set_method_layouts_off_sends_an_empty_list_which_switches_every_design_on(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body={**MethodLayoutBodies.SWITCHED_METHOD, "layouts_off": []}))
+
+        method = asyncio.run(api_client.set_method_layouts_off(_METHOD_ID, []))
+
+        assert _sent_body(send) == {"catalogs": []}
+        assert method.layouts_off == []
+
+    def test_set_method_layouts_off_sends_entries_as_given_for_the_platform_to_refuse(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=MethodLayoutBodies.SWITCHED_METHOD))
+
+        asyncio.run(api_client.set_method_layouts_off(_METHOD_ID, ["composer", "composer", "Not A Slug"]))
+
+        assert _sent_body(send) == {"catalogs": ["composer", "composer", "Not A Slug"]}
+
+    @pytest.mark.parametrize(
+        ("catalogs", "got"),
+        [
+            pytest.param("composer", "str", id="a-string"),
+            pytest.param(None, "NoneType", id="none"),
+            pytest.param(("composer",), "tuple", id="a-tuple"),
+        ],
+    )
+    def test_set_method_layouts_off_refuses_catalogs_that_are_not_a_list(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, catalogs: object, got: str
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=MethodLayoutBodies.SWITCHED_METHOD))
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            asyncio.run(api_client.set_method_layouts_off(_METHOD_ID, cast("list[str]", catalogs)))
+
+        assert (
+            str(exc_info.value)
+            == f"set_method_layouts_off() takes the ids of the catalogs to switch off as a list, the whole list, empty for none; got {got}."
+        )
+        assert refused_argument(exc_info.value) == {"argument": "catalogs", "reason": "not_a_list"}
+        send.assert_not_called()
+
+    @pytest.mark.parametrize("key", [MethodLayoutBodies.OFF_KEY, None], ids=["keyed", "unkeyed"])
+    def test_set_method_layouts_off_sends_its_key_as_the_idempotency_key_header_never_in_the_body(
+        self, recording_client: RecordingClientBuilder, key: str | None
+    ) -> None:
+        sent: list[httpx.Request] = []
+        client = recording_client(sent, 200, json_body=MethodLayoutBodies.SWITCHED_METHOD)
+
+        asyncio.run(client.set_method_layouts_off(_METHOD_ID, ["composer"], idempotency_key=key))
+
+        assert sent[0].headers.get("Idempotency-Key") == key
+        assert json.loads(sent[0].content) == {"catalogs": ["composer"]}
+
+    def test_set_method_layouts_off_refuses_a_malformed_key_before_any_request(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=MethodLayoutBodies.SWITCHED_METHOD))
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            asyncio.run(api_client.set_method_layouts_off(_METHOD_ID, [], idempotency_key=""))
+
+        assert str(exc_info.value).endswith("Leave it out to set the layouts off without one.")
+        send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("status", "code"),
+        [
+            pytest.param(403, "auth.forbidden", id="a-runner"),
+            pytest.param(404, "pipelex.catalog.not_found", id="unknown-method"),
+            pytest.param(409, "pipelex.catalog.being_deleted", id="being-erased"),
+            pytest.param(413, "request.too_large", id="a-list-that-would-not-fit"),
+            pytest.param(422, "request.invalid", id="a-catalog-named-twice"),
+        ],
+    )
+    def test_set_method_layouts_off_raises_each_refusal_as_its_problem(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, status: int, code: str
+    ) -> None:
+        patch_send(api_client, wire_response(status, json_body=problem_document(code, status)))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.set_method_layouts_off(_METHOD_ID, ["composer"]))
+
+        assert exc_info.value.status == status
+        assert exc_info.value.problem.code == code
+
+    def test_layouts_off_reads_on_every_method_shape_and_defaults_to_none_off(self) -> None:
+        base = dict(MethodLayoutBodies.SWITCHED_METHOD)
+        without = {key: value for key, value in base.items() if key != "layouts_off"}
+
+        assert MethodData.model_validate(base).layouts_off == ["composer"]
+        assert MethodData.model_validate(without).layouts_off == []
+
+    def test_layouts_off_reads_on_an_owners_and_a_public_read(self) -> None:
+        owner = read_method({**MethodLayoutBodies.SWITCHED_METHOD, "files": []})
+        public = read_method(
+            {
+                "method_id": _METHOD_ID,
+                "org_id": "org_owner",
+                "name": "Receipts",
+                "created_at": "2026-11-01T09:00:00+00:00",
+                "latest_version": 3,
+                "latest_published": {
+                    "version": 3,
+                    "tree_digest": MethodLayoutBodies.DIGEST,
+                    "crate_fingerprint": "a1b2c3",
+                    "runner_version": "0.80.0",
+                    "published_at": "2026-11-01T09:00:00+00:00",
+                },
+                "visibility": "public",
+                "layouts_off": ["result"],
+                "files": [],
+            }
+        )
+
+        assert isinstance(owner, MethodDetail)
+        assert owner.layouts_off == ["composer"]
+        assert isinstance(public, PublicMethodDetail)
+        assert public.layouts_off == ["result"]
 
     # ----- the layouts view ----------------------------------------------------------------------
 

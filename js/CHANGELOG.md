@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`listMethodLayouts`**: reads `GET /v1/methods/{id}/versions/{n}/layouts`, the layouts stored for a published version's content, newest first, as a `MethodLayoutList`, with no call to the runner, so a host opening a page no longer pays for a validate's dry run; its `options.signal` cancels the read, an entry that does not read as a layout is left out, and an answer whose `items` is not an array is one the SDK cannot read (`docs/method-layouts.md`).
+- **`sample_json` on a layout (Breaking)**: `MethodLayoutInput` takes a written sample of the result the layout was designed over, one JSON text of at most 64 KiB that is never a run's output, sent only when given and not `null`, and `MethodLayout` reads it as a string or `null`. The member is required on `MethodLayout`, so code that builds one itself, such as a test fixture, now supplies it; a platform that predates it reads as `null`.
+- **`setMethodLayoutsOff`**: writes `PUT /v1/methods/{id}/layouts-off`, the whole list of catalogs whose layouts no host draws, and answers the method; it acts at once with no publish, keeps the layouts and never moves the draft token, a `catalogs` that is not an array is a `RequestArgumentError` before any request, and `options.idempotencyKey` (`MethodLayoutsOffOptions`) is sent as the `Idempotency-Key` header.
+- **`layouts_off` on a method**: `MethodData`, and so `MethodDetail`, and `PublicMethodDetail` carry the catalogs switched off, absent from a platform that predates it, which means none.
+
+### Fixed
+
+- **The layout docs on a publish**: they say that a publish carries the previous version's layouts forward under the new tree, rather than that the new tree holds none of them.
+
 ## [v0.64.0] - 2026-11-08
 
 ### Added

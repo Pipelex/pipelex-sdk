@@ -211,6 +211,13 @@ export interface MethodData {
    * arrives as its raw string. The list rows (`MethodSummary`) do not carry it.
    */
   visibility?: MethodVisibility | (string & {});
+  /**
+   * The ids of the catalogs whose layouts a builder switched off, which no host draws: it draws the
+   * plain page instead, and the layouts are kept. Written whole by `setMethodLayoutsOff`, it acts at
+   * once and holds across every publish. Absent from a platform that predates it, which means none.
+   * The list rows (`MethodSummary`) do not carry it.
+   */
+  layouts_off?: string[];
 }
 
 /** Who may see a method — `MethodData.visibility`. */
@@ -279,6 +286,11 @@ export interface PublicMethodDetail {
   latest_published: MethodVersionSummary;
   /** `public`: another organization reads a method only while it is public. */
   visibility: MethodVisibility | (string & {});
+  /**
+   * The ids of the catalogs whose layouts no host draws, as on `MethodData.layouts_off`: a reader
+   * of the method draws the plain page for those. Absent from a platform that predates it.
+   */
+  layouts_off?: string[];
   /** The latest published version's tree, one entry per file in tree path order. */
   files: SavedMethodFile[];
 }

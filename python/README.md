@@ -190,6 +190,12 @@ stored = await client.store_method_layout("mt_123", 3, layout, idempotency_key=l
 report = await client.validate(method_id="mt_123@3", views=[VALIDATION_VIEW_INPUT_FORM, VALIDATION_VIEW_LAYOUTS])
 if isinstance(report, PipelexValidationReport) and report.layouts is not None:
     print([(candidate.catalog, candidate.provenance.style) for candidate in report.layouts])
+
+# A host opening the page reads the same layouts with no dry run, and a builder can switch a page's design off, per
+# catalog, without losing it; the list is written whole.
+stored_layouts = await client.list_method_layouts("mt_123", 3)
+print(len(stored_layouts.items))
+await client.set_method_layouts_off("mt_123", ["composer"])
 ```
 
 ### Browse the template catalog
