@@ -51,6 +51,7 @@ from mthds.protocol.problem.models import ProblemItem
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from pipelex_sdk._pydantic_utils import empty_list_factory_of
+from pipelex_sdk.method_layout_models import MethodLayouts
 from pipelex_sdk.problem_items import ProblemItems
 
 VALIDATION_VIEW_INPUT_FORM: Final[str] = "input_form"
@@ -66,6 +67,13 @@ VALIDATION_VIEW_OUTPUT_FORM: Final[str] = "output_form"
 
 The twin of the above on the other side of the pipe. Named as a constant for the same reason:
 a caller passing the literal string gets no help from a type checker when the token changes."""
+
+VALIDATION_VIEW_LAYOUTS: Final[str] = "layouts"
+"""A `views` token — asks a validate of a stored method by `method_id` for `PipelexValidationReport.layouts`.
+
+A Pipelex hosted extension of the runner's tokens: the platform forwards `views` as sent, the runner
+ignores a token it does not know, and the platform adds the layouts to the valid report. A constant for
+the same reason as the two above."""
 
 
 class DryRunStatus(StrEnum):
@@ -260,6 +268,23 @@ class PipelexValidationReport(BaseModel):
     `output.json_schema` off `pipe_io_contracts`: the descriptor says what the result IS, the
     schema names the property its payload arrives under, and a consumer holding one but not the
     other is back to inferring the other from the value."""
+
+    layouts: MethodLayouts = None
+    """The layouts stored for the method's content, newest first by `stored_at`, at most 16: a Pipelex
+    hosted extension, requested through `views=[VALIDATION_VIEW_LAYOUTS]` on a validate naming a stored
+    method by `method_id`, and carried for every selector of that method resolving the same tree (the
+    version it was written against, a later version holding the same tree, the draft holding it). Ask for
+    `[VALIDATION_VIEW_INPUT_FORM, VALIDATION_VIEW_LAYOUTS]` to receive the descriptor and the layouts over
+    it in one answer.
+
+    **`None` means none**: the platform leaves the field out when the validate names no `method_id`, when
+    `views` does not name `layouts`, when no layout is stored for the resolved tree, and when it could not
+    read them, so a host renders the plain form whenever it is `None`. A platform that does not carry the
+    view leaves it out too; its `GET /v1/version` does not list `method_layouts` among its `extensions`.
+
+    Read entry by entry (`pipelex_sdk.method_layout_models.read_method_layouts`): an entry that does not
+    read as a layout is left out rather than failing the verdict, and a list left with none reads as
+    `None`, so the list is never empty."""
 
     rendered_markdown: str | None = None
     """Opt-in Pipelex-API presentation extra: the server-rendered Markdown view of the verdict,
