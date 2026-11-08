@@ -96,7 +96,7 @@ What the hosted API answers a start sent under a key:
 
 **A copy takes a key too.** `copyMethod` sends an `idempotencyKey` the same way, held to the same rule, and the hosted API keeps it for the same 24 hours, scoped to the caller and the method's organization. A copy binds no run, so its answers under a key differ from a start's: [method-copy.md](./method-copy.md#retrying-a-copy--idempotencykey) gives them.
 
-**And a layout write.** `storeMethodLayout` sends an `idempotencyKey` the same way, held to the same rule. A write sent again without one runs again, restamping the layout and applying the bound of layouts a content keeps again, so a write whose answer was lost is sent again under the key it was first sent with, which answers it as the first write was answered: [method-layouts.md](./method-layouts.md#storing-a-layout) gives the answers.
+**And a layout write.** `storeMethodLayout` sends an `idempotencyKey` the same way, held to the same rule. A write sent again without one runs again, restamping the layout and applying the bound of layouts a content keeps again, so a write whose answer was lost is sent again under the key it was first sent with, which answers it as the first write was answered: [method-layouts.md](./method-layouts.md#storing-a-layout) gives the answers. `setMethodLayoutsOff` takes a key by the same rule, since a write of the whole list sent again undoes a switch that landed in between.
 
 **So do a secret rotation and a delivery replay.** `rotateWebhookSecret` and `replayRunWebhookDelivery` send an `idempotencyKey` the same way, held to the same rule. A rotation's answer carries a secret, so the platform never replays it, while a replay's stored answer is given again: [webhooks.md](./webhooks.md) gives both.
 

@@ -30,6 +30,8 @@ export type {
   PipelexStartOptions,
   PipelexStartRequestOptions,
   MethodCopyRequestOptions,
+  MethodLayoutListOptions,
+  MethodLayoutsOffOptions,
   MethodLayoutWriteOptions,
   PipelexValidateSource,
   ValidateMethodSelector,
@@ -168,14 +170,16 @@ export type {
   ModelReferenceVerdict,
 } from "./models.js";
 
-// ── A method's stored layouts (`storeMethodLayout`, `PipelexValidationReport.layouts`) ──
+// ── A method's stored layouts (`storeMethodLayout`, `listMethodLayouts`, `PipelexValidationReport.layouts`) ──
 // The layout a producer designed for one pipe of a published version, as the write sends it and
-// as the platform stores it and carries it on a validate by `method_id` naming `layouts`.
+// as the platform stores it, reads it back by the version and carries it on a validate by
+// `method_id` naming `layouts`.
 export type {
   LayoutProvenance,
   LayoutProvenanceInput,
   MethodLayout,
   MethodLayoutInput,
+  MethodLayoutList,
 } from "./method-layouts.js";
 
 // ── Offline codegen drift check (pure — no filesystem, no network, no key) ──

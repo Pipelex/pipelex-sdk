@@ -317,6 +317,11 @@ class MethodData(BaseModel):
     from a platform that predates it, and a value a later platform adds keeps its raw string. The list rows
     (`MethodSummary`) do not carry it."""
 
+    layouts_off: list[str] = Field(default_factory=list)
+    """The ids of the catalogs whose layouts a builder switched off, which no host draws: it draws the plain page
+    instead, and the layouts are kept. Written whole by `set_method_layouts_off`, it acts at once and holds across every
+    publish. Empty from a platform that predates it. The list rows (`MethodSummary`) do not carry it."""
+
 
 class MethodDetail(MethodData):
     """One saved method of the caller's organization with its draft's files — what `get_method` answers for one of the caller's own methods."""
@@ -363,6 +368,10 @@ class PublicMethodDetail(BaseModel):
 
     visibility: Annotated[MethodVisibility | str, Field(union_mode="left_to_right")]
     """`public`: another organization reads a method only while it is public."""
+
+    layouts_off: list[str] = Field(default_factory=list)
+    """The ids of the catalogs whose layouts no host draws, as on `MethodData.layouts_off`: a reader of the method
+    draws the plain page for those. Empty from a platform that predates it."""
 
     files: list[SavedMethodFile]
     """The latest published version's tree, one file per entry in tree path order, each with a link to its bytes."""

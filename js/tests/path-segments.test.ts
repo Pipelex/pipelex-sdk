@@ -78,6 +78,16 @@ const METHOD_ID_ROUTES: IdRoute[] = [
       }),
     (segment) => `${METHOD_URL(segment)}/versions/2/layouts`,
   ],
+  [
+    "listMethodLayouts",
+    (client, id) => client.listMethodLayouts(id, 2),
+    (segment) => `${METHOD_URL(segment)}/versions/2/layouts`,
+  ],
+  [
+    "setMethodLayoutsOff",
+    (client, id) => client.setMethodLayoutsOff(id, []),
+    (segment) => `${METHOD_URL(segment)}/layouts-off`,
+  ],
   ["deleteMethod", (client, id) => client.deleteMethod(id), METHOD_URL],
   [
     "createMethodExample",

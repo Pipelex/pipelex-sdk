@@ -70,6 +70,8 @@ _SUFFIXED_ID_ROUTES: list[tuple[str, MethodRouteCall]] = [
         "store_method_layout",
         lambda client: client.store_method_layout(_SUFFIXED_ID, 3, MethodLayoutInput.model_validate(MethodLayoutBodies.INPUT)),
     ),
+    ("list_method_layouts", lambda client: client.list_method_layouts(_SUFFIXED_ID, 3)),
+    ("set_method_layouts_off", lambda client: client.set_method_layouts_off(_SUFFIXED_ID, [])),
     ("copy_method", lambda client: client.copy_method(_SUFFIXED_ID, destination_org_id="org_team")),
     ("delete_method", lambda client: client.delete_method(_SUFFIXED_ID)),
 ]
