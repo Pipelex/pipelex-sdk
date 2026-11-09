@@ -3772,7 +3772,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `refused` with a `reason`, a `message` and the runner's `validation` verdict, whose problem
    * items are read member by member as `validate` reads them. The reason is `invalid`, or
    * `not_runnable` for a draft that validates with pending signatures, and for a public method
-   * also `thumbnail_missing`, `thumbnail_invalid` or `storage_reference` (see
+   * also `thumbnail_missing`, `thumbnail_invalid`, `storage_reference` or `showcase_missing` (see
    * `MethodPublishRefusalReason`); a reason this SDK does not know is passed through as its raw
    * string, still a verdict, so show its `message`. Every arm carries the `method`. A publish
    * moves no token.
@@ -4339,7 +4339,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * is refused with a `422` `request.invalid` naming it.
    *
    * The answer is a `MethodCopyResult` discriminated on `outcome` — branch on it: `copied` with
-   * the copy as `method`, `examples_copied`, `stored_files_copied` and the two counts reserved for
+   * the copy as `method`, `examples_copied`, `stored_files_copied` and the counts reserved for
    * showcases, `showcases_copied` and `layouts_copied`; `refused` with the
    * `reason` `bundle_names_other_storage`, a `message` and every `references` entry (`{ path, uri
    * }`) a `.mthds` file of the tree holds that the destination cannot read and, in a duplicate,
@@ -6476,13 +6476,14 @@ const VISIBLE_ASCII = /^[\x21-\x7E]+$/;
 
 /**
  * The idempotency key a start, a method copy, a layout write, a write of the layouts switched off,
- * a secret rotation or a delivery replay sends, or
+ * a showcase write, a secret rotation or a delivery replay sends, or
  * `undefined` when the options carry none (absent or `null`). A key that is not a string of 1 to
  * 255 visible ASCII characters is refused with a `RequestArgumentError` rather than dropped, an
  * empty one included, since a request sent without the key its caller gave would lose the
  * protection the caller asked for without a word. `request` says what the request does, as the
  * refusal's last sentence names it ("start the run", "copy the method", "store the layout",
- * "set the layouts off", "rotate the secret", "replay the delivery"). The message never quotes the key, which a caller may derive from
+ * "set the layouts off", "freeze the showcase", "withdraw the showcase", "rotate the secret",
+ * "replay the delivery"). The message never quotes the key, which a caller may derive from
  * something private. The Python SDK holds a key to the same rule, in the same words.
  */
 function idempotencyKeyOf(

@@ -32,6 +32,8 @@ from tests.unit.conftest import BASE_URL, problem_document, refused_argument
 from tests.unit.test_data import MethodLayoutBodies, MethodShowcaseBodies
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     import httpx
     from pytest_mock import MockType
 
@@ -60,6 +62,18 @@ def _sent_body(send: MockType) -> Any:
 
 def _freeze(api_client: PipelexAPIClient) -> Any:
     return api_client.freeze_method_showcase(_METHOD_ID, run_id="run_1", name="March receipt")
+
+
+def _holders_read(api_client: PipelexAPIClient) -> Coroutine[Any, Any, MethodShowcaseDetail]:
+    return api_client.get_method_showcase(_METHOD_ID, _SHOWCASE_ID)
+
+
+def _versions_read(api_client: PipelexAPIClient) -> Coroutine[Any, Any, MethodShowcaseDetail]:
+    return api_client.get_method_version_showcase(_METHOD_ID, 3, _SHOWCASE_ID)
+
+
+def _document_without(member: str) -> dict[str, Any]:
+    return {key: value for key, value in MethodShowcaseBodies.DOCUMENT.items() if key != member}
 
 
 class TestClientMethodShowcases:
@@ -363,22 +377,43 @@ class TestClientMethodShowcases:
             pytest.param({**MethodShowcaseBodies.DETAIL, "name": 4}, id="summary-member-not-a-string"),
             pytest.param({**MethodShowcaseBodies.DETAIL, "document": "x"}, id="no-document"),
             pytest.param({**MethodShowcaseBodies.DETAIL, "document": {**MethodShowcaseBodies.DOCUMENT, "inputs": None}}, id="no-inputs"),
+            pytest.param({**MethodShowcaseBodies.DETAIL, "document": _document_without("main_stuff")}, id="main-stuff-left-out"),
+            pytest.param({**MethodShowcaseBodies.DETAIL, "document": _document_without("input_form")}, id="input-form-left-out"),
+            pytest.param({**MethodShowcaseBodies.DETAIL, "document": _document_without("output_form")}, id="output-form-left-out"),
+            pytest.param({**MethodShowcaseBodies.DETAIL, "document": _document_without("pipe_io_contracts")}, id="contracts-left-out"),
             pytest.param({**MethodShowcaseBodies.DETAIL, "files": {}}, id="files-not-a-list"),
             pytest.param({**MethodShowcaseBodies.DETAIL, "files": [{**MethodShowcaseBodies.FILE, "address": 4}]}, id="file-with-no-address"),
             pytest.param({**MethodShowcaseBodies.DETAIL, "files": [{**MethodShowcaseBodies.FILE, "size_bytes": -1}]}, id="file-with-a-negative-size"),
         ],
     )
+    @pytest.mark.parametrize("read", [pytest.param(_holders_read, id="the-holders-read"), pytest.param(_versions_read, id="a-versions-read")])
     def test_a_detail_refuses_an_answer_it_cannot_read_with_its_links_redacted(
-        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, body: dict[str, Any]
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+        read: Callable[[PipelexAPIClient], Coroutine[Any, Any, MethodShowcaseDetail]],
+        body: dict[str, Any],
     ) -> None:
         patch_send(api_client, wire_response(200, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
-            asyncio.run(api_client.get_method_showcase(_METHOD_ID, _SHOWCASE_ID))
+            asyncio.run(read(api_client))
 
         error = exc_info.value
         assert error.problem.code == "client.response_unreadable"
         assert MethodShowcaseBodies.SIGNATURE not in (error.response_body or "")
+
+    @pytest.mark.parametrize("member", ["main_stuff", "input_form", "output_form", "pipe_io_contracts"])
+    def test_a_detail_reads_a_document_member_stated_as_null(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, member: str
+    ) -> None:
+        body = {**MethodShowcaseBodies.DETAIL, "document": {**MethodShowcaseBodies.DOCUMENT, member: None}}
+        patch_send(api_client, wire_response(200, json_body=body))
+
+        detail = asyncio.run(api_client.get_method_showcase(_METHOD_ID, _SHOWCASE_ID))
+
+        assert getattr(detail.document, member) is None
 
     def test_get_method_version_showcase_raises_the_404_of_a_showcase_it_does_not_have(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher

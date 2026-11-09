@@ -94,7 +94,7 @@ export interface MethodShowcaseList {
   items: MethodShowcaseSummary[];
 }
 
-/** The freeze — `freezeMethodShowcase`. Its wire body is closed: these two members and nothing else. */
+/** The freeze — `freezeMethodShowcase`. Its wire body is closed: these members and nothing else. */
 export interface MethodShowcaseInput {
   /** The `pipeline_run_id` of the completed run of this method to freeze. */
   run_id: string;
@@ -167,6 +167,14 @@ const SHOWCASE_SUMMARY_STRING_MEMBERS = [
   "frozen_at",
 ] as const;
 
+/** The members of a showcase's document that must be stated, `null` being a statement. */
+const SHOWCASE_DOCUMENT_STATED_MEMBERS = [
+  "main_stuff",
+  "input_form",
+  "output_form",
+  "pipe_io_contracts",
+] as const;
+
 /** The members of a showcase's file read as strings. */
 const SHOWCASE_FILE_STRING_MEMBERS = ["address", "file_name", "media_type", "url"] as const;
 
@@ -214,8 +222,9 @@ function showcaseFileFault(file: unknown): string | null {
 
 /**
  * What keeps `value` from reading as a showcase detail, as the end of a sentence naming it, or
- * `null` when it reads as one: a summary whose `document` is an object holding an object `inputs`,
- * and whose `files` is an array of complete entries. Unlike a list of showcases, whose entries
+ * `null` when it reads as one: a summary whose `document` is an object holding an object `inputs`
+ * and stating each of its other members, `null` included, and whose `files` is an array of complete
+ * entries. Unlike a list of showcases, whose entries
  * stand apart, a detail is held whole: a renderer resolves each address the document names through
  * `files`, so a file it cannot read would leave a result drawn with a hole in it.
  */
@@ -227,6 +236,9 @@ export function methodShowcaseDetailFault(value: unknown): string | null {
   const files = detail.files;
   if (!isPlainObject(frozen)) return "whose `document` is not an object";
   if (!isPlainObject(frozen.inputs)) return "whose `document.inputs` is not an object";
+  for (const member of SHOWCASE_DOCUMENT_STATED_MEMBERS) {
+    if (frozen[member] === undefined) return `whose \`document.${member}\` is left out`;
+  }
   if (!Array.isArray(files)) return "whose `files` is not an array";
   for (let index = 0; index < files.length; index += 1) {
     const fault = showcaseFileFault(files[index]);

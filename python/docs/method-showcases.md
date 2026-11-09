@@ -1,6 +1,6 @@
 # A method's showcases
 
-A **showcase** is a completed run of a method, frozen: its inputs, its main output, the forms and contracts that describe them, and a private copy of every stored file they name. It exists so that people can see what a method really produces without spending credit. It differs from the two things beside it: an **example** is the builder's private test bench, whose output is whatever its latest run left, and a **layout's written sample** is invented, while a showcase is real output that stays exactly as it was frozen.
+A **showcase** is a completed run of a method, frozen: its inputs, its main output, the forms and contracts that describe them, and a private copy of every stored file they name. It exists so that people can see what a method really produces without spending credit. It differs from what sits beside it: an **example** is the builder's private test bench, whose output is whatever its latest run left, and a **layout's written sample** is invented, while a showcase is real output that stays exactly as it was frozen.
 
 The client reaches the hosted API's `POST` and `GET /v1/methods/{method_id}/showcases`, `GET` and `DELETE /v1/methods/{method_id}/showcases/{showcase_id}`, and `GET /v1/methods/{method_id}/versions/{version}/showcases[/{showcase_id}]`. The models are in `pipelex_sdk/method_showcase_models.py`. The platform's own account of the contract is `platform/docs/method-showcases.md` in `pipelex-server`. This page is the twin of `@pipelex/sdk`'s `docs/method-showcases.md`.
 
@@ -29,7 +29,7 @@ async with PipelexAPIClient() as client:
 |---|---|---|
 | `freeze_method_showcase(method_id, *, run_id, name, idempotency_key=None)` | `POST /v1/methods/{id}/showcases` | A `MethodShowcaseFreezeResult`, a `200` discriminated on `outcome` |
 
-`run_id` is a run's `pipeline_run_id`. The body is closed, and the client sends these two fields and nothing else. Freezing precedes publishing: a builder freezes a run of the draft, so a showcase can exist before the version that shows it, and another organization reads one only through a published version holding its tree.
+`run_id` is a run's `pipeline_run_id`. The body is closed, and the client sends these fields and nothing else. Freezing precedes publishing: a builder freezes a run of the draft, so a showcase can exist before the version that shows it, and another organization reads one only through a published version holding its tree.
 
 A run that cannot be frozen is a verdict about the run, not a failure of the request, so branch on `outcome` (`match result:` over its classes), never on the status:
 
@@ -76,7 +76,7 @@ A second withdrawal is a `404` `pipelex.catalog.not_found` with `params.resource
 
 **A summary** (`MethodShowcaseSummary`) is `showcase_id`, `name`, `pipe_ref`, `tree_digest` and `frozen_at`. A list's `items` are read entry by entry, so an entry that does not read as a summary is left out, and an answer whose `items` is not a list is one the SDK cannot read.
 
-**A detail** (`MethodShowcaseDetail`) adds `document` and `files`. `document` holds `inputs`, `main_stuff`, `input_form`, `output_form` and `pipe_io_contracts`, relayed as they were stored. `files` lists `address`, `file_name`, `media_type`, `size_bytes` and `url` for every stored file the document names. A detail is held whole, unlike a list: one that breaks its shape, a `files` entry included, is an answer the SDK cannot read, raised with its signed links redacted.
+**A detail** (`MethodShowcaseDetail`) adds `document` and `files`. `document` holds `inputs`, `main_stuff`, `input_form`, `output_form` and `pipe_io_contracts`, relayed as they were stored. `files` lists `address`, `file_name`, `media_type`, `size_bytes` and `url` for every stored file the document names. A detail is held whole, unlike a list: one that breaks its shape, a `document` member left out or a `files` entry included, is an answer the SDK cannot read, raised with its signed links redacted.
 
 **A document never holds a signed link.** After a freeze, an image that was a stored link is an `src="pipelex-storage://…"` address, and a renderer replaces each address with the `url` of the matching entry of `files`. `url` is a short-lived presigned `GET` of the file's bytes: a bearer credential, left out of the model's `repr`, which belongs on a server and never in a browser.
 

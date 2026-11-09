@@ -75,7 +75,8 @@ class MethodShowcaseDocument(BaseModel):
     """What a showcase shows, frozen from its run and relayed as it was stored, its addresses rewritten to the showcase's own files.
 
     A renderer of an HTML output replaces each address with the `url` of the matching entry of
-    `MethodShowcaseDetail.files`.
+    `MethodShowcaseDetail.files`. Every field is required, as the platform's schema requires it: one left out is an
+    answer the SDK cannot read, and a `null` stated for one of the last four is read as `None`.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -84,16 +85,16 @@ class MethodShowcaseDocument(BaseModel):
     """The inputs the run was started with, returned exactly as they were frozen: an integer stays an `int` and `3.0` a
     `float`."""
 
-    main_stuff: Any = None
+    main_stuff: Any
     """The run's main output."""
 
-    input_form: Any = None
+    input_form: Any
     """The input-form descriptors of the library the run executed against, keyed by `pipe_ref`."""
 
-    output_form: Any = None
+    output_form: Any
     """The output-form descriptors of that library, keyed by `pipe_ref`."""
 
-    pipe_io_contracts: Any = None
+    pipe_io_contracts: Any
     """The per-pipe input and output contracts of that library, keyed by `pipe_ref`."""
 
 

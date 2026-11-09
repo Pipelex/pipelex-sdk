@@ -2790,7 +2790,7 @@ class PipelexAPIClient(MthdsAPIClient):
             the new `version`; `MethodPublishUnchanged` with the existing latest `version`;
             `MethodPublishRefused` with a `reason`, a `message` and the runner's `validation` verdict. The
             reason is `invalid`, or `not_runnable` for a draft that validates with pending signatures, and for
-            a public method also `thumbnail_missing`, `thumbnail_invalid` or `storage_reference` (see
+            a public method also `thumbnail_missing`, `thumbnail_invalid`, `storage_reference` or `showcase_missing` (see
             `MethodPublishRefusalReason`); a reason this SDK does not know keeps its raw string and is still a
             verdict, so show its `message`. Every arm carries the `method`.
 
@@ -3301,7 +3301,7 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Returns:
             A `MethodCopyResult` discriminated on `outcome` — branch on it: `MethodCopied` with the copy as `method`,
-            `examples_copied`, `stored_files_copied` and the two counts reserved for showcases, `showcases_copied` and
+            `examples_copied`, `stored_files_copied` and the counts reserved for showcases, `showcases_copied` and
             `layouts_copied`; `MethodCopyRefused` with the `reason`
             `bundle_names_other_storage`, a `message` and every `references` entry (`path`, `uri`) a `.mthds` file
             of the tree holds that the destination cannot read and, in a duplicate, that names a file under the

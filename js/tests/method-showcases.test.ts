@@ -491,6 +491,18 @@ describe.each([
     expect(detail.document.inputs.total).toBe(12345678901234567891n);
   });
 
+  it.each(["main_stuff", "input_form", "output_form", "pipe_io_contracts"] as const)(
+    "reads a document stating %s as null",
+    async (member) => {
+      const body = { ...DETAIL, document: { ...DETAIL.document, [member]: null } };
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+
+      const detail = await read(makeClient());
+
+      expect(detail.document[member]).toBeNull();
+    },
+  );
+
   it.each([
     ["a summary member that is not a string", { ...DETAIL, name: 4 }, "`name` is not a string"],
     ["no document", { ...DETAIL, document: "x" }, "`document` is not an object"],
@@ -520,6 +532,21 @@ describe.each([
     expect((err as Error).message).toContain(fault);
     expect((err as ApiResponseError).responseBody).not.toContain(SIGNATURE);
   });
+
+  it.each(["main_stuff", "input_form", "output_form", "pipe_io_contracts"] as const)(
+    "refuses a document that leaves out %s, its links redacted",
+    async (member) => {
+      const body = { ...DETAIL, document: { ...DETAIL.document, [member]: undefined } };
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, body));
+
+      const err = await failureOf(() => read(makeClient()));
+
+      expect(err).toBeInstanceOf(ApiResponseError);
+      expect((err as ApiResponseError).problem.code).toBe("client.response_unreadable");
+      expect((err as Error).message).toContain(`\`document.${member}\` is left out`);
+      expect((err as ApiResponseError).responseBody).not.toContain(SIGNATURE);
+    },
+  );
 
   it("throws the 404 of a showcase it does not have", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
