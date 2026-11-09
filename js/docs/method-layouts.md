@@ -2,7 +2,7 @@
 
 A **layout** is a data file a producer designed for one pipe of a method: a tree of elements written in the vocabulary of a catalog of components, every value bound to a path in the host's form state, carrying no field descriptions and no data of its own. A host renders it over the input-form descriptor the same method's validate projects, and renders the plain form instead whenever it cannot. The hosted platform stores layouts beside a method's published versions and hands them back, on a direct read by the version or on a validate of the method by id, so a method laid out once opens with its layout for everyone who opens it. It never produces a layout, never parses one and never judges one against a catalog or a descriptor: that is the producer's work before the write and the host's before it renders.
 
-The client reaches the write on the hosted API's `POST /v1/methods/{method_id}/versions/{version}/layouts`, the direct read on `GET` of the same route, the read through `POST /v1/validate` under the `layouts` view, and the off switch on `PUT /v1/methods/{method_id}/layouts-off`. The types are in `src/method-layouts.ts`, exported from the package's root: `MethodLayoutInput` and `LayoutProvenanceInput` for the write, `MethodLayout` and `LayoutProvenance` for what is stored, and `MethodLayoutList` for the direct read. The storage and the `layouts` token are a Pipelex hosted feature; the shapes are stated brand-neutrally, snake_case with no `pipelex_` prefix, as the input-form descriptor they are rendered over is. The conformance spec `pipelex-hosted-method-layouts.md`, in the workspace's `conformance` repository, states the contract.
+The client reaches the write on the hosted API's `POST /v1/methods/{method_id}/versions/{version}/layouts`, the direct read on `GET` of the same route, the read of the draft's layouts on `GET /v1/methods/{method_id}/draft/layouts`, the read through `POST /v1/validate` under the `layouts` view, and the off switch on `PUT /v1/methods/{method_id}/layouts-off`. The types are in `src/method-layouts.ts`, exported from the package's root: `MethodLayoutInput` and `LayoutProvenanceInput` for the write, `MethodLayout` and `LayoutProvenance` for what is stored, and `MethodLayoutList` for the direct read. The storage and the `layouts` token are a Pipelex hosted feature; the shapes are stated brand-neutrally, snake_case with no `pipelex_` prefix, as the input-form descriptor they are rendered over is. The conformance spec `pipelex-hosted-method-layouts.md`, in the workspace's `conformance` repository, states the contract.
 
 ```ts
 import { PipelexApiClient } from "@pipelex/sdk";
@@ -122,6 +122,14 @@ const { items } = await client.listMethodLayouts("mt_abc123", 3, {
   signal: AbortSignal.timeout(5000),
 });
 ```
+
+## Reading the draft's layouts
+
+| Method | Route | Returns |
+|---|---|---|
+| `listMethodDraftLayouts(methodId, options?)` | `GET /v1/methods/{id}/draft/layouts` | A `MethodLayoutList` of the layouts stored for the draft's content, newest first, `items` empty for an empty draft or a draft none was designed for. |
+
+A layout is keyed by its content, so a draft holding a published tree finds that tree's layouts here, and a builder sees the designs of what it is editing. It reads for the organization that holds the method alone, since a draft is its holder's. It takes a bare catalog id, and `options.signal` cancels the read. The platform answers `404` `pipelex.catalog.not_found` for a method the organization does not hold, another organization's public one included, and `409` `pipelex.catalog.being_deleted` during its erasure.
 
 ## Switching a page's design off
 

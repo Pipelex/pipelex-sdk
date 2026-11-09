@@ -33,6 +33,8 @@ export type {
   MethodLayoutListOptions,
   MethodLayoutsOffOptions,
   MethodLayoutWriteOptions,
+  MethodShowcaseReadOptions,
+  MethodShowcaseWriteOptions,
   PipelexValidateSource,
   ValidateMethodSelector,
   ValidateOptions,
@@ -181,6 +183,24 @@ export type {
   MethodLayoutInput,
   MethodLayoutList,
 } from "./method-layouts.js";
+
+// ── A method's showcases (`freezeMethodShowcase`, `listMethodShowcases`, `getMethodVersionShowcase`) ──
+// A completed run of a method, frozen with a private copy of its files, for people to look at
+// without spending credit, and the verdict of a freeze.
+export type {
+  MethodShowcaseDetail,
+  MethodShowcaseDocument,
+  MethodShowcaseFile,
+  MethodShowcaseFreezeOutcome,
+  MethodShowcaseFreezeResult,
+  MethodShowcaseFrozen,
+  MethodShowcaseInput,
+  MethodShowcaseList,
+  MethodShowcaseRefusalReason,
+  MethodShowcaseRefused,
+  MethodShowcaseSummary,
+  MethodShowcaseUnchanged,
+} from "./method-showcases.js";
 
 // ── Offline codegen drift check (pure — no filesystem, no network, no key) ──
 // The CI half of the codegen trust chain: hand it a committed tree plus its

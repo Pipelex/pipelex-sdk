@@ -203,6 +203,15 @@ const { items: laidOutPages } = await client.listMethodLayouts(created.method_id
 console.log(laidOutPages.length);
 await client.setMethodLayoutsOff(created.method_id, ["composer"]);
 
+// A completed run frozen as a showcase, which readers of a published version look at for free.
+const verdict = await client.freezeMethodShowcase(created.method_id, {
+  run_id: "run_123",
+  name: "A first example",
+});
+if (verdict.outcome === "refused") console.log(verdict.reason, verdict.message);
+const { items: showcases } = await client.listMethodVersionShowcases(created.method_id, 1);
+console.log(showcases.length);
+
 // The template catalog: the public methods every organization reads, in the platform's order, with
 // the categories that have a template and each card's thumbnails behind short-lived links. A
 // category's `labels` name it by language tag and may lack a language, in which case a client
@@ -328,6 +337,7 @@ These pages ship inside the published package, so a reader who has only installe
 | [`docs/method-examples.md`](./docs/method-examples.md) | A method's saved examples: the create, the paged list and its iterator, the edit that raises the input revision, the latest-run write and its `recorded` or `stale` verdict, the build assistant's save and its `kept` or `created` verdict, how an integer past `Number.MAX_SAFE_INTEGER` in the inputs stays exact, and what is refused before sending |
 | [`docs/method-copy.md`](./docs/method-copy.md) | Copying a method into another organization or duplicating it: what a copy holds and the stored files it copies, the `copied` or `refused` verdict, every refusal, the copy's idempotency key, and `copied_from` |
 | [`docs/method-layouts.md`](./docs/method-layouts.md) | A method's stored layouts: `storeMethodLayout`, which stores a layout designed for one pipe of a published version, its closed body and its refusals, the layout, its provenance and its written sample, `listMethodLayouts`, which reads a version's layouts with no dry run, `setMethodLayoutsOff`, which switches a page's design off, and the `layouts` a validate by `method_id` carries when `views` names `layouts`, absent when there are none |
+| [`docs/method-showcases.md`](./docs/method-showcases.md) | A method's showcases, completed runs frozen with a private copy of their files: `freezeMethodShowcase` and its verdict, `withdrawMethodShowcase`, the holder's reads (`listMethodShowcases`, `getMethodShowcase`) and every reader's reads of a published version (`listMethodVersionShowcases`, `getMethodVersionShowcase`) |
 | [`docs/public-methods.md`](./docs/public-methods.md) | Public methods and the template catalog: `listMethodTemplates` and its iterator, the ordering, the categories with their labels by language and `listMethodCategories`, the thumbnails' links, another organization's public method read in its narrower shape, the copy of a public method, `visibility` and `categories` on a method, and the refusals a public method's publish adds |
 | [`docs/organization-branding.md`](./docs/organization-branding.md) | An organization's logos, colours, app style and typeface, and its white-label entitlement: `getBranding`, which every member and API key reads, `updateOrganizationBranding`, a write by the `admin` or the `member` role that sets, clears or keeps each key, and how a refused logo, colour, style or typeface names its field so a settings screen shows the sentence under it |
 | [`docs/exact-integers.md`](./docs/exact-integers.md) | Which reads keep an integer past `Number.MAX_SAFE_INTEGER` exact, as a `bigint` (a run's inputs and outputs, an example's inputs), how a request body writes it back with its digits, and `parseExactJson` and `stringifyExactJson` for code showing such data as JSON text |

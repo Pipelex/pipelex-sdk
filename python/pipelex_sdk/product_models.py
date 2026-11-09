@@ -472,9 +472,9 @@ class MethodPublishOutcome(StrEnum):
 class MethodPublishRefusalReason(StrEnum):
     """Why a draft was not published.
 
-    `THUMBNAIL_MISSING`, `THUMBNAIL_INVALID` and `STORAGE_REFERENCE` refuse only a public method's
-    publish, so that the card of a template never loses its picture and every organization can run
-    what it reads.
+    `THUMBNAIL_MISSING`, `THUMBNAIL_INVALID`, `STORAGE_REFERENCE` and `SHOWCASE_MISSING` refuse only a public
+    method's publish, so that the card of a template never loses its picture, every organization can run what it
+    reads, and a template never appears with nothing to show.
     """
 
     INVALID = "invalid"
@@ -493,6 +493,10 @@ class MethodPublishRefusalReason(StrEnum):
     STORAGE_REFERENCE = "storage_reference"
     """The method is public, and a `.mthds` file of the draft names a `pipelex-storage://` file, which other
     organizations cannot read."""
+
+    SHOWCASE_MISSING = "showcase_missing"
+    """The method is public, and the draft's tree holds no showcase for other organizations to look at. Reserved: the
+    platform states it and does not raise it yet."""
 
 
 class MethodPublished(BaseModel):
@@ -788,6 +792,14 @@ class MethodCopied(BaseModel):
     stored_files_copied: int
     """How many distinct stored files were copied into the destination for the copy's inputs."""
 
+    showcases_copied: int = 0
+    """How many showcases of the tree taken the copy holds, each copied with its files. Reserved: the platform answers
+    `0` until copies carry showcases, and a platform that predates it leaves it out, read as `0`."""
+
+    layouts_copied: int = 0
+    """How many layouts of the tree taken the copy holds. Reserved: the platform answers `0` until copies carry layouts,
+    and a platform that predates it leaves it out, read as `0`."""
+
 
 class MethodCopyRefused(BaseModel):
     """A copy refused before anything was written: a bundle of the draft names stored files the copy cannot rely on.
@@ -895,6 +907,12 @@ class MethodExample(BaseModel):
     may name a run deleted since, which then reads as not found. Required, as on every example the
     platform answers: an example without it is an answer the SDK cannot read, never one with no latest
     run."""
+
+    showcase_id: StrictStr | None = None
+    """The showcase frozen from the example's latest run, the output a person may look at without running the method;
+    `None` when none was, and cleared when the inputs change. Reserved: the platform answers `None` until copies born
+    from a showcase fill it, and a platform that predates it leaves it out, read as `None`. Held to its type when it is
+    there, as `@pipelex/sdk` holds it: a value of another type is an answer the SDK cannot read."""
 
     created_by_user_id: StrictStr
     """The canonical id of the member who saved the example; it confers nothing."""

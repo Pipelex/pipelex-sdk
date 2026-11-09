@@ -48,6 +48,17 @@ import {
 } from "./method-layouts.js";
 import type { MethodLayout, MethodLayoutInput, MethodLayoutList } from "./method-layouts.js";
 import {
+  methodShowcaseDetailFault,
+  methodShowcaseFreezeFault,
+  readMethodShowcaseSummaries,
+} from "./method-showcases.js";
+import type {
+  MethodShowcaseDetail,
+  MethodShowcaseFreezeResult,
+  MethodShowcaseInput,
+  MethodShowcaseList,
+} from "./method-showcases.js";
+import {
   assertArtifactSelection,
   assertWaitOptions,
   pollUntilResult,
@@ -492,6 +503,31 @@ export interface MethodLayoutListOptions {
   signal?: AbortSignal;
 }
 
+/** Options for the reads of a method's showcases. */
+export interface MethodShowcaseReadOptions {
+  /**
+   * Caller-driven cancellation, such as an `AbortSignal.timeout(…)` for a page that can do without
+   * the showcases; the abort reason propagates untouched.
+   */
+  signal?: AbortSignal;
+}
+
+/** Options for `freezeMethodShowcase` and `withdrawMethodShowcase`. */
+export interface MethodShowcaseWriteOptions {
+  /**
+   * The write's idempotency key, sent as the `Idempotency-Key` header, and not sent at all when
+   * absent or `null`. Generate one per write the caller means to make (a `crypto.randomUUID()` is a
+   * good key), and keep it, with the arguments unchanged, across that write's retries.
+   *
+   * A freeze sent again without a key is safe in itself, since freezing a run already frozen
+   * answers `unchanged`. A withdrawal sent again without one answers a `404`, so a withdrawal whose
+   * answer was lost, as on a client timeout, reads as a failure: under the same key the hosted API
+   * answers the retry with the first write's stored answer and runs nothing. The rest of the rule,
+   * a key's form and its `409`s included, is `MethodLayoutWriteOptions.idempotencyKey`'s.
+   */
+  idempotencyKey?: string | null;
+}
+
 /** Options for `setMethodLayoutsOff`. */
 export interface MethodLayoutsOffOptions {
   /**
@@ -918,6 +954,24 @@ function checkRunListQuery(call: string, query: unknown): void {
   );
 }
 
+/** What each argument of a showcase call is, as a refusal of it names it. */
+const SHOWCASE_ID_ARGUMENT: CallArgument = {
+  name: "showcase_id",
+  what: "a showcase id, the showcase's non-empty `showcase_id`",
+};
+const SHOWCASE_VERSION_ARGUMENT: CallArgument = {
+  name: "version",
+  what: "a version number, the published version whose showcases to read, a positive integer",
+};
+const SHOWCASE_RUN_ID_ARGUMENT: CallArgument = {
+  name: "run_id",
+  what: "a run id, the non-empty `pipeline_run_id` of the completed run to freeze",
+};
+const SHOWCASE_NAME_ARGUMENT: CallArgument = {
+  name: "name",
+  what: "a name for the showcase, a non-empty string",
+};
+
 /** What each argument of a method copy is, as a refusal of it names it. */
 const COPY_DESTINATION_ARGUMENT: CallArgument = {
   name: "destination_org_id",
@@ -1081,6 +1135,22 @@ function methodExamplePath(methodId: string, exampleId: string, call: string): s
   return `${path}/examples/${idPathSegment(exampleId, call, EXAMPLE_ID_ARGUMENT)}`;
 }
 
+/**
+ * The path of a published version's showcases, `methods/{id}/versions/{n}/showcases`, for a bare
+ * catalog id and a positive integer version, each refused before anything is sent.
+ */
+function methodVersionShowcasesPath(methodId: string, version: number, call: string): string {
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw argumentRefusal(
+      call,
+      SHOWCASE_VERSION_ARGUMENT,
+      describeNumberArgument(version),
+      "not_a_positive_integer",
+    );
+  }
+  return `${methodPath(methodId, call)}/versions/${version}/showcases`;
+}
+
 const isString = (value: unknown): boolean => typeof value === "string";
 
 /** The states an archive is in, the field a caller branches on, in the order a refusal lists them. */
@@ -1130,7 +1200,8 @@ function fileLinkTarget(value: unknown): FileLinkTarget {
  * Python SDK's model requires, held to the same strict types it holds them to, so both SDKs refuse
  * the same answers, the ones a caller acts on (`example_id`, `inputs`, `input_revision`,
  * `latest_run_id`) among them. `latest_run_id` must be present, `null` saying there is no latest
- * run, and `input_revision` must be a safe integer, so a string, a boolean, a fraction and an
+ * run; `showcase_id` may be absent, since a platform that predates it does not send it, and is held
+ * to its type when it is there; and `input_revision` must be a safe integer, so a string, a boolean, a fraction and an
  * integer past the safe range, which `parseExactJson` reads as a `bigint`, are each refused by
  * both. The one spelling they read apart is a revision of `2.0`: JavaScript reads it as the number
  * `2` and cannot tell it from `2`, while the Python SDK refuses the float.
@@ -1146,6 +1217,10 @@ const METHOD_EXAMPLE_FIELDS = {
   inputs: ["an object", isPlainObject],
   input_revision: ["an integer", (value) => Number.isSafeInteger(value)],
   latest_run_id: ["a string or null", (value) => value === null || isString(value)],
+  showcase_id: [
+    "a string or null",
+    (value) => value === undefined || value === null || isString(value),
+  ],
   created_by_user_id: ["a string", isString],
   created_at: ["a string", isString],
   updated_at: ["a string", isString],
@@ -1265,7 +1340,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * whose errors then say whether it may have (see `RunCreation`).
    * `idempotencyKey`, already checked by `idempotencyKeyOf`, is sent as the
    * `Idempotency-Key` header; only `start`, `copyMethod`, `storeMethodLayout`,
-   * `setMethodLayoutsOff`, `rotateWebhookSecret` and `replayRunWebhookDelivery` pass one.
+   * `setMethodLayoutsOff`, `freezeMethodShowcase`, `withdrawMethodShowcase`, `rotateWebhookSecret`
+   * and `replayRunWebhookDelivery` pass one.
    */
   private async requestRaw(
     method: HttpMethod,
@@ -1402,7 +1478,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
     method: HttpMethod,
     endpoint: string,
     body?: unknown,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; idempotencyKey?: string } = {},
   ): Promise<T> {
     const res = await this.requestProductAnswer(method, endpoint, body, options);
     return (res.body ? this.readAnswer<T>(method, endpoint, res) : undefined) as T;
@@ -3696,7 +3772,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `refused` with a `reason`, a `message` and the runner's `validation` verdict, whose problem
    * items are read member by member as `validate` reads them. The reason is `invalid`, or
    * `not_runnable` for a draft that validates with pending signatures, and for a public method
-   * also `thumbnail_missing`, `thumbnail_invalid` or `storage_reference` (see
+   * also `thumbnail_missing`, `thumbnail_invalid`, `storage_reference` or `showcase_missing` (see
    * `MethodPublishRefusalReason`); a reason this SDK does not know is passed through as its raw
    * string, still a verdict, so show its `message`. Every arm carries the `method`. A publish
    * moves no token.
@@ -3942,6 +4018,36 @@ export class PipelexApiClient implements HostedProtocolSurface {
       );
     }
     const endpoint = `${methodPath(methodId, call)}/versions/${version}/layouts`;
+    return this.requestMethodLayoutList(endpoint, options);
+  }
+
+  /**
+   * The layouts stored for the content of a method's draft — `GET /v1/methods/{id}/draft/layouts` —
+   * newest first, `items` empty for an empty draft or a draft none was designed for. A layout is
+   * keyed by its content, so a draft holding a published tree finds that tree's layouts here, and a
+   * builder sees the designs of what it is editing.
+   *
+   * It reads for the organization that holds the method alone, since a draft is its holder's. Takes
+   * a bare catalog id, as `getMethod` does. `options.signal` cancels the read. Throws
+   * `ApiResponseError`: `404` `pipelex.catalog.not_found` for a method the organization does not
+   * hold, another organization's public one included, and `409` `pipelex.catalog.being_deleted`
+   * while its erasure is pending, under way or stopped. An answer whose `items` is not an array is
+   * an answer the SDK cannot read, thrown as an `ApiResponseError` too; an entry that does not read
+   * as a layout is left out (`readMethodLayouts`).
+   */
+  async listMethodDraftLayouts(
+    methodId: string,
+    options: MethodLayoutListOptions = {},
+  ): Promise<MethodLayoutList> {
+    const endpoint = `${methodPath(methodId, "listMethodDraftLayouts")}/draft/layouts`;
+    return this.requestMethodLayoutList(endpoint, options);
+  }
+
+  /** The `{items}` of a route answering layouts, each entry read as `readMethodLayouts` reads it. */
+  private async requestMethodLayoutList(
+    endpoint: string,
+    options: MethodLayoutListOptions,
+  ): Promise<MethodLayoutList> {
     const res = await this.requestProductAnswer("GET", endpoint, undefined, {
       signal: options.signal,
     });
@@ -3955,6 +4061,216 @@ export class PipelexApiClient implements HostedProtocolSurface {
       );
     }
     return { ...answer, items: readMethodLayouts(answer.items) };
+  }
+
+  /**
+   * Freeze a completed run of a method into a showcase — `POST /v1/methods/{id}/showcases` — and
+   * answer what the freeze did.
+   *
+   * A showcase is real output, frozen: the run's inputs, its main output, the forms and contracts
+   * that describe them, and a private copy of every stored file they name. It is keyed by the
+   * digest of the run's tree, so a builder freezes a run of the draft before publishing it, and
+   * another organization reads it only through a published version holding that tree. The run must
+   * be this method's, completed and with stored results, and its tree must be the draft's or the
+   * latest published version's.
+   *
+   * The answer is a `MethodShowcaseFreezeResult`, a `200` discriminated on `outcome` — branch on it:
+   * `frozen` with the new `showcase`; `unchanged` with the one that stands, when this run is already
+   * a showcase, whatever has happened to its tree since, the name in the request being ignored; or
+   * `refused` with a `reason` and a `message`, nothing written (`MethodShowcaseRefusalReason`, read
+   * open, so a later reason arrives as its raw string).
+   *
+   * The write changes the method, so it takes an `admin` or a `member` of the method's organization.
+   * Takes a bare catalog id, as `getMethod` does. Sends `run_id` and `name` and nothing else, the
+   * body being closed. `options.idempotencyKey` is sent as the `Idempotency-Key` header
+   * (`MethodShowcaseWriteOptions`). Throws `RequestArgumentError` before any request for a `run_id`
+   * or a `name` that is not a non-empty string, and for a malformed idempotency key. Throws
+   * `ApiResponseError` when no verdict was produced: `403` `auth.forbidden` for a `runner`; `404`
+   * `pipelex.catalog.not_found` for a method the organization does not hold; `409`
+   * `pipelex.catalog.being_deleted` while its erasure is pending, under way or stopped; `422`
+   * `request.invalid` for a body that does not validate; and `503` `runtime.unavailable`, with
+   * `retry` `yes`, past the freeze's deadline. An answer that is none of the verdict's arms is an
+   * answer the SDK cannot read, thrown as an `ApiResponseError` too.
+   */
+  async freezeMethodShowcase(
+    methodId: string,
+    input: MethodShowcaseInput,
+    options: MethodShowcaseWriteOptions = {},
+  ): Promise<MethodShowcaseFreezeResult> {
+    const call = "freezeMethodShowcase";
+    const endpoint = `${methodPath(methodId, call)}/showcases`;
+    const { run_id: runId, name } = (input as Partial<MethodShowcaseInput> | undefined) ?? {};
+    const body = {
+      run_id: requireNonEmptyId(runId, call, SHOWCASE_RUN_ID_ARGUMENT),
+      name: requireNonEmptyId(name, call, SHOWCASE_NAME_ARGUMENT),
+    };
+    const idempotencyKey = idempotencyKeyOf(options, "freeze the showcase");
+    const res = await this.requestProductAnswer("POST", endpoint, body, { idempotencyKey });
+    const answer = this.readObjectAnswer<Record<string, unknown>>("POST", endpoint, res);
+    const fault = methodShowcaseFreezeFault(answer);
+    if (fault !== null) {
+      throw this.unreadableAnswer("POST", `/${API_PREFIX}/${endpoint}`, res, fault);
+    }
+    return answer as unknown as MethodShowcaseFreezeResult;
+  }
+
+  /**
+   * Withdraw a showcase — `DELETE /v1/methods/{id}/showcases/{showcase_id}`. The platform answers
+   * `204`, the row going first, so every read closes at once, and then its stored document and
+   * files. It runs no check, even on a public method's last showcase, because taking down something
+   * published by mistake is never refused; the method then stays public and its next publish needs
+   * a showcase. What another organization already copied stays theirs.
+   *
+   * `options.idempotencyKey` is sent as the `Idempotency-Key` header, so a withdrawal whose answer
+   * was lost is sent again under the same key and answered as the first was
+   * (`MethodShowcaseWriteOptions`). Throws `RequestArgumentError` before any request for a showcase
+   * id that is empty, `.` or `..`, or holds a lone surrogate, and for a malformed idempotency key.
+   * Throws `ApiResponseError`: `404` `pipelex.catalog.not_found`, its `params.resource` `example`,
+   * when there is no such showcase, one already withdrawn included; `403` `auth.forbidden` for a
+   * `runner`; and `422` `request.invalid` for an id that is not one a showcase can have.
+   */
+  async withdrawMethodShowcase(
+    methodId: string,
+    showcaseId: string,
+    options: MethodShowcaseWriteOptions = {},
+  ): Promise<void> {
+    const call = "withdrawMethodShowcase";
+    const endpoint = `${methodPath(methodId, call)}/showcases/${idPathSegment(showcaseId, call, SHOWCASE_ID_ARGUMENT)}`;
+    const idempotencyKey = idempotencyKeyOf(options, "withdraw the showcase");
+    await this.requestProduct("DELETE", endpoint, undefined, { idempotencyKey });
+  }
+
+  /**
+   * Every showcase of a method the caller's organization holds, across every tree, each naming its
+   * digest, oldest first — `GET /v1/methods/{id}/showcases`.
+   *
+   * It reads for the holding organization's members alone: another organization reads a `404`,
+   * public method or not, and reads a public method's showcases through
+   * `listMethodVersionShowcases`. Takes a bare catalog id, as `getMethod` does. `options.signal`
+   * cancels the read. Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for a method the
+   * organization does not hold and `409` `pipelex.catalog.being_deleted` while its erasure is
+   * pending, under way or stopped. An answer whose `items` is not an array is an answer the SDK
+   * cannot read, thrown as an `ApiResponseError` too; an entry that does not read as a summary is
+   * left out (`readMethodShowcaseSummaries`).
+   */
+  async listMethodShowcases(
+    methodId: string,
+    options: MethodShowcaseReadOptions = {},
+  ): Promise<MethodShowcaseList> {
+    const endpoint = `${methodPath(methodId, "listMethodShowcases")}/showcases`;
+    return this.requestMethodShowcaseList(endpoint, options);
+  }
+
+  /**
+   * One showcase of a method the caller's organization holds, in full, with a short-lived link to
+   * each of its files — `GET /v1/methods/{id}/showcases/{showcase_id}`. Read with `parseExactJson`,
+   * so an integer past `Number.MAX_SAFE_INTEGER` in its document is a `bigint`.
+   *
+   * It reads for the holding organization's members alone. Takes a bare catalog id, as `getMethod`
+   * does, and refuses a showcase id as `withdrawMethodShowcase` does, before any request. Throws
+   * `ApiResponseError`: `404` `pipelex.catalog.not_found` for a method the organization does not
+   * hold and for a showcase it does not have, the latter's `params.resource` being `example`, and
+   * `409` `pipelex.catalog.being_deleted` while its erasure is pending, under way or stopped. An
+   * answer that does not read as a detail (`methodShowcaseDetailFault`) is an answer the SDK cannot
+   * read, thrown as an `ApiResponseError` too, its signed links redacted.
+   */
+  async getMethodShowcase(
+    methodId: string,
+    showcaseId: string,
+    options: MethodShowcaseReadOptions = {},
+  ): Promise<MethodShowcaseDetail> {
+    const call = "getMethodShowcase";
+    const endpoint = `${methodPath(methodId, call)}/showcases/${idPathSegment(showcaseId, call, SHOWCASE_ID_ARGUMENT)}`;
+    return this.requestMethodShowcaseDetail(endpoint, options);
+  }
+
+  /**
+   * The showcases of the tree a published version holds, oldest first —
+   * `GET /v1/methods/{id}/versions/{n}/showcases` — for every reader of that version, another
+   * organization's on a public method included. `items` is empty when none is frozen. A showcase of
+   * a tree no published version holds is never read through this route.
+   *
+   * Takes a bare catalog id, as `getMethod` does, and the version number. `options.signal` cancels
+   * the read. Throws `RequestArgumentError` for a `version` that is not a positive integer, before
+   * any request. Throws `ApiResponseError`: `404` `pipelex.catalog.not_found` for an unknown method
+   * or another organization's internal one, its `params.resource` `method`, and for a version the
+   * method never published, its `params.resource` `version`; and `409`
+   * `pipelex.catalog.being_deleted` while the erasure of the caller's own method is pending, under
+   * way or stopped. An answer whose `items` is not an array is an answer the SDK cannot read, thrown
+   * as an `ApiResponseError` too; an entry that does not read as a summary is left out.
+   */
+  async listMethodVersionShowcases(
+    methodId: string,
+    version: number,
+    options: MethodShowcaseReadOptions = {},
+  ): Promise<MethodShowcaseList> {
+    const endpoint = methodVersionShowcasesPath(methodId, version, "listMethodVersionShowcases");
+    return this.requestMethodShowcaseList(endpoint, options);
+  }
+
+  /**
+   * One showcase of the tree a published version holds, in full, with a short-lived link to each of
+   * its files — `GET /v1/methods/{id}/versions/{n}/showcases/{showcase_id}`. Read with
+   * `parseExactJson`, so an integer past `Number.MAX_SAFE_INTEGER` in its document is a `bigint`. A
+   * showcase of another tree reads as not found.
+   *
+   * The refusals are `listMethodVersionShowcases`'s, and a showcase that tree does not hold is a
+   * `404` `pipelex.catalog.not_found` whose `params.resource` is `example`. The showcase id is
+   * refused as `withdrawMethodShowcase` refuses it. An answer that does not read as a detail is an
+   * answer the SDK cannot read, thrown as an `ApiResponseError` too, its signed links redacted.
+   */
+  async getMethodVersionShowcase(
+    methodId: string,
+    version: number,
+    showcaseId: string,
+    options: MethodShowcaseReadOptions = {},
+  ): Promise<MethodShowcaseDetail> {
+    const call = "getMethodVersionShowcase";
+    const list = methodVersionShowcasesPath(methodId, version, call);
+    const endpoint = `${list}/${idPathSegment(showcaseId, call, SHOWCASE_ID_ARGUMENT)}`;
+    return this.requestMethodShowcaseDetail(endpoint, options);
+  }
+
+  /** The `{items}` of a route answering showcase summaries, each read as `readMethodShowcaseSummaries` reads it. */
+  private async requestMethodShowcaseList(
+    endpoint: string,
+    options: MethodShowcaseReadOptions,
+  ): Promise<MethodShowcaseList> {
+    const res = await this.requestProductAnswer("GET", endpoint, undefined, {
+      signal: options.signal,
+    });
+    const answer = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    if (!Array.isArray(answer.items)) {
+      throw this.unreadableAnswer(
+        "GET",
+        `/${API_PREFIX}/${endpoint}`,
+        res,
+        "a list of showcases whose `items` is not an array",
+      );
+    }
+    return { ...answer, items: readMethodShowcaseSummaries(answer.items) };
+  }
+
+  /** A route answering one showcase in full, its answer read exactly and any error's links redacted. */
+  private async requestMethodShowcaseDetail(
+    endpoint: string,
+    options: MethodShowcaseReadOptions,
+  ): Promise<MethodShowcaseDetail> {
+    const res = withLinks(
+      await this.requestProductAnswer("GET", endpoint, undefined, { signal: options.signal }),
+    );
+    const answer = this.readObjectAnswer<Record<string, unknown>>(
+      "GET",
+      endpoint,
+      res,
+      {},
+      parseExactJson,
+    );
+    const fault = methodShowcaseDetailFault(answer);
+    if (fault !== null) {
+      throw this.unreadableAnswer("GET", `/${API_PREFIX}/${endpoint}`, res, `a showcase ${fault}`);
+    }
+    return answer as unknown as MethodShowcaseDetail;
   }
 
   /**
@@ -4023,7 +4339,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * is refused with a `422` `request.invalid` naming it.
    *
    * The answer is a `MethodCopyResult` discriminated on `outcome` — branch on it: `copied` with
-   * the copy as `method`, `examples_copied` and `stored_files_copied`; `refused` with the
+   * the copy as `method`, `examples_copied`, `stored_files_copied` and the counts reserved for
+   * showcases, `showcases_copied` and `layouts_copied`; `refused` with the
    * `reason` `bundle_names_other_storage`, a `message` and every `references` entry (`{ path, uri
    * }`) a `.mthds` file of the tree holds that the destination cannot read and, in a duplicate,
    * that names a file under the original's run files, which erasing the original would remove,
@@ -6159,13 +6476,14 @@ const VISIBLE_ASCII = /^[\x21-\x7E]+$/;
 
 /**
  * The idempotency key a start, a method copy, a layout write, a write of the layouts switched off,
- * a secret rotation or a delivery replay sends, or
+ * a showcase write, a secret rotation or a delivery replay sends, or
  * `undefined` when the options carry none (absent or `null`). A key that is not a string of 1 to
  * 255 visible ASCII characters is refused with a `RequestArgumentError` rather than dropped, an
  * empty one included, since a request sent without the key its caller gave would lose the
  * protection the caller asked for without a word. `request` says what the request does, as the
  * refusal's last sentence names it ("start the run", "copy the method", "store the layout",
- * "set the layouts off", "rotate the secret", "replay the delivery"). The message never quotes the key, which a caller may derive from
+ * "set the layouts off", "freeze the showcase", "withdraw the showcase", "rotate the secret",
+ * "replay the delivery"). The message never quotes the key, which a caller may derive from
  * something private. The Python SDK holds a key to the same rule, in the same words.
  */
 function idempotencyKeyOf(

@@ -98,6 +98,19 @@ class TestClientMethodCopies:
         assert result.method.latest_version is None
         assert result.examples_copied == 2
         assert result.stored_files_copied == 1
+        assert result.showcases_copied == 0
+        assert result.layouts_copied == 0
+
+    def test_copy_method_reads_the_reserved_counts_of_showcases_and_layouts(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body={**MethodCopyBodies.COPIED, "showcases_copied": 1, "layouts_copied": 2}))
+
+        result = asyncio.run(api_client.copy_method("mt_receipts01", destination_org_id="org_team"))
+
+        assert isinstance(result, MethodCopied)
+        assert result.showcases_copied == 1
+        assert result.layouts_copied == 2
 
     def test_copy_method_sends_the_name_and_the_draft_token_when_given(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher

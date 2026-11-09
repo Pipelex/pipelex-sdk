@@ -20,7 +20,7 @@ from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.method_layout_models import MethodLayoutInput
 from pipelex_sdk.product_models import MethodDraftInput, OrganizationBrandingUpdate, UpdateRunInput
 from tests.unit.conftest import BASE_URL
-from tests.unit.test_data import MethodExampleBodies, MethodLayoutBodies
+from tests.unit.test_data import MethodExampleBodies, MethodLayoutBodies, MethodShowcaseBodies
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -46,6 +46,8 @@ _REFUSAL: dict[str, object] = {"status": 400, "code": "malformed_request", "deta
 _A_METHOD_ID = "a method id"
 _AN_EXAMPLE_ID = "an example id"
 _A_RUN_ID = "a run id"
+_A_SHOWCASE_ID = "a showcase id"
+_SHOWCASE_ID = MethodShowcaseBodies.SHOWCASE_ID
 
 #: Each route that puts an id in its path: what the id is, the route's name as a refusal names it, the call given
 #: that id, and the URL it addresses.
@@ -93,6 +95,66 @@ _ROUTES: list[tuple[str, str, IdRouteCall, IdRouteUrl]] = [
         "set_method_layouts_off",
         lambda client, id_: client.set_method_layouts_off(id_, []),
         lambda seg: f"{_METHODS_URL}/{seg}/layouts-off",
+    ),
+    (
+        _A_METHOD_ID,
+        "list_method_draft_layouts",
+        lambda client, id_: client.list_method_draft_layouts(id_),
+        lambda seg: f"{_METHODS_URL}/{seg}/draft/layouts",
+    ),
+    (
+        _A_METHOD_ID,
+        "freeze_method_showcase",
+        lambda client, id_: client.freeze_method_showcase(id_, run_id="run_1", name="n"),
+        lambda seg: f"{_METHODS_URL}/{seg}/showcases",
+    ),
+    (
+        _A_METHOD_ID,
+        "list_method_showcases",
+        lambda client, id_: client.list_method_showcases(id_),
+        lambda seg: f"{_METHODS_URL}/{seg}/showcases",
+    ),
+    (
+        _A_METHOD_ID,
+        "get_method_showcase",
+        lambda client, id_: client.get_method_showcase(id_, _SHOWCASE_ID),
+        lambda seg: f"{_METHODS_URL}/{seg}/showcases/{_SHOWCASE_ID}",
+    ),
+    (
+        _A_METHOD_ID,
+        "withdraw_method_showcase",
+        lambda client, id_: client.withdraw_method_showcase(id_, _SHOWCASE_ID),
+        lambda seg: f"{_METHODS_URL}/{seg}/showcases/{_SHOWCASE_ID}",
+    ),
+    (
+        _A_METHOD_ID,
+        "list_method_version_showcases",
+        lambda client, id_: client.list_method_version_showcases(id_, 2),
+        lambda seg: f"{_METHODS_URL}/{seg}/versions/2/showcases",
+    ),
+    (
+        _A_METHOD_ID,
+        "get_method_version_showcase",
+        lambda client, id_: client.get_method_version_showcase(id_, 2, _SHOWCASE_ID),
+        lambda seg: f"{_METHODS_URL}/{seg}/versions/2/showcases/{_SHOWCASE_ID}",
+    ),
+    (
+        _A_SHOWCASE_ID,
+        "get_method_showcase",
+        lambda client, id_: client.get_method_showcase(_METHOD_ID, id_),
+        lambda seg: f"{_METHODS_URL}/{_METHOD_ID}/showcases/{seg}",
+    ),
+    (
+        _A_SHOWCASE_ID,
+        "withdraw_method_showcase",
+        lambda client, id_: client.withdraw_method_showcase(_METHOD_ID, id_),
+        lambda seg: f"{_METHODS_URL}/{_METHOD_ID}/showcases/{seg}",
+    ),
+    (
+        _A_SHOWCASE_ID,
+        "get_method_version_showcase",
+        lambda client, id_: client.get_method_version_showcase(_METHOD_ID, 2, id_),
+        lambda seg: f"{_METHODS_URL}/{_METHOD_ID}/versions/2/showcases/{seg}",
     ),
     (_A_METHOD_ID, "delete_method", lambda client, id_: client.delete_method(id_), lambda seg: f"{_METHODS_URL}/{seg}"),
     (

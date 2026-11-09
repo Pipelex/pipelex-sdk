@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A method's showcases**: `freezeMethodShowcase` freezes a completed run into a showcase and answers a `MethodShowcaseFreezeResult` discriminated on `outcome` (`frozen`, `unchanged`, or `refused` with a `reason` and a `message`), `withdrawMethodShowcase` takes one down, `listMethodShowcases` and `getMethodShowcase` read the holder's, across every tree, and `listMethodVersionShowcases` and `getMethodVersionShowcase` read those of a published version for every reader (`docs/method-showcases.md`).
+- **`listMethodDraftLayouts`**: reads `GET /v1/methods/{id}/draft/layouts`, the layouts stored for the content of a method's draft, for the organization that holds it, as a `MethodLayoutList`.
+- **Fields reserved for showcases**: `MethodExample.showcase_id`, `showcase_missing` among the reasons of `MethodPublishRefused`, and `showcases_copied` and `layouts_copied` on a copy's verdict, each absent from a platform that predates it.
+
 ## [v0.65.0] - 2026-11-08
 
 ### Added
