@@ -340,6 +340,7 @@ class TestClientPublicMethods:
             pytest.param("thumbnail_missing", MethodPublishRefusalReason.THUMBNAIL_MISSING, id="thumbnail-missing"),
             pytest.param("thumbnail_invalid", MethodPublishRefusalReason.THUMBNAIL_INVALID, id="thumbnail-invalid"),
             pytest.param("storage_reference", MethodPublishRefusalReason.STORAGE_REFERENCE, id="storage-reference"),
+            pytest.param("showcase_missing", MethodPublishRefusalReason.SHOWCASE_MISSING, id="showcase-missing"),
         ],
     )
     def test_publish_method_answers_a_public_methods_refusal_as_a_verdict(

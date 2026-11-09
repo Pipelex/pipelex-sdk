@@ -14,6 +14,7 @@ An **example** is a named set of inputs saved on a stored method, so the method 
 | `inputs` | A JSON object: the inputs as a run of the method takes them, returned exactly as they were saved, an integer as an `int` and `3.0` as a `float`. |
 | `input_revision` | Starts at 1 and rises by one each time the inputs change. |
 | `latest_run_id` | The latest run of the current inputs, or `None`. It may name a run deleted since, whose read then answers `404`. The platform always sends it, so an example without it is an answer the SDK cannot read, never one with no latest run, as `@pipelex/sdk` reads it. |
+| `showcase_id` | The showcase frozen from the example's latest run, or `None`. Reserved: the platform answers `None` for now, and clears it with `latest_run_id` when the inputs change. A platform that predates it leaves it out, read as `None` ([method-showcases.md](./method-showcases.md#fields-reserved-for-later)). |
 | `kept_by_assistant` | Whether the build assistant keeps this example's inputs current with its test inputs: `True` on an example the assistant's save created, `False` on every other, and `False` from the first inputs change a person makes. A rename leaves it as it is ([below](#the-build-assistants-example)). |
 | `created_by_user_id`, `created_at`, `updated_at` | Who saved it, when, and when it last changed. |
 

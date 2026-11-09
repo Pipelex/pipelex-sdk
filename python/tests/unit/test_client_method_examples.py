@@ -356,6 +356,23 @@ class TestClientMethodExamples:
         assert _sent_url(send) == _EXAMPLE_URL
         assert example.model_dump() == MethodExampleBodies.EXAMPLE
 
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param({}, None, id="absent-as-a-platform-that-predates-it-answers"),
+            pytest.param({"showcase_id": None}, None, id="none"),
+            pytest.param({"showcase_id": "sc_1"}, "sc_1", id="a-showcase-id"),
+        ],
+    )
+    def test_get_reads_the_examples_showcase(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher, body: dict[str, Any], expected: str | None
+    ) -> None:
+        patch_send(api_client, wire_response(200, json_body={**MethodExampleBodies.EXAMPLE, **body}))
+
+        example = asyncio.run(api_client.get_method_example(_METHOD_ID, _EXAMPLE_ID))
+
+        assert example.showcase_id == expected
+
     def test_get_encodes_the_example_id(self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher) -> None:
         send = patch_send(api_client, wire_response(200, json_body=MethodExampleBodies.EXAMPLE))
 
@@ -783,6 +800,7 @@ class TestClientMethodExamples:
             pytest.param("example_id", 7, id="numeric-example-id"),
             pytest.param("latest_run_id", 1, id="numeric-latest-run-id"),
             pytest.param("inputs", [3], id="inputs-as-a-list"),
+            pytest.param("showcase_id", 4, id="showcase-as-a-number"),
             pytest.param("kept_by_assistant", "false", id="assistant-flag-as-a-string"),
             pytest.param("kept_by_assistant", 0, id="assistant-flag-as-a-number"),
         ],

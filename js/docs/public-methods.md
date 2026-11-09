@@ -106,5 +106,6 @@ A public method's publish is held to more than any draft's, so that a template's
 | `storage_reference` | A `.mthds` file of the draft names a `pipelex-storage://` file, which other organizations cannot read. |
 | `thumbnail_missing` | The draft's tree holds no file directly under `thumbnails/`, or none was read within the publish's time; a retry may read them in time. |
 | `thumbnail_invalid` | No file directly under `thumbnails/` is a valid thumbnail. |
+| `showcase_missing` | The draft's tree holds no showcase for other organizations to look at. Reserved: the platform states it and does not raise it yet ([method-showcases.md](./method-showcases.md#fields-reserved-for-later)). |
 
 Each is a verdict, a `200` with a `message` for a person and the runner's valid `validation`, never a thrown error. `MethodPublishRefused.reason` is read open, typed `MethodPublishRefusalReason | (string & {})`: a reason a later platform adds arrives as its raw string, still a verdict, so a client shows its `message` when it does not handle the reason. An internal method's publish never meets the reasons of this table. A method made public while its publish ran is a `503` with nothing written, safe to retry.

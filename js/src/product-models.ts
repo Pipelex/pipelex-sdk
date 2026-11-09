@@ -469,14 +469,21 @@ export type MethodPublishOutcome = "published" | "unchanged" | "refused";
  * - `thumbnail_invalid`: the method is public, and no file directly under the draft's
  *   `thumbnails/` is a valid thumbnail (a PNG, JPEG or WebP of at least 800×400 pixels);
  * - `storage_reference`: the method is public, and a `.mthds` file of the draft names a
- *   `pipelex-storage://` file, which other organizations cannot read.
+ *   `pipelex-storage://` file, which other organizations cannot read;
+ * - `showcase_missing`: the method is public, and the draft's tree holds no showcase for other
+ *   organizations to look at. Reserved: the platform states it and does not raise it yet.
  *
- * `thumbnail_missing`, `thumbnail_invalid` and `storage_reference` refuse only a public method's
- * publish, so that the card of a template never loses its picture and every organization can run
- * what it reads.
+ * `thumbnail_missing`, `thumbnail_invalid`, `storage_reference` and `showcase_missing` refuse only
+ * a public method's publish, so that the card of a template never loses its picture, every
+ * organization can run what it reads, and a template never appears with nothing to show.
  */
 export type MethodPublishRefusalReason =
-  "invalid" | "not_runnable" | "thumbnail_missing" | "thumbnail_invalid" | "storage_reference";
+  | "invalid"
+  | "not_runnable"
+  | "thumbnail_missing"
+  | "thumbnail_invalid"
+  | "storage_reference"
+  | "showcase_missing";
 
 /** A publish that wrote a new version. */
 export interface MethodPublished {
@@ -723,6 +730,17 @@ export interface MethodCopied {
   examples_copied: number;
   /** How many distinct stored files were copied into the destination for the copy's inputs. */
   stored_files_copied: number;
+  /**
+   * How many showcases of the tree taken the copy holds, each copied with its files. Reserved: the
+   * platform answers `0` until copies carry showcases, and a platform that predates it leaves it
+   * out, which means none.
+   */
+  showcases_copied?: number;
+  /**
+   * How many layouts of the tree taken the copy holds. Reserved: the platform answers `0` until
+   * copies carry layouts, and a platform that predates it leaves it out, which means none.
+   */
+  layouts_copied?: number;
 }
 
 /**
@@ -811,6 +829,13 @@ export interface MethodExample {
    * changed. It may name a run deleted since, which then reads as not found.
    */
   latest_run_id: string | null;
+  /**
+   * The showcase frozen from the example's latest run, the output a person may look at without
+   * running the method; `null` when none was, and cleared when the inputs change. Reserved: the
+   * platform answers `null` until copies born from a showcase fill it, and a platform that predates
+   * it leaves it out, which means none.
+   */
+  showcase_id?: string | null;
   /** The canonical id of the member who saved the example; it confers nothing. */
   created_by_user_id: string;
   /** ISO-8601 UTC instant of the example's creation. */

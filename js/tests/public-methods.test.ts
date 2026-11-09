@@ -521,29 +521,31 @@ describe("another organization's public method", () => {
 describe("a public method's publish refusals", () => {
   const VALID = { is_valid: true, is_runnable: true };
 
-  it.each(["thumbnail_missing", "thumbnail_invalid", "storage_reference"] as const)(
-    "answers %s as a refused verdict",
-    async (reason) => {
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(
-        jsonResponse(200, {
-          outcome: "refused",
-          reason,
-          message: "The method is public, and its publish was refused, so it was not published.",
-          validation: VALID,
-          method: OWN_METHOD,
-        }),
-      );
+  it.each([
+    "thumbnail_missing",
+    "thumbnail_invalid",
+    "storage_reference",
+    "showcase_missing",
+  ] as const)("answers %s as a refused verdict", async (reason) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, {
+        outcome: "refused",
+        reason,
+        message: "The method is public, and its publish was refused, so it was not published.",
+        validation: VALID,
+        method: OWN_METHOD,
+      }),
+    );
 
-      const result = await makeClient().publishMethod("mt_stats01", {
-        expected_draft_updated_at: OWN_METHOD.updated_at,
-      });
+    const result = await makeClient().publishMethod("mt_stats01", {
+      expected_draft_updated_at: OWN_METHOD.updated_at,
+    });
 
-      expect(result.outcome).toBe("refused");
-      if (result.outcome !== "refused") throw new Error("expected a refusal");
-      expect(result.reason).toBe(reason);
-      expect(result.message).toContain("public");
-    },
-  );
+    expect(result.outcome).toBe("refused");
+    if (result.outcome !== "refused") throw new Error("expected a refusal");
+    expect(result.reason).toBe(reason);
+    expect(result.message).toContain("public");
+  });
 
   it("passes a reason it does not know through as its raw string, still a verdict", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -591,7 +593,12 @@ describe("a public method's publish refusals", () => {
 
   it("types the reasons it knows, and reads the reason open", () => {
     expectTypeOf<MethodPublishRefusalReason>().toEqualTypeOf<
-      "invalid" | "not_runnable" | "thumbnail_missing" | "thumbnail_invalid" | "storage_reference"
+      | "invalid"
+      | "not_runnable"
+      | "thumbnail_missing"
+      | "thumbnail_invalid"
+      | "storage_reference"
+      | "showcase_missing"
     >();
     expectTypeOf<"a_later_reason">().toExtend<MethodPublishRefused["reason"]>();
   });
