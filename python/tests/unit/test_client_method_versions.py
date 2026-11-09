@@ -72,6 +72,13 @@ _SUFFIXED_ID_ROUTES: list[tuple[str, MethodRouteCall]] = [
     ),
     ("list_method_layouts", lambda client: client.list_method_layouts(_SUFFIXED_ID, 3)),
     ("set_method_layouts_off", lambda client: client.set_method_layouts_off(_SUFFIXED_ID, [])),
+    ("list_method_draft_layouts", lambda client: client.list_method_draft_layouts(_SUFFIXED_ID)),
+    ("freeze_method_showcase", lambda client: client.freeze_method_showcase(_SUFFIXED_ID, run_id="run_1", name="n")),
+    ("withdraw_method_showcase", lambda client: client.withdraw_method_showcase(_SUFFIXED_ID, "sc_1")),
+    ("list_method_showcases", lambda client: client.list_method_showcases(_SUFFIXED_ID)),
+    ("get_method_showcase", lambda client: client.get_method_showcase(_SUFFIXED_ID, "sc_1")),
+    ("list_method_version_showcases", lambda client: client.list_method_version_showcases(_SUFFIXED_ID, 3)),
+    ("get_method_version_showcase", lambda client: client.get_method_version_showcase(_SUFFIXED_ID, 3, "sc_1")),
     ("copy_method", lambda client: client.copy_method(_SUFFIXED_ID, destination_org_id="org_team")),
     ("delete_method", lambda client: client.delete_method(_SUFFIXED_ID)),
 ]

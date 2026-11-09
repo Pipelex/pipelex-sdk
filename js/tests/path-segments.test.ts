@@ -14,6 +14,7 @@ import { RequestArgumentError } from "../src/errors.js";
 const BASE_URL = "http://localhost:8081";
 const METHOD_ID = "mt_receipts01";
 const EXAMPLE_ID = "ex_0192b3c4-d5e6-7f80-9a1b-2c3d4e5f6a7b";
+const SHOWCASE_ID = "sc_0192b3c4-d5e6-7f80-9a1b-2c3d4e5f6a7b";
 
 function makeClient(): PipelexApiClient {
   return new PipelexApiClient({ baseUrl: BASE_URL, apiKey: "test-token" });
@@ -88,6 +89,41 @@ const METHOD_ID_ROUTES: IdRoute[] = [
     (client, id) => client.setMethodLayoutsOff(id, []),
     (segment) => `${METHOD_URL(segment)}/layouts-off`,
   ],
+  [
+    "listMethodDraftLayouts",
+    (client, id) => client.listMethodDraftLayouts(id),
+    (segment) => `${METHOD_URL(segment)}/draft/layouts`,
+  ],
+  [
+    "freezeMethodShowcase",
+    (client, id) => client.freezeMethodShowcase(id, { run_id: "run_1", name: "n" }),
+    (segment) => `${METHOD_URL(segment)}/showcases`,
+  ],
+  [
+    "listMethodShowcases",
+    (client, id) => client.listMethodShowcases(id),
+    (segment) => `${METHOD_URL(segment)}/showcases`,
+  ],
+  [
+    "getMethodShowcase",
+    (client, id) => client.getMethodShowcase(id, SHOWCASE_ID),
+    (segment) => `${METHOD_URL(segment)}/showcases/${SHOWCASE_ID}`,
+  ],
+  [
+    "withdrawMethodShowcase",
+    (client, id) => client.withdrawMethodShowcase(id, SHOWCASE_ID),
+    (segment) => `${METHOD_URL(segment)}/showcases/${SHOWCASE_ID}`,
+  ],
+  [
+    "listMethodVersionShowcases",
+    (client, id) => client.listMethodVersionShowcases(id, 2),
+    (segment) => `${METHOD_URL(segment)}/versions/2/showcases`,
+  ],
+  [
+    "getMethodVersionShowcase",
+    (client, id) => client.getMethodVersionShowcase(id, 2, SHOWCASE_ID),
+    (segment) => `${METHOD_URL(segment)}/versions/2/showcases/${SHOWCASE_ID}`,
+  ],
   ["deleteMethod", (client, id) => client.deleteMethod(id), METHOD_URL],
   [
     "createMethodExample",
@@ -130,6 +166,24 @@ const EXAMPLE_ID_ROUTES: IdRoute[] = [
 
 /** The routes taking a run, an organization or an API key id. */
 const OTHER_ID_ROUTES: [what: string, ...route: IdRoute][] = [
+  [
+    "a showcase id",
+    "getMethodShowcase",
+    (client, id) => client.getMethodShowcase(METHOD_ID, id),
+    (segment) => `${METHOD_URL(METHOD_ID)}/showcases/${segment}`,
+  ],
+  [
+    "a showcase id",
+    "withdrawMethodShowcase",
+    (client, id) => client.withdrawMethodShowcase(METHOD_ID, id),
+    (segment) => `${METHOD_URL(METHOD_ID)}/showcases/${segment}`,
+  ],
+  [
+    "a showcase id",
+    "getMethodVersionShowcase",
+    (client, id) => client.getMethodVersionShowcase(METHOD_ID, 2, id),
+    (segment) => `${METHOD_URL(METHOD_ID)}/versions/2/showcases/${segment}`,
+  ],
   [
     "a run id",
     "getRunStatus",

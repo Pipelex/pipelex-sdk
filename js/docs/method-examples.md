@@ -12,6 +12,7 @@ An **example** is a named set of inputs saved on a stored method, so the method 
 | `inputs` | A JSON object: the inputs as a run of the method takes them. The platform answers them exactly as they were saved; the client reads an integer past `Number.MAX_SAFE_INTEGER` as a `bigint` holding its exact digits and every other number as a double, so `3.0` reads as `3` ([below](#numbers-in-an-examples-inputs)). |
 | `input_revision` | Starts at 1 and rises by one each time the inputs change. |
 | `latest_run_id` | The latest run of the current inputs, or `null`. It may name a run deleted since, whose read then answers `404`. |
+| `showcase_id` | The showcase frozen from the example's latest run, or `null`. Reserved: the platform answers `null` for now, and clears it with `latest_run_id` when the inputs change. A platform that predates it leaves it out, which means none ([method-showcases.md](./method-showcases.md#fields-reserved-for-later)). |
 | `created_by_user_id`, `created_at`, `updated_at` | Who saved it, when, and when it last changed. |
 | `kept_by_assistant` | Whether the build assistant keeps this example's inputs current with its test inputs: `true` on an example the assistant's save created, `false` on every other, and `false` from the first inputs change a person makes. A rename leaves it as it is ([below](#the-build-assistants-example)). |
 

@@ -525,6 +525,50 @@ class PublicMethodBodies:
     VALID_VERDICT: ClassVar[dict[str, Any]] = {"is_valid": True, "is_runnable": True}
 
 
+class MethodShowcaseBodies:
+    """A method's showcases, as the platform serializes them (`MethodShowcaseSummary`, `MethodShowcaseDetail`, the freeze's verdict).
+
+    `@pipelex/sdk`'s `tests/method-showcases.test.ts` answers its client with the same documents.
+    """
+
+    METHOD_ID: ClassVar[str] = "mt_receipts01"
+    SHOWCASE_ID: ClassVar[str] = "sc_0192b3c4-d5e6-7f80-9a1b-2c3d4e5f6a7b"
+    DIGEST: ClassVar[str] = "sha256:5f8e2c9a41d07b3e6c1a9f20d4b8e7c35a6d1f0e9b2c4a7d8e3f1b0c6a9d2e47"
+    SIGNATURE: ClassVar[str] = "X-Amz-Signature=fixture-signature"
+
+    #: The freeze's body, every member given.
+    FREEZE: ClassVar[dict[str, Any]] = {"run_id": "run_1", "name": "March receipt"}
+
+    SUMMARY: ClassVar[dict[str, Any]] = {
+        "showcase_id": SHOWCASE_ID,
+        "name": "March receipt",
+        "pipe_ref": "receipts.review_receipt",
+        "tree_digest": DIGEST,
+        "frozen_at": "2026-11-09T09:00:00+00:00",
+    }
+
+    #: An older showcase of the same method, as the holder's list reads it.
+    OLDER: ClassVar[dict[str, Any]] = {**SUMMARY, "showcase_id": "sc_0192b3c4-d5e6-7f80-9a1b-000000000000", "name": "February receipt"}
+
+    FILE: ClassVar[dict[str, Any]] = {
+        "address": f"pipelex-storage://org_1/{METHOD_ID}/showcases/{SHOWCASE_ID}/files/abc.pdf",
+        "file_name": "abc.pdf",
+        "media_type": "application/pdf",
+        "size_bytes": 2048,
+        "url": f"https://app-bucket.s3.amazonaws.com/org_1/{METHOD_ID}/showcases/{SHOWCASE_ID}/files/abc.pdf?{SIGNATURE}",
+    }
+
+    DOCUMENT: ClassVar[dict[str, Any]] = {
+        "inputs": {"receipt": {"url": FILE["address"]}, "total": 3, "rate": 3.5},
+        "main_stuff": {"merchant": "Corner Bakery"},
+        "input_form": {"receipts.review_receipt": {}},
+        "output_form": {"receipts.review_receipt": {}},
+        "pipe_io_contracts": {"receipts.review_receipt": {}},
+    }
+
+    DETAIL: ClassVar[dict[str, Any]] = {**SUMMARY, "document": DOCUMENT, "files": [FILE]}
+
+
 class MethodExampleBodies:
     """A method's saved examples, as the platform serializes them (`MethodExample`, `MethodExamplePage`).
 
@@ -543,6 +587,7 @@ class MethodExampleBodies:
         "inputs": INPUTS,
         "input_revision": 2,
         "latest_run_id": "run_1",
+        "showcase_id": None,
         "created_by_user_id": "user_1",
         "created_at": "2026-10-12T09:00:00+00:00",
         "updated_at": "2026-10-12T10:00:00+00:00",

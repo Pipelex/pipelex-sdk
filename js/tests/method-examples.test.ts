@@ -58,6 +58,7 @@ const EXAMPLE: MethodExample = {
   inputs: { receipt: { url: "pipelex-storage://org_1/receipt.pdf" }, total: 3, rate: 3.5 },
   input_revision: 2,
   latest_run_id: "run_1",
+  showcase_id: null,
   created_by_user_id: "user_1",
   created_at: "2026-10-12T09:00:00+00:00",
   updated_at: "2026-10-12T10:00:00+00:00",
@@ -951,6 +952,7 @@ const DEFECTIVE_EXAMPLES: [label: string, example: unknown, field: string, expec
   ["no created_by_user_id", exampleWith("created_by_user_id"), "created_by_user_id", "a string"],
   ["no created_at", exampleWith("created_at"), "created_at", "a string"],
   ["no updated_at", exampleWith("updated_at"), "updated_at", "a string"],
+  ["a showcase_id as a number", exampleWith("showcase_id", 4), "showcase_id", "a string or null"],
   ["no kept_by_assistant", exampleWith("kept_by_assistant"), "kept_by_assistant", "a boolean"],
   [
     "a kept_by_assistant as a string",
@@ -991,6 +993,22 @@ describe.each(EXAMPLE_READS)("an example %s answers", (_name, route, answer, whe
     expect((err as ApiResponseError).message).toContain(
       `${where} whose \`input_revision\` is not an integer`,
     );
+  });
+});
+
+describe("an example's showcase", () => {
+  it.each([
+    ["absent, as a platform that predates it answers", undefined, undefined],
+    ["null", null, null],
+    ["a showcase id", "sc_1", "sc_1"],
+  ])("reads a showcase_id that is %s", async (_label, value, expected) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, exampleWith("showcase_id", value)),
+    );
+
+    const example = await makeClient().getMethodExample(METHOD_ID, EXAMPLE.example_id);
+
+    expect(example.showcase_id).toBe(expected);
   });
 });
 

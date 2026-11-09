@@ -346,6 +346,32 @@ describe("copyMethod — the verdict", () => {
     expect(result.stored_files_copied).toBe(1);
   });
 
+  it("reads the reserved counts of showcases and layouts as the platform answers them", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { ...COPIED, showcases_copied: 1, layouts_copied: 2 }),
+    );
+
+    const result = await makeClient().copyMethod("mt_receipts01", {
+      destination_org_id: "org_team",
+    });
+
+    if (result.outcome !== "copied") throw new Error("expected a copy");
+    expect(result.showcases_copied).toBe(1);
+    expect(result.layouts_copied).toBe(2);
+  });
+
+  it("leaves the two counts absent from a platform that predates them", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, COPIED));
+
+    const result = await makeClient().copyMethod("mt_receipts01", {
+      destination_org_id: "org_team",
+    });
+
+    if (result.outcome !== "copied") throw new Error("expected a copy");
+    expect(result.showcases_copied).toBeUndefined();
+    expect(result.layouts_copied).toBeUndefined();
+  });
+
   it("hands back a refusal naming every reference the destination cannot read", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, REFUSED));
 

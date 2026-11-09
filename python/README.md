@@ -198,6 +198,22 @@ print(len(stored_layouts.items))
 await client.set_method_layouts_off("mt_123", ["composer"])
 ```
 
+### Freeze and read a method's showcases
+
+A showcase is a completed run frozen with a private copy of its files, which readers of a published version look at without spending credit ([`docs/method-showcases.md`](docs/method-showcases.md)):
+
+```python
+from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.method_showcase_models import MethodShowcaseRefused
+
+async with PipelexAPIClient() as client:
+    verdict = await client.freeze_method_showcase("mt_123", run_id="run_123", name="A first example")
+    if isinstance(verdict, MethodShowcaseRefused):
+        print(verdict.reason, verdict.message)
+    showcases = await client.list_method_version_showcases("mt_123", 3)
+    print([showcase.name for showcase in showcases.items])
+```
+
 ### Browse the template catalog
 
 The template catalog is the public methods every organization reads, in the order the platform serves, with the categories at least one template shows and each card's thumbnails behind short-lived links; `list_method_categories` reads the catalog's whole list of categories. Each category carries its `labels` by language tag and may lack a language, in which case a client shows its English `label`. Another organization's public method reads in a narrower shape, a `PublicMethodDetail` holding its latest published version and nothing of its draft, which runs and copies like any method; a public method's publish adds refusals of its own, still verdicts ([`docs/public-methods.md`](docs/public-methods.md)):

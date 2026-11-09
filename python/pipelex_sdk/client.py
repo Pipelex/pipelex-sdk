@@ -109,6 +109,12 @@ from pipelex_sdk.errors import (
 )
 from pipelex_sdk.execute_result import PipelexExecuteResult, results_from_execute
 from pipelex_sdk.method_layout_models import MethodLayout, MethodLayoutList
+from pipelex_sdk.method_showcase_models import (
+    MethodShowcaseDetail,
+    MethodShowcaseFreezeResult,
+    MethodShowcaseFreezeResultAdapter,
+    MethodShowcaseList,
+)
 from pipelex_sdk.model_reference_models import ModelCheckCategory, ModelReferenceVerdict, ModelReferenceVerdictAdapter
 from pipelex_sdk.prepare_inputs import PreparedInputs
 from pipelex_sdk.prepare_inputs import prepare_inputs as _prepare_inputs_impl
@@ -255,7 +261,8 @@ _REQUEST_TIMEOUT_OVERRIDE: ContextVar[float | None] = ContextVar("_REQUEST_TIMEO
 _MAY_START_RUN: ContextVar[bool] = ContextVar("_MAY_START_RUN", default=False)
 
 # The idempotency key of the `start`, the `copy_method`, the `store_method_layout`, the `set_method_layouts_off`, the
-# `rotate_webhook_secret` or the `replay_run_webhook_delivery` in flight, which `_send` sends as the `Idempotency-Key` header. The base builds the
+# `freeze_method_showcase`, the `withdraw_method_showcase`, the `rotate_webhook_secret` or the `replay_run_webhook_delivery` in flight, which
+# `_send` sends as the `Idempotency-Key` header. The base builds the
 # start's request deep inside its own `start`, so the key travels as a context variable, kept to the task that set it
 # as the time limit above is, and set only around the one request each of those methods sends.
 _IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar("_IDEMPOTENCY_KEY", default=None)
@@ -668,8 +675,8 @@ class PipelexAPIClient(MthdsAPIClient):
         Inside `_reading_inherited_answer` it also records the answer, which the inherited route then
         parses, so that an answer that route cannot read is reported as every other route reports it. Inside
         `_creating_run`, the error says whether the run the request may create may have started. While `start`,
-        `copy_method`, `store_method_layout`, `set_method_layouts_off`, `rotate_webhook_secret` or
-        `replay_run_webhook_delivery` holds an idempotency key
+        `copy_method`, `store_method_layout`, `set_method_layouts_off`, `freeze_method_showcase`,
+        `withdraw_method_showcase`, `rotate_webhook_secret` or `replay_run_webhook_delivery` holds an idempotency key
         (`_IDEMPOTENCY_KEY`), the request carries it as the `Idempotency-Key` header.
         """
         timeout = _REQUEST_TIMEOUT_OVERRIDE.get()
@@ -716,8 +723,8 @@ class PipelexAPIClient(MthdsAPIClient):
         with; this method streams the answer and reads its body itself, so that such a body is reported as the
         answer it is (`_undecodable_answer`), with its status and its headers. The headers are the base's
         (`Accept`, `User-Agent`, and `Content-Type` beside a body), plus the key the requests that carry one send,
-        `start`'s, `copy_method`'s, `store_method_layout`'s, `set_method_layouts_off`'s, `rotate_webhook_secret`'s and
-        `replay_run_webhook_delivery`'s:
+        `start`'s, `copy_method`'s, `store_method_layout`'s, `set_method_layouts_off`'s, `freeze_method_showcase`'s,
+        `withdraw_method_showcase`'s, `rotate_webhook_secret`'s and `replay_run_webhook_delivery`'s:
         a unit test holds
         them to the ones the base's `_send` sends, so a header the base adds later fails that test rather than going
         missing here.
@@ -2975,6 +2982,218 @@ class PipelexAPIClient(MthdsAPIClient):
         endpoint = f"{_method_path(method_id, call=call)}/versions/{version}/layouts"
         return await self._request_product("GET", endpoint, read=MethodLayoutList.model_validate)
 
+    async def list_method_draft_layouts(self, method_id: str) -> MethodLayoutList:
+        """The layouts stored for the content of a method's draft — `GET /v1/methods/{id}/draft/layouts`.
+
+        Newest first, `items` empty for an empty draft or a draft none was designed for. A layout is keyed by its
+        content, so a draft holding a published tree finds that tree's layouts here, and a builder sees the designs of
+        what it is editing. It reads for the organization that holds the method alone, since a draft is its holder's.
+
+        Args:
+            method_id: The method's bare catalog id.
+
+        Returns:
+            A `MethodLayoutList`, whose `items` hold each entry that reads as a `MethodLayout`: one that does not is left
+            out.
+
+        Raises:
+            RequestArgumentError: `method_id` is refused as every method route refuses it; nothing is sent.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for a method the organization does not hold, another
+                organization's public one included; `409` `pipelex.catalog.being_deleted` while its erasure is pending,
+                under way or stopped. A `200` whose `items` is not a list is an answer the SDK cannot read, raised as an
+                `ApiResponseError` too.
+        """
+        endpoint = f"{_method_path(method_id, call='list_method_draft_layouts')}/draft/layouts"
+        return await self._request_product("GET", endpoint, read=MethodLayoutList.model_validate)
+
+    async def freeze_method_showcase(
+        self, method_id: str, *, run_id: str, name: str, idempotency_key: str | None = None
+    ) -> MethodShowcaseFreezeResult:
+        """Freeze a completed run of a method into a showcase — `POST /v1/methods/{id}/showcases`.
+
+        A showcase is real output, frozen: the run's inputs, its main output, the forms and contracts that describe
+        them, and a private copy of every stored file they name. It is keyed by the digest of the run's tree, so a
+        builder freezes a run of the draft before publishing it, and another organization reads it only through a
+        published version holding that tree. The run must be this method's, completed and with stored results, and its
+        tree must be the draft's or the latest published version's.
+
+        The write changes the method, so it takes an `admin` or a `member` of the method's organization. A freeze sent
+        again without a key is safe in itself, since freezing a run already frozen answers `unchanged`.
+
+        Args:
+            method_id: The method's bare catalog id.
+            run_id: The `pipeline_run_id` of the completed run of this method to freeze.
+            name: The showcase's name, 1 to 200 characters and not blank.
+            idempotency_key: The write's idempotency key, 1 to 255 visible ASCII characters, kept across that write's
+                retries; `None` sends none.
+
+        Returns:
+            A `MethodShowcaseFreezeResult` discriminated on `outcome` — branch on it: `MethodShowcaseFrozen` with the new
+            `showcase`, `MethodShowcaseUnchanged` with the one that stands, when this run is already a showcase, whatever
+            has happened to its tree since, the name in the request being ignored, and `MethodShowcaseRefused` with a
+            `reason` and a `message`, nothing written (`MethodShowcaseRefusalReason`, read open, so a later reason
+            arrives as its raw string).
+
+        Raises:
+            RequestArgumentError: `method_id` is refused as every method route refuses it, `run_id` or `name` is not a
+                non-empty `str`, or `idempotency_key` is not 1 to 255 visible ASCII characters; nothing is sent.
+            ApiResponseError: When no verdict was produced: `403` `auth.forbidden` for a `runner`; `404`
+                `pipelex.catalog.not_found` for a method the organization does not hold; `409`
+                `pipelex.catalog.being_deleted` while its erasure is pending, under way or stopped; `422`
+                `request.invalid` for a body that does not validate; and `503` `runtime.unavailable`, with `retry` `yes`,
+                past the freeze's deadline. An answer that is none of the verdict's arms is an answer the SDK cannot
+                read, raised as an `ApiResponseError` too.
+        """
+        call = "freeze_method_showcase"
+        endpoint = f"{_method_path(method_id, call=call)}/showcases"
+        body = {
+            "run_id": _require_non_empty_id(run_id, call=call, what=_SHOWCASE_RUN_ID_ARGUMENT),
+            "name": _require_non_empty_id(name, call=call, what=_SHOWCASE_NAME_ARGUMENT),
+        }
+        checked_idempotency_key = _idempotency_key_of(idempotency_key, request="freeze the showcase")
+        key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
+        try:
+            return await self._request_product("POST", endpoint, body=body, read=MethodShowcaseFreezeResultAdapter.validate_python)
+        finally:
+            _IDEMPOTENCY_KEY.reset(key_token)
+
+    async def withdraw_method_showcase(self, method_id: str, showcase_id: str, *, idempotency_key: str | None = None) -> None:
+        """Withdraw a showcase — `DELETE /v1/methods/{id}/showcases/{showcase_id}`.
+
+        The platform answers `204`, the row going first, so every read closes at once, and then its stored document and
+        files. It runs no check, even on a public method's last showcase, because taking down something published by
+        mistake is never refused; the method then stays public and its next publish needs a showcase. What another
+        organization already copied stays theirs.
+
+        A withdrawal sent again without a key answers a `404`, so a withdrawal whose answer was lost, on a client timeout
+        for instance, reads as a failure: under the same key the hosted API answers the retry with the first write's
+        stored answer and runs nothing, by the rule `store_method_layout` describes.
+
+        Args:
+            method_id: The method's bare catalog id.
+            showcase_id: The showcase's `showcase_id`.
+            idempotency_key: The write's idempotency key, 1 to 255 visible ASCII characters, kept across that write's
+                retries; `None` sends none.
+
+        Raises:
+            RequestArgumentError: `method_id` is refused as every method route refuses it, `showcase_id` is empty, `.` or
+                `..`, holds a lone surrogate, or is not a `str`, or `idempotency_key` is not 1 to 255 visible ASCII
+                characters; nothing is sent.
+            ApiResponseError: `404` `pipelex.catalog.not_found`, its `params.resource` `example`, when there is no such
+                showcase, one already withdrawn included; `403` `auth.forbidden` for a `runner`; and `422`
+                `request.invalid` for an id that is not one a showcase can have.
+        """
+        call = "withdraw_method_showcase"
+        endpoint = f"{_method_path(method_id, call=call)}/showcases/{_id_path_segment(showcase_id, call=call, what=_SHOWCASE_ID_ARGUMENT)}"
+        checked_idempotency_key = _idempotency_key_of(idempotency_key, request="withdraw the showcase")
+        key_token = _IDEMPOTENCY_KEY.set(checked_idempotency_key)
+        try:
+            await self._request_product_without_answer("DELETE", endpoint)
+        finally:
+            _IDEMPOTENCY_KEY.reset(key_token)
+
+    async def list_method_showcases(self, method_id: str) -> MethodShowcaseList:
+        """Every showcase of a method the caller's organization holds, across every tree, oldest first — `GET /v1/methods/{id}/showcases`.
+
+        It reads for the holding organization's members alone: another organization reads a `404`, public method or not,
+        and reads a public method's showcases through `list_method_version_showcases`.
+
+        Args:
+            method_id: The method's bare catalog id.
+
+        Returns:
+            A `MethodShowcaseList`, each entry naming its digest; an entry that does not read as a
+            `MethodShowcaseSummary` is left out.
+
+        Raises:
+            RequestArgumentError: `method_id` is refused as every method route refuses it; nothing is sent.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for a method the organization does not hold and `409`
+                `pipelex.catalog.being_deleted` while its erasure is pending, under way or stopped. A `200` whose `items`
+                is not a list is an answer the SDK cannot read, raised as an `ApiResponseError` too.
+        """
+        endpoint = f"{_method_path(method_id, call='list_method_showcases')}/showcases"
+        return await self._request_product("GET", endpoint, read=MethodShowcaseList.model_validate)
+
+    async def get_method_showcase(self, method_id: str, showcase_id: str) -> MethodShowcaseDetail:
+        """One showcase of a method the caller's organization holds, in full — `GET /v1/methods/{id}/showcases/{showcase_id}`.
+
+        It reads for the holding organization's members alone.
+
+        Args:
+            method_id: The method's bare catalog id.
+            showcase_id: The showcase's `showcase_id`.
+
+        Returns:
+            A `MethodShowcaseDetail`, with its frozen document and a short-lived link to each of its files.
+
+        Raises:
+            RequestArgumentError: `method_id` is refused as every method route refuses it, or `showcase_id` is empty,
+                `.` or `..`, holds a lone surrogate, or is not a `str`; nothing is sent.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for a method the organization does not hold and for a
+                showcase it does not have, the latter's `params.resource` being `example`; `409`
+                `pipelex.catalog.being_deleted` while its erasure is pending, under way or stopped. An answer that does
+                not read as a detail is an answer the SDK cannot read, raised as an `ApiResponseError` too, its signed
+                links redacted.
+        """
+        call = "get_method_showcase"
+        endpoint = f"{_method_path(method_id, call=call)}/showcases/{_id_path_segment(showcase_id, call=call, what=_SHOWCASE_ID_ARGUMENT)}"
+        return await self._request_product("GET", endpoint, read=MethodShowcaseDetail.model_validate, carries_links=True)
+
+    async def list_method_version_showcases(self, method_id: str, version: int) -> MethodShowcaseList:
+        """The showcases of the tree a published version holds, oldest first — `GET /v1/methods/{id}/versions/{n}/showcases`.
+
+        For every reader of that version, another organization's on a public method included. `items` is empty when none
+        is frozen. A showcase of a tree no published version holds is never read through this route.
+
+        Args:
+            method_id: The method's bare catalog id.
+            version: The number of the published version, a positive integer.
+
+        Returns:
+            A `MethodShowcaseList`; an entry that does not read as a `MethodShowcaseSummary` is left out.
+
+        Raises:
+            RequestArgumentError: `version` is not a positive integer — a `bool`, a `float` such as `2.0`, a numeric
+                string and anything else that is not an `int` included — or `method_id` is refused as every method route
+                refuses it; nothing is sent.
+            ApiResponseError: `404` `pipelex.catalog.not_found` for an unknown method or another organization's internal
+                one, its `params.resource` `method`, and for a version the method never published, its `params.resource`
+                `version`; `409` `pipelex.catalog.being_deleted` while the erasure of the caller's own method is pending,
+                under way or stopped. A `200` whose `items` is not a list is an answer the SDK cannot read, raised as an
+                `ApiResponseError` too.
+        """
+        endpoint = _method_version_showcases_path(method_id, version, call="list_method_version_showcases")
+        return await self._request_product("GET", endpoint, read=MethodShowcaseList.model_validate)
+
+    async def get_method_version_showcase(self, method_id: str, version: int, showcase_id: str) -> MethodShowcaseDetail:
+        """One showcase of the tree a published version holds, in full — `GET /v1/methods/{id}/versions/{n}/showcases/{showcase_id}`.
+
+        A showcase of another tree reads as not found, so nobody outside the holding organization reaches one until a
+        published version holds its tree.
+
+        Args:
+            method_id: The method's bare catalog id.
+            version: The number of the published version, a positive integer.
+            showcase_id: The showcase's `showcase_id`.
+
+        Returns:
+            A `MethodShowcaseDetail`, with its frozen document and a short-lived link to each of its files.
+
+        Raises:
+            RequestArgumentError: `version` is not a positive integer, `method_id` is refused as every method route
+                refuses it, or `showcase_id` is empty, `.` or `..`, holds a lone surrogate, or is not a `str`; nothing is
+                sent.
+            ApiResponseError: The refusals of `list_method_version_showcases`, and a `404` `pipelex.catalog.not_found`
+                whose `params.resource` is `example` for a showcase that tree does not hold. An answer that does not read
+                as a detail is an answer the SDK cannot read, raised as an `ApiResponseError` too, its signed links
+                redacted.
+        """
+        call = "get_method_version_showcase"
+        endpoint = (
+            f"{_method_version_showcases_path(method_id, version, call=call)}/{_id_path_segment(showcase_id, call=call, what=_SHOWCASE_ID_ARGUMENT)}"
+        )
+        return await self._request_product("GET", endpoint, read=MethodShowcaseDetail.model_validate, carries_links=True)
+
     async def set_method_layouts_off(self, method_id: str, catalogs: list[str], *, idempotency_key: str | None = None) -> MethodData:
         """Set which catalogs of a method have their layouts switched off — `PUT /v1/methods/{id}/layouts-off`.
 
@@ -3082,7 +3301,8 @@ class PipelexAPIClient(MthdsAPIClient):
 
         Returns:
             A `MethodCopyResult` discriminated on `outcome` — branch on it: `MethodCopied` with the copy as `method`,
-            `examples_copied` and `stored_files_copied`; `MethodCopyRefused` with the `reason`
+            `examples_copied`, `stored_files_copied` and the two counts reserved for showcases, `showcases_copied` and
+            `layouts_copied`; `MethodCopyRefused` with the `reason`
             `bundle_names_other_storage`, a `message` and every `references` entry (`path`, `uri`) a `.mthds` file
             of the tree holds that the destination cannot read and, in a duplicate, that names a file under the
             original's run files, which erasing the original would remove, nothing written.
@@ -4823,17 +5043,17 @@ def _json_body(body: object) -> bytes:
 
 
 def _idempotency_key_of(value: object, *, request: str = "start the run") -> str | None:
-    """The idempotency key a start, a method copy, a layout write, a secret rotation or a delivery replay sends, or
-    `None` when the caller gave none.
+    """The idempotency key a start, a method copy, a layout write, a showcase write, a secret rotation or a delivery
+    replay sends, or `None` when the caller gave none.
 
     A key that is not a string of 1 to 255 visible ASCII characters is refused rather than dropped, an empty
     one included, since a request sent without the key its caller gave would lose the protection the caller
     asked for without a word. `request` says what the request does, as the refusal's last sentence names it
-    ("start the run", "copy the method", "store the layout", "set the layouts off", "rotate the secret", "replay the
-    delivery"). Typed `object`, as `_normalized_selector` is, because this is the runtime boundary an untyped caller reaches. The characters are
-    checked before the length, which then counts ASCII characters alone, so this message and `@pipelex/sdk`'s, which
-    counts a character outside ASCII differently, read alike for every key; neither quotes the key, which a caller
-    may derive from something private.
+    ("start the run", "copy the method", "store the layout", "set the layouts off", "freeze the showcase", "withdraw the
+    showcase", "rotate the secret", "replay the delivery"). Typed `object`, as `_normalized_selector` is, because this
+    is the runtime boundary an untyped caller reaches. The characters are checked before the length, which then counts
+    ASCII characters alone, so this message and `@pipelex/sdk`'s, which counts a character outside ASCII differently,
+    read alike for every key; neither quotes the key, which a caller may derive from something private.
 
     Raises:
         RequestArgumentError: The key is present and is not 1 to 255 visible ASCII characters.
@@ -5182,6 +5402,18 @@ _LAYOUT_LIST_VERSION_ARGUMENT = _Argument(name="version", what="a version number
 #: What the list of a write of the layouts switched off is, as a refusal of it names it.
 _LAYOUTS_OFF_CATALOGS_ARGUMENT = _Argument(name="catalogs", what="the ids of the catalogs to switch off as a list, the whole list, empty for none")
 
+#: What a showcase id is, as a refusal of it names it.
+_SHOWCASE_ID_ARGUMENT = _Argument(name="showcase_id", what="a showcase id, the showcase's non-empty `showcase_id`")
+
+#: What the version of a read of a version's showcases is, as a refusal of it names it.
+_SHOWCASE_VERSION_ARGUMENT = _Argument(name="version", what="a version number, the published version whose showcases to read, a positive integer")
+
+#: What a freeze's run id is, as a refusal of it names it.
+_SHOWCASE_RUN_ID_ARGUMENT = _Argument(name="run_id", what="a run id, the non-empty `pipeline_run_id` of the completed run to freeze")
+
+#: What a freeze's name is, as a refusal of it names it.
+_SHOWCASE_NAME_ARGUMENT = _Argument(name="name", what="a name for the showcase, a non-empty string")
+
 #: The ids that are dot segments, which the URL resolves before the request leaves.
 _DOT_SEGMENTS = frozenset({".", ".."})
 
@@ -5529,6 +5761,22 @@ def _method_example_path(method_id: str, example_id: str, *, call: str) -> str:
     """
     path = _method_path(method_id, call=call)
     return f"{path}/examples/{_id_path_segment(example_id, call=call, what=_EXAMPLE_ID_ARGUMENT)}"
+
+
+def _method_version_showcases_path(method_id: str, version: int, *, call: str) -> str:
+    """The path of a published version's showcases, `methods/{id}/versions/{n}/showcases`.
+
+    Each of the bare catalog id and the version is refused before anything is sent.
+
+    Raises:
+        RequestArgumentError: `method_id` is refused as `_method_path` refuses it, or `version` is not a positive `int`, a
+            `bool` and a `float` such as `2.0` included.
+    """
+    # Checked as an `object`, as `get_method_version` checks it: only an `int` puts a version number in the path.
+    candidate = cast("object", version)
+    if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 1:
+        raise _argument_refusal(call, _SHOWCASE_VERSION_ARGUMENT, repr(version), reason="not_a_positive_integer")
+    return f"{_method_path(method_id, call=call)}/versions/{version}/showcases"
 
 
 def _artifact_selection(artifacts: Sequence[RunArtifact] | None) -> tuple[RunArtifact, ...] | None:
