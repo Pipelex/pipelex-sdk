@@ -444,6 +444,12 @@ export interface MethodDraftInput extends MethodTreeInput {
 export interface MethodRenameInput {
   /** The method's new name, non-empty. */
   name: string;
+  /**
+   * The name this rename expects to replace. Given, the rename lands only while the method still
+   * holds it, and is otherwise a `409` `pipelex.catalog.update_conflict` naming `expected_name`
+   * with nothing written. Omitted, the rename is unconditional.
+   */
+  expected_name?: string;
 }
 
 /** The publish — `publishMethod`, `POST /v1/methods/{id}/publish`. */

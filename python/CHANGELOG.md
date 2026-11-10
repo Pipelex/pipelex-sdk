@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.67.0] - 2026-11-10
+
+### Added
+
+- **A conditional rename**: `rename_method` takes an optional keyword `expected_name`, sent to `PATCH /v1/methods/{id}`, and the rename then lands only while the method still holds that name, a `409` `pipelex.catalog.update_conflict` naming `expected_name` otherwise, with nothing written.
+
 ## [v0.66.0] - 2026-11-09
 
 ### Added
