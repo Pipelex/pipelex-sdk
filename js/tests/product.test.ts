@@ -166,6 +166,58 @@ describe("methods catalog", () => {
     expect(new URL(lastRequest(spy).url).searchParams.has("published")).toBe(false);
   });
 
+  it.each([
+    ["me", "created_by=me"],
+    ["user_01ABC", "created_by=user_01ABC"],
+  ])("forwards createdBy: %s as %s, beside q and published", async (createdBy, expected) => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
+
+    await client.listMethods({ q: "invoice", published: true, createdBy, limit: 10 });
+
+    expect(lastRequest(spy).url).toBe(
+      `http://localhost:8081/v1/methods?q=invoice&published=true&${expected}&limit=10`,
+    );
+  });
+
+  it("omits created_by entirely when createdBy is unset", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse(200, { items: [], next_cursor: null }));
+
+    await client.listMethods({ q: "invoice", published: false });
+
+    expect(new URL(lastRequest(spy).url).searchParams.has("created_by")).toBe(false);
+  });
+
+  it("types the author on a row as an optional string", () => {
+    expectTypeOf<MethodSummary["created_by_user_id"]>().toEqualTypeOf<string | undefined>();
+  });
+
+  it("hands back each row's author, and a row from an older platform without one", async () => {
+    const withAuthor: MethodSummary = {
+      method_id: "m1",
+      name: "Mine",
+      description: null,
+      created_at: "2026-11-10T10:00:00Z",
+      created_by_user_id: "user_01ABC",
+    };
+    const withoutAuthor = { method_id: "m2", name: "Older", description: null, created_at: "t" };
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse(200, { items: [withAuthor, withoutAuthor], next_cursor: null }),
+    );
+
+    const page = await client.listMethods({ createdBy: "me" });
+
+    expect(page.items).toEqual([withAuthor, withoutAuthor]);
+    expect(page.items[0]!.created_by_user_id).toBe("user_01ABC");
+    expect(page.items[1]!.created_by_user_id).toBeUndefined();
+  });
+
   it("types the publish state on a row as optional and nullable", () => {
     expectTypeOf<MethodSummary["latest_version"]>().toEqualTypeOf<number | null | undefined>();
     expectTypeOf<MethodSummary["latest_published"]>().toEqualTypeOf<
@@ -296,6 +348,30 @@ describe("methods catalog", () => {
     expect(seen).toEqual(["m1"]);
     const urls = spy.mock.calls.map((call) => new URL((call as [string, RequestInit])[0]));
     expect(urls.map((url) => url.searchParams.get("published"))).toEqual(["false", "false"]);
+    expect(urls.map((url) => url.searchParams.get("cursor"))).toEqual([null, "c1"]);
+  });
+
+  it("iterateMethods sends createdBy on every page it follows", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, { items: [], next_cursor: "c1" }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          items: [{ method_id: "m1", name: "A", created_at: "t", created_by_user_id: "u1" }],
+          next_cursor: null,
+        }),
+      );
+
+    const seen: string[] = [];
+    for await (const method of client.iterateMethods({ createdBy: "me", q: "invoice" })) {
+      seen.push(method.method_id);
+    }
+
+    expect(seen).toEqual(["m1"]);
+    const urls = spy.mock.calls.map((call) => new URL((call as [string, RequestInit])[0]));
+    expect(urls.map((url) => url.searchParams.get("created_by"))).toEqual(["me", "me"]);
+    expect(urls.map((url) => url.searchParams.get("q"))).toEqual(["invoice", "invoice"]);
     expect(urls.map((url) => url.searchParams.get("cursor"))).toEqual([null, "c1"]);
   });
 

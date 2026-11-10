@@ -255,7 +255,7 @@ import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 // It counts TOTAL pages, not empty ones. An earlier version capped consecutive
 // empty pages, which is the wrong axis: an empty page whose cursor ADVANCED is
 // real progress through the index — the platform applies the list filters
-// (`q` and `published` on methods, `createdBy` and `status` on runs) after a
+// (`q`, `published` and `createdBy` on methods, `createdBy` and `status` on runs) after a
 // bounded read per request, so a sparse match legitimately yields runs of
 // empty pages — and capping them turns a valid sparse search into a thrown
 // error. The stuck case is already caught by the no-progress check (the
@@ -3023,16 +3023,19 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Rows are `MethodSummary`: no `mthds`, no `python`, no `updated_at`. Reach
    * for `getMethod(id)` when you need a method's source.
    *
-   * `q` is applied server-side over the whole catalog, not over the page, and so is
+   * `q` is applied server-side over the whole catalog, not over the page, and so are
    * `published` (`true` for the methods with a published version, `false` for those never
-   * published). Each row carries the method's publish state (`latest_version`,
-   * `latest_published`, `draft_digest`). Both filters run after the index read, so a page can
-   * come back empty and still carry a `nextCursor`: keep following it until it is `null`.
+   * published) and `createdBy` (`"me"` for the caller's own methods, or a member's user id, sent
+   * as `created_by`); the three combine. Each row carries the method's publish state
+   * (`latest_version`, `latest_published`, `draft_digest`) and who created it
+   * (`created_by_user_id`). The filters run after the index read, so a page can come back empty
+   * and still carry a `nextCursor`: keep following it until it is `null`.
    */
   async listMethods(query: ListMethodsQuery = {}): Promise<MethodPage> {
     const search = productQuery({
       q: query.q,
       published: query.published,
+      created_by: query.createdBy,
       limit: query.limit,
       cursor: query.cursor,
     });
@@ -3058,9 +3061,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * remove. If you truly want an array, `Array.fromAsync` makes that your
    * explicit choice.
    *
-   * It keeps going **through an empty page that carries a cursor**: under `q` or `published`
-   * such a page means "nothing matched in the slice just read", not "done". It stops on a
-   * `null` cursor or on a cursor the server failed to advance, and throws
+   * Takes the query `listMethods` takes, the cursor aside, and sends it with every page.
+   *
+   * It keeps going **through an empty page that carries a cursor**: under `q`, `published` or
+   * `createdBy` such a page means "nothing matched in the slice just read", not "done". It stops
+   * on a `null` cursor or on a cursor the server failed to advance, and throws
    * `PagingNotTerminatingError` past a page ceiling no real catalog reaches.
    */
   async *iterateMethods(

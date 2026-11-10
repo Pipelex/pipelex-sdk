@@ -126,6 +126,8 @@ const me = await client.getMe(); // GET /v1/me
 const page = await client.listMethods(); // GET /v1/methods — one page: { items, nextCursor }
 // Only the methods never published. A filtered page can be empty and still carry a nextCursor.
 const drafts = await client.listMethods({ published: false });
+// Only the caller's own methods ("me"), or one member's by user id; each row names its author.
+const mine = await client.listMethods({ createdBy: "me" });
 for await (const method of client.iterateMethods()) {
   // follows the cursor for callers that genuinely want the whole catalog
 }

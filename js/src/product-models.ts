@@ -331,12 +331,17 @@ export interface MethodDeletionAccepted {
  * unchanged (`draft_digest` is not `null` and equals `latest_published.tree_digest`), or
  * published with the draft ahead (they differ). The three fields are absent from a platform that
  * does not serve them.
+ *
+ * It also names who created the method (`created_by_user_id`), so a list can show each row's
+ * author from the organization's members, absent from a platform that does not serve it.
  */
 export interface MethodSummary {
   method_id: string;
   name: string;
   description?: string | null;
   created_at: string;
+  /** The canonical user id of the member who created the method; absent from an older platform. */
+  created_by_user_id?: string;
   /**
    * Set while an erasure cascade is running. A method mid-deletion stays IN the
    * list — so the UI can render it as "Deleting…" — while `getMethod` refuses
@@ -364,6 +369,14 @@ export interface ListMethodsQuery {
    * read, so a page can come back empty and still carry a `nextCursor`.
    */
   published?: boolean;
+  /**
+   * Only the methods one member created: `"me"` for the caller's own, resolved by the platform
+   * from the authenticated identity, or that member's user id; omitted, every member's. Sent as
+   * `created_by`. It combines with `q` and `published`, and like them it filters after the index
+   * read, so a page can come back empty and still carry a `nextCursor`. A user id naming nobody
+   * lists nothing.
+   */
+  createdBy?: string;
   /** Page size. The API defaults to 50 and caps at 200. */
   limit?: number;
   /** Opaque `nextCursor` from the previous page. */
@@ -378,7 +391,7 @@ export interface ListMethodsQuery {
  * counting would mean reading the whole catalog, which is the cost paging
  * exists to avoid.
  *
- * Under `q` or `published` a page can hold fewer rows than `limit`, or none, and still carry
+ * Under `q`, `published` or `createdBy` a page can hold fewer rows than `limit`, or none, and still carry
  * a `nextCursor`: the filters run after the index read, so an empty page is not the end of
  * the list, and only a `null` cursor is. `iterateMethods` keeps following the cursor through
  * such a page.
