@@ -2116,6 +2116,7 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         q: str | None = None,
         published: bool | None = None,
+        created_by: str | None = None,
         limit: int | None = None,
         cursor: str | None = None,
     ) -> MethodPage:
@@ -2127,18 +2128,22 @@ class PipelexAPIClient(MthdsAPIClient):
             published: `True` lists only the methods with a published version, `False` only those
                 never published, sent as `published=true` or `published=false`; `None` lists both.
                 It combines with `q`.
+            created_by: Only the methods one member created: `"me"` for the caller's own, resolved by
+                the platform from the authenticated identity, or that member's user id, sent as
+                `created_by`; `None` lists every member's. It combines with `q` and `published`, and a
+                user id naming nobody lists nothing.
             limit: Page size. The API supplies the default and caps the maximum.
             cursor: The `next_cursor` of the previous page, passed back opaquely.
 
         Returns:
             A `MethodPage` of `MethodSummary` rows, ordered by creation, newest first, each carrying
-            the method's publish state (`latest_version`, `latest_published`, `draft_digest`).
-            `next_cursor` is `None` on the last page. `q` and `published` filter after the index
-            read, so a page can come back empty and still carry a `next_cursor`: keep following it.
-            For the whole catalog, prefer `iterate_methods`, which follows the cursors and cannot
-            truncate.
+            the method's publish state (`latest_version`, `latest_published`, `draft_digest`) and who
+            created it (`created_by_user_id`). `next_cursor` is `None` on the last page. `q`,
+            `published` and `created_by` filter after the index read, so a page can come back empty
+            and still carry a `next_cursor`: keep following it. For the whole catalog, prefer
+            `iterate_methods`, which follows the cursors and cannot truncate.
         """
-        query = _product_query({"q": q, "published": _query_flag(published), "limit": limit, "cursor": cursor})
+        query = _product_query({"q": q, "published": _query_flag(published), "created_by": created_by, "limit": limit, "cursor": cursor})
         return await self._request_product("GET", f"methods{query}", read=MethodPage.model_validate)
 
     async def iterate_methods(
@@ -2146,6 +2151,7 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         q: str | None = None,
         published: bool | None = None,
+        created_by: str | None = None,
         limit: int | None = None,
     ) -> AsyncIterator[MethodSummary]:
         """Yield every saved method, following the cursors — `GET /v1/methods`.
@@ -2153,8 +2159,9 @@ class PipelexAPIClient(MthdsAPIClient):
         There is deliberately no `list_all_methods()`: an all-at-once helper needs a cap, and
         a cap is the silent truncation paging was introduced to remove.
 
-        The loop keeps going **through an empty page that carries a live cursor**, because `q`
-        and `published` are post-read filters over a bounded index slice per request, so
+        It takes the filters `list_methods` takes and sends them with every page. The loop keeps
+        going **through an empty page that carries a live cursor**, because `q`, `published` and
+        `created_by` are post-read filters over a bounded index slice per request, so
         `{items: [], next_cursor: "…"}` means "keep going", not "done". It stops when `next_cursor`
         is `None`, and also when the server hands back the cursor it was just sent — checked
         *before* yielding, so a stuck cursor never double-counts a page.
@@ -2164,7 +2171,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         async for method_summary in _follow_cursor(
             "Method",
-            lambda cursor: self.list_methods(q=q, published=published, limit=limit, cursor=cursor),
+            lambda cursor: self.list_methods(q=q, published=published, created_by=created_by, limit=limit, cursor=cursor),
         ):
             yield method_summary
 

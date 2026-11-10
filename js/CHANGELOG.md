@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Methods by their author**: `listMethods` and `iterateMethods` take `createdBy`, `"me"` for the caller's own methods or a member's user id, sent as `created_by` and combined with `q` and `published`, and each `MethodSummary` row carries `created_by_user_id`, the member who created the method, absent from a platform that predates it.
+
 ## [v0.67.0] - 2026-11-10
 
 ### Added
