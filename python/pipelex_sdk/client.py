@@ -2743,7 +2743,7 @@ class PipelexAPIClient(MthdsAPIClient):
                     break
         return received
 
-    async def rename_method(self, method_id: str, name: str) -> MethodData:
+    async def rename_method(self, method_id: str, name: str, *, expected_name: str | None = None) -> MethodData:
         """Rename a method — `PATCH /v1/methods/{id}`.
 
         The name belongs to the method, not to a version: a rename changes nothing else, moves no
@@ -2753,15 +2753,23 @@ class PipelexAPIClient(MthdsAPIClient):
         Args:
             method_id: The method's bare catalog id.
             name: The new name.
+            expected_name: The name this rename expects to replace. Given, the rename lands only while the
+                method still holds it; omitted, the rename is unconditional. A client applying a name nobody
+                typed, such as a proposed one, uses it so that a name a person set meanwhile is never overwritten.
 
         Raises:
-            ApiResponseError: `404` `pipelex.catalog.not_found`; `409` `pipelex.catalog.being_deleted`; `403`
+            ApiResponseError: `404` `pipelex.catalog.not_found`; `409` `pipelex.catalog.being_deleted`; `409`
+                `pipelex.catalog.update_conflict` naming `expected_name` when the method is no longer named so,
+                nothing written; `403`
                 for a read-only key; `422` for an empty name or one holding a lone surrogate; `413`
                 `request.too_large` for a name so long it would leave the method too large to publish; a
                 `503` that wrote nothing, safe to retry, when draft writes kept landing under the rename.
         """
         return await self._request_product(
-            "PATCH", _method_path(method_id, call="rename_method"), body={"name": name}, read=MethodData.model_validate
+            "PATCH",
+            _method_path(method_id, call="rename_method"),
+            body={"name": name} if expected_name is None else {"name": name, "expected_name": expected_name},
+            read=MethodData.model_validate,
         )
 
     async def publish_method(self, method_id: str, *, expected_draft_updated_at: str) -> MethodPublishResult:

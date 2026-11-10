@@ -241,6 +241,38 @@ describe("renameMethod", () => {
 
     expect(onlyRequest(spy).body).toEqual({ name: "Renamed" });
   });
+
+  it("sends the name it expects to replace when given one", async () => {
+    const client = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, WIRE_METHOD));
+
+    await client.renameMethod("mt_receipts01", {
+      name: "Renamed",
+      expected_name: "Untitled Method",
+    });
+
+    expect(onlyRequest(spy).body).toEqual({ name: "Renamed", expected_name: "Untitled Method" });
+  });
+
+  it("throws the platform's 409 naming expected_name when the method was named meanwhile", async () => {
+    const client = makeClient();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      problemResponse("pipelex.catalog.update_conflict", 409, {
+        detail: "Method 'mt_receipts01' is no longer named as the rename expected.",
+        location: { field: "expected_name" },
+      }),
+    );
+
+    const err = await client
+      .renameMethod("mt_receipts01", { name: "Renamed", expected_name: "Untitled Method" })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(ApiResponseError);
+    const refused = err as ApiResponseError;
+    expect(refused.status).toBe(409);
+    expect(refused.code).toBe("pipelex.catalog.update_conflict");
+    expect(refused.problem.location?.field).toBe("expected_name");
+  });
 });
 
 describe("publishMethod", () => {

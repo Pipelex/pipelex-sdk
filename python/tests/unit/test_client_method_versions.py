@@ -264,6 +264,29 @@ class TestClientMethodVersions:
         # A rename moves no token.
         assert method.updated_at == MethodVersionBodies.TOKEN
 
+    def test_rename_method_sends_the_name_it_expects_to_replace(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=MethodVersionBodies.METHOD))
+
+        asyncio.run(api_client.rename_method("mt_receipts01", "Renamed", expected_name="Untitled Method"))
+
+        assert _sent_body(send) == {"name": "Renamed", "expected_name": "Untitled Method"}
+
+    def test_rename_method_raises_the_platforms_409_naming_expected_name(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        problem = problem_document("pipelex.catalog.update_conflict", 409) | {"location": {"field": "expected_name"}}
+        patch_send(api_client, wire_response(409, json_body=problem))
+
+        with pytest.raises(ApiResponseError) as exc_info:
+            asyncio.run(api_client.rename_method("mt_receipts01", "Renamed", expected_name="Untitled Method"))
+
+        assert exc_info.value.status == 409
+        assert exc_info.value.problem.code == MethodErrorCode.UPDATE_CONFLICT
+        assert exc_info.value.problem.location is not None
+        assert exc_info.value.problem.location.field == "expected_name"
+
     def test_rename_method_sends_a_name_holding_a_lone_surrogate_escaped_and_raises_the_platforms_422(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:

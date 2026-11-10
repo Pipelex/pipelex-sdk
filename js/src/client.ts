@@ -3752,10 +3752,16 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * `422` for an empty name or one holding a lone surrogate, `413` `request.too_large` for a name
    * so long it would leave the method too large to publish, and a `503` that wrote nothing, safe
    * to retry, when draft writes kept landing under the rename.
+   *
+   * `expected_name` makes the rename conditional on the name the caller read: a method no longer
+   * named so is a `409` `pipelex.catalog.update_conflict` whose `location.field` is
+   * `expected_name`, and nothing is written. A client applying a name nobody typed, such as a
+   * proposed one, uses it so that a name a person set meanwhile is never overwritten.
    */
   async renameMethod(methodId: string, input: MethodRenameInput): Promise<MethodData> {
     return this.requestMethodData("PATCH", methodPath(methodId, "renameMethod"), {
       name: input.name,
+      ...(input.expected_name === undefined ? {} : { expected_name: input.expected_name }),
     });
   }
 
