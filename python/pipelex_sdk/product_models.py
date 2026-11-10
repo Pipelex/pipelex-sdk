@@ -573,6 +573,9 @@ class MethodSummary(BaseModel):
     unchanged (`draft_digest` is not `None` and equals `latest_published.tree_digest`), or
     published with the draft ahead. The three fields read as `None` from a platform that does not
     serve them.
+
+    It also names who created the method (`created_by_user_id`), so a list can show each row's author
+    from the organization's members; `None` from a platform that does not serve it.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -581,6 +584,9 @@ class MethodSummary(BaseModel):
     name: str
     description: str | None = None
     created_at: str
+    created_by_user_id: str | None = None
+    """The canonical user id of the member who created the method; `None` from an older platform."""
+
     deletion_state: MethodDeletionState | None = None
 
     latest_version: StrictInt | None = None

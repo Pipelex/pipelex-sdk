@@ -155,6 +155,40 @@ class TestClientProduct:
 
         assert self._sent(send).url == f"{_BASE_URL}/v1/methods?q=invoice&{expected}&limit=10"
 
+    @pytest.mark.parametrize(("created_by", "expected"), [("me", "created_by=me"), ("user_01ABC", "created_by=user_01ABC")])
+    def test_list_methods_sends_created_by_beside_the_other_filters(self, mocker: MockerFixture, created_by: str, expected: str) -> None:
+        """`"me"` or a member's user id, sent as `created_by` and combined with `q` and `published`."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(client.list_methods(q="invoice", published=True, created_by=created_by, limit=10))
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/methods?q=invoice&published=true&{expected}&limit=10"
+
+    def test_list_methods_omits_created_by_when_unset(self, mocker: MockerFixture) -> None:
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [], "next_cursor": None}))
+
+        asyncio.run(client.list_methods(q="invoice", published=False))
+
+        assert self._sent(send).url == f"{_BASE_URL}/v1/methods?q=invoice&published=false"
+
+    def test_list_methods_parses_each_rows_author_and_a_row_without_one(self, mocker: MockerFixture) -> None:
+        """A row names who created the method; a row from an older platform reads its author as `None`."""
+        client = self._client()
+        with_author = {"method_id": "m1", "name": "Mine", "created_at": "t", "created_by_user_id": "user_01ABC"}
+        without_author = {"method_id": "m2", "name": "Older", "created_at": "t"}
+        page = {"items": [with_author, without_author], "next_cursor": None}
+        self._mock_send(mocker, client, _response(200, json_body=page))
+
+        result = asyncio.run(client.list_methods(created_by="me"))
+
+        first, second = result.items
+        assert first.created_by_user_id == "user_01ABC"
+        # A declared field, so it does not land in the extension-open overflow.
+        assert first.model_extra == {}
+        assert second.created_by_user_id is None
+
     def test_list_methods_parses_each_rows_publish_state(self, mocker: MockerFixture) -> None:
         """The three states a list tells apart from the row alone, `draft_digest` null on one of them."""
         client = self._client()

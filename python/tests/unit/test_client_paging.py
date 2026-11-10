@@ -1,7 +1,7 @@
 """Tests for the paged-list iterators — `iterate_methods` and `iterate_runs`.
 
 Both follow `next_cursor` until the server says stop, through one shared loop. Both lists can filter
-after the index read (`q` and `published` on methods, `created_by` and `status` on runs), so a
+after the index read (`q`, `published` and `created_by` on methods, `created_by` and `status` on runs), so a
 page can be empty with a live cursor, which is not the end. These pin that rule, the filters sent
 on every page, the stuck-cursor guard, and the runaway backstop.
 """
@@ -147,6 +147,26 @@ class TestClientPaging:
 
         assert [summary.method_id for summary in summaries] == ["m1"]
         assert [query.get("published") for query in _queries_sent(send)] == [["false"], ["false"]]
+        assert _cursors_sent(send) == [None, "c1"]
+
+    def test_iterate_methods_sends_created_by_on_every_page(
+        self,
+        api_client: PipelexAPIClient,
+        wire_response: ResponseBuilder,
+        patch_send: SendPatcher,
+    ) -> None:
+        send = patch_send(
+            api_client,
+            wire_response(200, json_body={"items": [], "next_cursor": "c1"}),
+            wire_response(200, json_body={"items": [_method("m1")], "next_cursor": None}),
+        )
+
+        summaries = asyncio.run(_drain_methods(api_client, created_by="me", q="invoice"))
+
+        assert [summary.method_id for summary in summaries] == ["m1"]
+        queries = _queries_sent(send)
+        assert [query.get("created_by") for query in queries] == [["me"], ["me"]]
+        assert [query.get("q") for query in queries] == [["invoice"], ["invoice"]]
         assert _cursors_sent(send) == [None, "c1"]
 
     def test_iterate_runs_continues_through_an_empty_page_with_a_live_cursor(
