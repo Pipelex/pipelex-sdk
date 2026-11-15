@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.68.0] - 2026-11-15
+
+### Changed
+
+- **Requires `mthds` 0.28.0, the release that follows MTHDS standard 9.0.0 (Breaking)**: the exact pin moves from `mthds==0.27.0` to `mthds==0.28.0`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. `mthds` 0.28.0 reports `MTHDS_STANDARD_VERSION` `9.0.0`, so a manifest's `mthds_version` of `^8.0.0`, `8.*` or an exact `8.x` no longer passes while `>=9.0.0` does, and reads problems against the core error registry `9.0.0`, whose codes did not change; `PROTOCOL_VERSION` stays at `2.0.1`. Nothing in `pipelex-sdk`'s own surface moves.
+
 ## [v0.67.1] - 2026-11-10
 
 ### Added
