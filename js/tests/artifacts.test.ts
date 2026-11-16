@@ -979,9 +979,18 @@ describe("downloadArtifacts", () => {
 
     const verdict = await downloadArtifacts(client, { run_id: RUN_ID, dir });
 
-    expect(client.resultCalls).toEqual([RUN_ID]);
-    // Only the walked scope's artifact is read: the platform re-signs nothing else.
-    expect(client.resultOptions[0]!.artifacts).toEqual(["main_stuff"]);
+    // The walked scope's artifact is read with its stored texts left as references; since the
+    // output holds a reference, the concepts that tell a stored text from a file are read beside it.
+    expect(client.resultCalls).toEqual([RUN_ID, RUN_ID]);
+    expect(client.resultOptions[0]).toMatchObject({
+      artifacts: ["main_stuff"],
+      loadStoredTexts: false,
+    });
+    expect(client.resultOptions[1]!.artifacts).toEqual([
+      "working_memory",
+      "output_form",
+      "input_form",
+    ]);
     expect(client.resolveCalls).toHaveLength(1);
     expect(client.resolveCalls[0]!.input).toEqual({ uris: [PICTURE_URI, REPORT_URI] });
     // The embedded public_url is never fetched: every link comes from the resolve.
@@ -994,6 +1003,7 @@ describe("downloadArtifacts", () => {
     expect(verdict.artifacts).toEqual([
       {
         uri: PICTURE_URI,
+        kind: "file",
         found_at: ["$.picture.url"],
         path: join(dir, "picture.png"),
         content_type: "image/png",
@@ -1002,6 +1012,7 @@ describe("downloadArtifacts", () => {
       },
       {
         uri: REPORT_URI,
+        kind: "file",
         found_at: ["$.report.url"],
         path: join(dir, "report"),
         content_type: null,
@@ -1192,6 +1203,7 @@ describe("downloadArtifacts", () => {
     expect(verdict.all_saved).toBe(false);
     expect(verdict.artifacts[1]).toEqual({
       uri: REPORT_URI,
+      kind: "file",
       found_at: ["$[1].url"],
       path: null,
       content_type: null,

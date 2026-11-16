@@ -1,0 +1,416 @@
+import asyncio
+import base64
+import json
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, quote, unquote, urlsplit
+
+import httpx
+import pytest
+from mthds.protocol.input_form import InputFormItem
+from pydantic import TypeAdapter
+from pytest_mock import MockerFixture
+
+from pipelex_sdk.artifact_models import BULK_RESOLVE_MAX_URIS, ArtifactScope, DownloadedKind, StoredTextLocation
+from pipelex_sdk.artifacts import (
+    artifact_filename,
+    collect_artifacts,
+    download_artifacts,
+    load_stored_texts,
+    locate_artifacts,
+    locate_stored_references,
+)
+from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.errors import StoredTextLoadError
+from pipelex_sdk.runs import RunArtifact, RunResultCompleted, RunResults, WaitForResultOptions
+from pipelex_sdk.stored_texts import (
+    STORED_TEXT_CONCEPT_REFS,
+    StoredTextKind,
+    is_stored_text_concept,
+    main_stuff_node,
+    stored_text_kind_of,
+    stored_text_kind_of_node,
+)
+
+_BASE_URL = "http://localhost:8081"
+_RUN_ID = "run-stored"
+_STORE = "https://store.example"
+_SCOPE = "pipelex-storage://org/method/run-stored/generated"
+_NODE: TypeAdapter[InputFormItem] = TypeAdapter(InputFormItem)
+
+_TEXT_NODE: dict[str, Any] = {"kind": "prose", "concept_ref": "native.Text", "required": True}
+_DOSSIER_NODE: dict[str, Any] = {
+    "kind": "object",
+    "concept_ref": "my_domain.Dossier",
+    "required": True,
+    "fields": [
+        {"kind": "prose", "name": "summary", "concept_ref": "native.Text", "required": True},
+        {"kind": "document", "name": "notes", "concept_ref": "native.Document", "required": True},
+    ],
+}
+
+
+def _stored_uri(digest: str, extension: str = "txt") -> str:
+    return f"{_SCOPE}/{digest}/value.{extension}"
+
+
+def _reference(uri: str, *, mime_type: str = "text/plain", preview: str = "The start…") -> dict[str, Any]:
+    return {"url": uri, "size": 4096, "mime_type": mime_type, "preview": preview}
+
+
+def _results(concept: str, main_stuff: Any, output_field: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A results body: the main stuff, its working memory, and an output form describing it."""
+    output_form = {} if output_field is None else {"my_domain.summarize": {"field": {**output_field, "name": "output"}}}
+    return {
+        "pipeline_run_id": _RUN_ID,
+        "main_stuff": main_stuff,
+        "working_memory": {"root": {"summary": {"concept": concept, "content": main_stuff}}, "aliases": {"main_stuff": "summary"}},
+        "output_form": output_form,
+        "input_form": {},
+    }
+
+
+class _Boundary:
+    """The mocked API and object store, and what each was asked."""
+
+    def __init__(
+        self,
+        mocker: MockerFixture,
+        client: PipelexAPIClient,
+        *,
+        body: dict[str, Any],
+        objects: dict[str, bytes] | None = None,
+        refusals: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        self.body = body
+        self.objects = objects or {}
+        self.refusals = refusals or {}
+        self.reads: list[str | None] = []
+        self.resolved: list[list[str]] = []
+        self.fetched: list[str] = []
+        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=self._send))
+        mocker.patch("pipelex_sdk.artifacts._new_storage_client", self._storage_client)
+
+    async def _send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        parts = urlsplit(url)
+        request = httpx.Request(method, url)
+        if parts.path == f"/v1/runs/{_RUN_ID}/results":
+            selection = parse_qs(parts.query).get("artifacts", [None])[0]
+            self.reads.append(selection)
+            if selection is not None and "main_stuff" not in selection.split(","):
+                picked: dict[str, Any] = {"pipeline_run_id": _RUN_ID}
+                for name in selection.split(","):
+                    picked[name] = self.body.get(name)
+                return httpx.Response(200, json=picked, request=request)
+            if selection is not None:
+                narrowed = {name: self.body[name] for name in ("pipeline_run_id", *selection.split(",")) if name in self.body}
+                return httpx.Response(200, json=narrowed, request=request)
+            return httpx.Response(200, json=self.body, request=request)
+        if parts.path == "/v1/resolve-storage-url/bulk":
+            uris: list[str] = json.loads(kwargs["content"])["uris"]
+            self.resolved.append(uris)
+            items = [
+                self.refusals.get(uri)
+                or {
+                    "uri": uri,
+                    "url": f"{_STORE}/{quote(uri, safe='')}?sig=1",
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "content_type": "text/plain",
+                    "error": None,
+                }
+                for uri in uris
+            ]
+            return httpx.Response(200, json={"items": items}, request=request)
+        msg = f"unexpected request {method} {url}"
+        raise AssertionError(msg)
+
+    def _store(self, request: httpx.Request) -> httpx.Response:
+        self.fetched.append(str(request.url))
+        uri = unquote(request.url.path.removeprefix("/"))
+        payload = self.objects.get(uri)
+        if payload is None:
+            return httpx.Response(404)
+        return httpx.Response(200, content=payload)
+
+    def _storage_client(self, timeout_seconds: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self._store), timeout=httpx.Timeout(timeout_seconds), follow_redirects=False)
+
+
+def _client() -> PipelexAPIClient:
+    return PipelexAPIClient(api_key="test-token", base_url=_BASE_URL)
+
+
+def _completed(state: Any) -> RunResults:
+    assert isinstance(state, RunResultCompleted)
+    return state.result
+
+
+class TestStoredTexts:
+    # ── concepts ─────────────────────────────────────────────────────
+
+    def test_names_the_four_natives_and_reads_a_refinement_chain(self) -> None:
+        assert STORED_TEXT_CONCEPT_REFS == ("native.Text", "native.Markdown", "native.Html", "native.JSON")
+        assert stored_text_kind_of("native.Markdown") == StoredTextKind.TEXT
+        assert stored_text_kind_of("native.Html") == StoredTextKind.HTML
+        assert stored_text_kind_of("legal.Memo", ["legal.Note", "native.JSON"]) == StoredTextKind.JSON
+        assert is_stored_text_concept("native.Document") is False
+        assert is_stored_text_concept("legal.Contract", ["native.Document"]) is False
+
+    @pytest.mark.parametrize(
+        ("node", "expected"),
+        [
+            pytest.param({"kind": "prose", "concept_ref": "legal.Clause", "required": True}, StoredTextKind.TEXT, id="description_only"),
+            pytest.param(
+                {"kind": "prose", "concept_ref": "legal.Special", "refines": ["legal.Clause"], "required": True},
+                StoredTextKind.TEXT,
+                id="refining_description_only",
+            ),
+            pytest.param({"kind": "text", "concept_ref": "legal.When", "refines": ["native.Time"], "required": True}, None, id="other_native"),
+            pytest.param({"kind": "text", "required": True}, None, id="bare_field_type"),
+            pytest.param({"kind": "object", "concept_ref": "legal.Contract", "required": True, "fields": []}, None, id="structured"),
+            pytest.param({"kind": "image", "concept_ref": "native.Image", "required": True}, None, id="image"),
+        ],
+    )
+    def test_reads_the_stored_text_kind_of_a_node(self, node: dict[str, Any], expected: StoredTextKind | None) -> None:
+        assert stored_text_kind_of_node(_NODE.validate_python(node)) == expected
+
+    def test_finds_the_main_outputs_node_from_the_working_memory_and_the_output_form(self) -> None:
+        results = RunResults.model_validate(_results("my_domain.Dossier", {"summary": {"text": "x"}}, _DOSSIER_NODE))
+        node = main_stuff_node(results)
+        assert node is not None
+        assert node.concept_ref == "my_domain.Dossier"
+        assert main_stuff_node(RunResults.model_validate({"pipeline_run_id": _RUN_ID, "main_stuff": {}})) is None
+
+    # ── the result readers load by default ───────────────────────────
+
+    def test_get_run_result_loads_a_stored_text(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("a")
+        boundary = _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE), objects={uri: "Héllo, long text.".encode()})
+
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID)))
+
+        assert result.main_stuff == {"text": "Héllo, long text."}
+        assert boundary.resolved == [[uri]]
+        assert len(boundary.fetched) == 1
+
+    def test_load_stored_texts_false_returns_the_wire_shape(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("b")
+        boundary = _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE))
+
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID, load_stored_texts=False)))
+
+        assert result.main_stuff == _reference(uri)
+        assert boundary.resolved == []
+
+    def test_wait_for_result_loads_and_honours_the_opt_out(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("c")
+        body = _results("native.Text", _reference(uri), _TEXT_NODE)
+        _Boundary(mocker, client, body=body, objects={uri: b"Waited."})
+        options = WaitForResultOptions(timeout_seconds=5)
+
+        loaded = asyncio.run(client.wait_for_result(_RUN_ID, options))
+        wire = asyncio.run(client.wait_for_result(_RUN_ID, options, load_stored_texts=False))
+
+        assert loaded.main_stuff == {"text": "Waited."}
+        assert wire.main_stuff == _reference(uri)
+
+    def test_keeps_an_html_css_class_and_parses_a_json_object(self, mocker: MockerFixture) -> None:
+        client = _client()
+        html_uri = _stored_uri("h", "html")
+        json_uri = _stored_uri("j", "json")
+        node = {
+            "kind": "object",
+            "concept_ref": "my_domain.Report",
+            "required": True,
+            "fields": [
+                {"kind": "prose", "name": "page", "concept_ref": "native.Html", "required": True},
+                {"kind": "unknown", "name": "data", "concept_ref": "native.JSON", "required": True},
+            ],
+        }
+        main_stuff = {
+            "page": {**_reference(html_uri, mime_type="text/html"), "css_class": "report"},
+            "data": _reference(json_uri, mime_type="application/json"),
+        }
+        objects = {html_uri: b"<p>Hi</p>", json_uri: b'{"count": 3, "tags": ["a"]}'}
+        _Boundary(mocker, client, body=_results("my_domain.Report", main_stuff, node), objects=objects)
+
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID)))
+
+        assert result.main_stuff == {"page": {"inner_html": "<p>Hi</p>", "css_class": "report"}, "data": {"json_obj": {"count": 3, "tags": ["a"]}}}
+
+    def test_loads_a_concept_refining_a_native_and_a_plural_page_from_the_native_shape(self, mocker: MockerFixture) -> None:
+        client = _client()
+        memo_uri = _stored_uri("m")
+        memo = {"kind": "prose", "concept_ref": "legal.Memo", "refines": ["native.Text"], "required": True}
+        _Boundary(mocker, client, body=_results("legal.Memo", _reference(memo_uri), memo), objects={memo_uri: b"A memo."})
+        assert _completed(asyncio.run(client.get_run_result(_RUN_ID))).main_stuff == {"text": "A memo."}
+
+        page_client = _client()
+        page_uri = _stored_uri("p")
+        page: dict[str, Any] = {"text_and_images": {"text": _reference(page_uri), "images": []}, "page_view": None}
+        _Boundary(mocker, page_client, body=_results("native.Page", {"items": [page]}), objects={page_uri: b"Page one."})
+
+        result = _completed(asyncio.run(page_client.get_run_result(_RUN_ID)))
+
+        assert result.main_stuff == {"items": [{"text_and_images": {"text": {"text": "Page one."}, "images": []}, "page_view": None}]}
+
+    def test_batches_the_resolve_route_past_its_bound(self, mocker: MockerFixture) -> None:
+        client = _client()
+        count = BULK_RESOLVE_MAX_URIS + 30
+        uris = [_stored_uri(f"n{index_uri}") for index_uri in range(count)]
+        list_node = {"kind": "list", "concept_ref": "native.Text", "required": True, "item": _TEXT_NODE}
+        body = _results("native.Text", {"items": [_reference(uri) for uri in uris]}, list_node)
+        boundary = _Boundary(mocker, client, body=body, objects={uri: uri.encode() for uri in uris})
+
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID)))
+
+        assert [len(batch) for batch in boundary.resolved] == [BULK_RESOLVE_MAX_URIS, 30]
+        assert result.main_stuff == {"items": [{"text": uri} for uri in uris]}
+
+    def test_a_narrowed_read_reads_the_concepts_beside_it_and_changes_only_main_stuff(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("q")
+        boundary = _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE), objects={uri: b"Narrow."})
+
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID, artifacts=[RunArtifact.MAIN_STUFF])))
+
+        assert boundary.reads == ["main_stuff", "input_form,output_form,working_memory"]
+        assert result.main_stuff == {"text": "Narrow."}
+        assert result.carries(RunArtifact.WORKING_MEMORY) is False
+
+    def test_a_narrowed_read_with_nothing_to_load_reads_nothing_more(self, mocker: MockerFixture) -> None:
+        client = _client()
+        boundary = _Boundary(mocker, client, body=_results("native.Text", {"text": "Inline."}, _TEXT_NODE))
+
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID, artifacts=[RunArtifact.MAIN_STUFF])))
+
+        assert boundary.reads == ["main_stuff"]
+        assert result.main_stuff == {"text": "Inline."}
+
+    # ── failures ─────────────────────────────────────────────────────
+
+    def test_bytes_that_are_not_utf8_name_the_text(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("r")
+        _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE), objects={uri: b"\xff\xfe\xfa"})
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID))
+
+        assert exc_info.value.reason == "not_utf8"
+        assert exc_info.value.path == "$"
+        assert exc_info.value.uri == uri
+
+    def test_a_resolve_refusal_names_where_the_text_sits(self, mocker: MockerFixture) -> None:
+        client = _client()
+        allowed = _stored_uri("s1")
+        refused = _stored_uri("s2")
+        list_node = {"kind": "list", "concept_ref": "native.Text", "required": True, "item": _TEXT_NODE}
+        refusal = {
+            "uri": refused,
+            "url": None,
+            "expires_at": None,
+            "content_type": None,
+            "error": {"code": "forbidden", "detail": "another organization"},
+        }
+        _Boundary(
+            mocker,
+            client,
+            body=_results("native.Text", {"items": [_reference(allowed), _reference(refused)]}, list_node),
+            objects={allowed: b"ok"},
+            refusals={refused: refusal},
+        )
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID))
+
+        assert exc_info.value.reason == "forbidden"
+        assert exc_info.value.path == "$.items[1]"
+
+    def test_a_missing_object_is_not_found(self, mocker: MockerFixture) -> None:
+        client = _client()
+        _Boundary(mocker, client, body=_results("native.Text", _reference(_stored_uri("t")), _TEXT_NODE))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID))
+
+        assert exc_info.value.reason == "not_found"
+
+    # ── load_stored_texts on a result in hand ────────────────────────
+
+    def test_loads_a_wire_result_and_never_changes_the_one_passed_in(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("u")
+        _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE), objects={uri: b"Later."})
+        wire = _completed(asyncio.run(client.get_run_result(_RUN_ID, load_stored_texts=False)))
+
+        loaded = asyncio.run(load_stored_texts(client, wire))
+
+        assert loaded.main_stuff == {"text": "Later."}
+        assert wire.main_stuff == _reference(uri)
+
+    def test_decodes_a_data_url_without_any_request(self, mocker: MockerFixture) -> None:
+        client = _client()
+        boundary = _Boundary(mocker, client, body={})
+        data_url = "data:text/plain;base64," + base64.b64encode(b"Inline bytes.").decode()
+        wire = RunResults.model_validate(_results("native.Text", {"url": data_url}))
+
+        loaded = asyncio.run(load_stored_texts(client, wire))
+
+        assert loaded.main_stuff == {"text": "Inline bytes."}
+        assert boundary.resolved == []
+
+    def test_returns_a_result_whose_concepts_are_unknown_as_it_is(self) -> None:
+        wire = RunResults.model_validate({"pipeline_run_id": _RUN_ID, "main_stuff": _reference(_stored_uri("v"))})
+        assert asyncio.run(load_stored_texts(_client(), wire)) is wire
+
+    # ── the walkers tell stored texts from files ─────────────────────
+
+    def test_counts_a_document_typed_text_plain_as_a_file_and_a_stored_text_as_none(self) -> None:
+        text_uri = _stored_uri("w")
+        notes_uri = f"{_SCOPE}/notes.txt"
+        value = {"summary": _reference(text_uri), "notes": {"url": notes_uri, "mime_type": "text/plain", "filename": "notes.txt"}}
+        node = _NODE.validate_python(_DOSSIER_NODE)
+
+        assert collect_artifacts(value, node) == [notes_uri]
+        assert [location.found_at for location in locate_artifacts(value, node)] == [["$.notes.url"]]
+        assert collect_artifacts(value) == [text_uri, notes_uri]
+
+        references = locate_stored_references(value, node)
+        assert [location.uri for location in references.files] == [notes_uri]
+        assert references.texts == [
+            StoredTextLocation(
+                uri=text_uri, found_at=["$.summary.url"], kind=StoredTextKind.TEXT, size=4096, mime_type="text/plain", preview="The start…"
+            )
+        ]
+        assert [location.uri for location in locate_stored_references(value).files] == [text_uri, notes_uri]
+
+    def test_names_a_saved_stored_text_by_its_mime_type(self) -> None:
+        location = StoredTextLocation(uri=_stored_uri("x", "bin"), found_at=["$.summary.url"], kind=StoredTextKind.TEXT, mime_type="text/markdown")
+        assert artifact_filename(location, None, ArtifactScope.MAIN_STUFF) == "summary.md"
+        assert artifact_filename(location.model_copy(update={"mime_type": None}), None, ArtifactScope.MAIN_STUFF) == "summary.txt"
+
+    def test_download_artifacts_saves_a_stored_text_as_a_text_file(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        client = _client()
+        markdown_uri = _stored_uri("y", "bin")
+        notes_uri = f"{_SCOPE}/notes.txt"
+        main_stuff = {
+            "summary": {"url": markdown_uri, "size": 8, "mime_type": "text/markdown", "preview": "# Title"},
+            "notes": {"url": notes_uri, "mime_type": "text/plain", "filename": "notes.txt"},
+        }
+        boundary = _Boundary(mocker, client, body={}, objects={markdown_uri: b"# Title\n", notes_uri: b"plain notes"})
+        results = RunResults.model_validate(_results("my_domain.Dossier", main_stuff, _DOSSIER_NODE))
+
+        verdict = asyncio.run(download_artifacts(client, dir_path=tmp_path, results=results))
+
+        assert boundary.resolved == [[markdown_uri, notes_uri]]
+        assert verdict.all_saved is True
+        assert [(artifact.kind, artifact.found_at, artifact.content_type, artifact.size) for artifact in verdict.artifacts] == [
+            (DownloadedKind.TEXT, ["$.summary.url"], "text/markdown", 8),
+            (DownloadedKind.FILE, ["$.notes.url"], "text/plain", 11),
+        ]
+        assert verdict.saved_paths == [str(tmp_path / "summary.md"), str(tmp_path / "notes.txt")]
+        assert (tmp_path / "summary.md").read_bytes() == b"# Title\n"

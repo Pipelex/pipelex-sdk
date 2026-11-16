@@ -719,6 +719,18 @@ export interface GetRunResultOptions {
    * or an unknown name is a `RequestArgumentError` before any request.
    */
   artifacts?: readonly RunResultArtifact[];
+  /**
+   * Load the stored texts of a completed run's `main_stuff` before handing the result back:
+   * `true`, the default. A `Text`, `Markdown`, `Html` or `JSON` value past the runtime's inline
+   * threshold travels as its reference, `{ url, size, mime_type, preview }`, and the read replaces
+   * each one by its inline form (`{ text }`, `{ inner_html }`, `{ json_obj }`), so the generated
+   * types' loaded shape parses it. `false` hands the wire shape back as the platform relayed it,
+   * for the generated `<Name>Wire` type, and loads nothing. The concept at each path decides what
+   * is a stored text; a read narrowed by `artifacts` that holds a possible reference reads the
+   * working memory and the forms beside it, and returns only what it was asked for. See
+   * `docs/run-results.md`, "Stored texts".
+   */
+  loadStoredTexts?: boolean;
 }
 
 /**
@@ -909,6 +921,12 @@ export interface WaitForResultOptions {
    * artifact the runner sent.
    */
   artifacts?: readonly RunResultArtifact[];
+  /**
+   * Load the stored texts of the completed result's `main_stuff` — `getRunResult`'s
+   * `loadStoredTexts`, `true` by default. `startAndWaitForResult`'s blocking fallback honours it
+   * too.
+   */
+  loadStoredTexts?: boolean;
 }
 
 /**
@@ -1017,12 +1035,13 @@ export async function pollUntilResult(
       );
     }
 
-    const state = await fetchOnce(
-      runId,
-      options.artifacts === undefined
-        ? { signal: options.signal }
-        : { signal: options.signal, artifacts: options.artifacts },
-    );
+    const state = await fetchOnce(runId, {
+      signal: options.signal,
+      ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+      ...(options.loadStoredTexts === undefined
+        ? {}
+        : { loadStoredTexts: options.loadStoredTexts }),
+    });
 
     if (state.state === "completed") {
       return state.result;

@@ -26,6 +26,7 @@ from pipelex_sdk.artifact_models import (
     BulkResolvedStorageUrls,
     DownloadArtifactsOptions,
     DownloadedArtifact,
+    DownloadedKind,
     FetchArtifactOptions,
     ResolvedArtifact,
 )
@@ -91,6 +92,7 @@ class _FakeClient:
         self.resolve_calls: list[list[str]] = []
         self.run_result_calls: list[str] = []
         self.run_result_selections: list[list[RunArtifact] | None] = []
+        self.load_stored_texts_flags: list[bool] = []
 
     async def resolve_storage_urls_bulk(self, uris: list[str]) -> BulkResolvedStorageUrls:
         self.resolve_calls.append(list(uris))
@@ -99,8 +101,9 @@ class _FakeClient:
             raise AssertionError(msg)
         return self._resolve(list(uris))
 
-    async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None) -> RunResultState:
+    async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None, load_stored_texts: bool = True) -> RunResultState:
         self.run_result_calls.append(run_id)
+        self.load_stored_texts_flags.append(load_stored_texts)
         self.run_result_selections.append(None if artifacts is None else list(artifacts))
         if self._run_result is None:
             msg = "this test did not script a run result"
@@ -435,7 +438,7 @@ class TestArtifacts:
         assert names == ["say__hi__.png", "line_break.png", "_.png", "_0_.png", "_.png"]
 
     def test_takes_a_verdict_item_as_its_location(self) -> None:
-        item = DownloadedArtifact(uri=_URI_BARE, found_at=["$.report.url"], content_type="application/pdf", error=None)
+        item = DownloadedArtifact(uri=_URI_BARE, kind=DownloadedKind.FILE, found_at=["$.report.url"], content_type="application/pdf", error=None)
         assert artifact_filename(item, item.content_type, ArtifactScope.MAIN_STUFF) == "report.pdf"
 
     # ── resolve_artifacts ────────────────────────────────────────────
@@ -786,8 +789,13 @@ class TestArtifacts:
         target = tmp_path / "out"
         verdict = asyncio.run(download_artifacts(client, dir_path=target, run_id=_RUN_ID))
 
-        assert client.run_result_calls == [_RUN_ID]
-        assert client.run_result_selections == [[RunArtifact.MAIN_STUFF]]
+        # The scope first, with its stored texts left as references; then the concepts that tell them from files.
+        assert client.run_result_calls == [_RUN_ID, _RUN_ID]
+        assert client.run_result_selections == [
+            [RunArtifact.MAIN_STUFF],
+            [RunArtifact.WORKING_MEMORY, RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM],
+        ]
+        assert client.load_stored_texts_flags == [False, False]
         assert client.resolve_calls == [[_URI_PNG, _URI_PDF]]
         assert verdict.all_saved is True
         assert [artifact.uri for artifact in verdict.artifacts] == [_URI_PNG, _URI_PDF]
@@ -810,7 +818,7 @@ class TestArtifacts:
         options = DownloadArtifactsOptions(scope=ArtifactScope.WORKING_MEMORY)
         verdict = asyncio.run(download_artifacts(client, dir_path=tmp_path / "out", run_id=_RUN_ID, options=options))
 
-        assert client.run_result_selections == [[RunArtifact.WORKING_MEMORY]]
+        assert client.run_result_selections == [[RunArtifact.WORKING_MEMORY], [RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM]]
         assert verdict.scope == ArtifactScope.WORKING_MEMORY
         assert verdict.all_saved is True
         assert [artifact.uri for artifact in verdict.artifacts] == [_URI_PDF]

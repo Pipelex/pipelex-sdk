@@ -700,6 +700,44 @@ export class ArtifactFetchError extends ArtifactOperationError {
 }
 
 /**
+ * A stored text in a run's result could not be loaded, so the result cannot be handed back in
+ * its loaded shape. `uri` is the stored text's `url`, `path` the `$`-rooted path of the value
+ * holding it in `main_stuff` (`$`, `$.items[2]`, `$.text_and_images.text`), and `reason` why, in
+ * the vocabulary of `ArtifactFetchError` (the resolve route's per-reference code, then the fetch
+ * boundary's reasons) plus the loader's own: `not_utf8` for bytes that are no UTF-8 text, and
+ * `not_json_object` for a stored JSON value that is no JSON object. `status` is the store's HTTP
+ * status when one was received.
+ *
+ * Its problem is the fetch failure's own when the bytes could not be read
+ * (`artifactFetchProblem`), and `client.response_unreadable` naming the run when they were read
+ * but are not the value. A caller who wants the result anyway reads it with the loading turned
+ * off (`loadStoredTexts: false`) and gets every stored text as its reference.
+ */
+export class StoredTextLoadError extends ArtifactOperationError {
+  public readonly uri: string;
+  public readonly path: string;
+  public readonly reason: string;
+  public readonly status: number | undefined;
+
+  constructor(
+    message: string,
+    details: { uri: string; path: string; reason: string; status?: number },
+    options?: { cause?: unknown; problem?: Problem },
+  ) {
+    super(message, {
+      cause: options?.cause,
+      problem:
+        options?.problem ?? artifactFetchProblem(details.reason, details.uri, details.status),
+    });
+    this.name = "StoredTextLoadError";
+    this.uri = details.uri;
+    this.path = details.path;
+    this.reason = details.reason;
+    this.status = details.status;
+  }
+}
+
+/**
  * The problem of one reference's fetch failure that its raise site states none for, by its reason
  * and the store's status: `input.reference_not_found` naming the reference for
  * `invalid_storage_uri`, `forbidden` and `not_found`; `client.link_refused` for

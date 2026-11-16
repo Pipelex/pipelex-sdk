@@ -72,6 +72,7 @@ import {
   type GetRunResultOptions,
   type RunProgress,
   type RunRead,
+  type RunResultArtifact,
   type RunResults,
   type RunResultState,
   type RunStatus,
@@ -235,7 +236,10 @@ import type { PrepareInputsRequest, PreparedInputs } from "./prepare-inputs.js";
 import {
   downloadArtifacts as downloadArtifactsImpl,
   fetchArtifact as fetchArtifactImpl,
+  loadStoredTexts as loadStoredTextsImpl,
+  mayHoldStoredTexts,
   resolveArtifacts as resolveArtifactsImpl,
+  withConceptArtifacts,
 } from "./artifacts.js";
 import type {
   BulkResolveStorageUrlsInput,
@@ -2837,7 +2841,33 @@ export class PipelexApiClient implements HostedProtocolSurface {
         runId,
       );
     }
-    return { state: "completed", pipeline_run_id: runId, result };
+    if (options.loadStoredTexts === false || !selectionIncludesMainStuff(options.artifacts)) {
+      return { state: "completed", pipeline_run_id: runId, result };
+    }
+    const loaded = await this.withStoredTextsLoaded(result, options.artifacts, options.signal);
+    return { state: "completed", pipeline_run_id: runId, result: loaded };
+  }
+
+  /**
+   * A completed result with the stored texts of its `main_stuff` loaded, as the result readers
+   * hand it back by default (`loadStoredTexts`). A `main_stuff` holding no possible reference is
+   * returned untouched, with nothing read; one that may hold some is walked by concept, the working
+   * memory and the forms read again by the run's id when the read's `selection` left them out, and
+   * only `main_stuff` changes in the result handed back.
+   */
+  private async withStoredTextsLoaded(
+    result: RunResults,
+    selection: readonly RunResultArtifact[] | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<RunResults> {
+    if (result.main_stuff == null || !mayHoldStoredTexts(result.main_stuff)) return result;
+    const source = await withConceptArtifacts(this, result, selection, signal);
+    const loaded = await loadStoredTextsImpl(this, { ...result, ...source } as RunResults, {
+      signal,
+    });
+    return loaded.main_stuff === result.main_stuff
+      ? result
+      : { ...result, main_stuff: loaded.main_stuff };
   }
 
   /**
@@ -2968,7 +2998,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
         this.lifecycleAvailable = false;
         throwIfAborted(signal);
         onStarting?.();
-        return this.executeBlocking(options, signal, sending);
+        return this.executeBlocking(options, signal, sending, waitOptions.loadStoredTexts);
       }
       onStarted?.(ack);
       return this.waitForResult(ack.pipeline_run_id, waitOptions);
@@ -2976,7 +3006,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
     throwIfAborted(signal);
     onStarting?.();
-    return this.executeBlocking(options, signal, sending);
+    return this.executeBlocking(options, signal, sending, waitOptions.loadStoredTexts);
   }
 
   /**
@@ -5938,6 +5968,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
     options: PipelexStartOptions,
     signal: AbortSignal | undefined,
     sending: PreparedRunTree,
+    loadStoredTexts: boolean | undefined,
   ): Promise<RunResults> {
     const response = await this.executeRun(
       {
@@ -5962,7 +5993,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
       signal,
       sending,
     );
-    return resultsFromExecute(response);
+    const results = resultsFromExecute(response);
+    // The blocking answer carries the working memory and the forms, so nothing is read again.
+    return loadStoredTexts === false
+      ? results
+      : this.withStoredTextsLoaded(results, undefined, signal);
   }
 }
 

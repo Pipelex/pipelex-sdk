@@ -1268,6 +1268,38 @@ class ArtifactFetchError(ArtifactOperationError):
         self.status = status
 
 
+class StoredTextLoadError(ArtifactOperationError):
+    """A stored text in a run's result could not be loaded, so the result cannot be handed back in its loaded shape.
+
+    `uri` is the stored text's `url`, `path` the `$`-rooted path of the value holding it in `main_stuff` (`$`,
+    `$.items[2]`, `$.text_and_images.text`), and `reason` why, in the vocabulary of `ArtifactFetchError` (the resolve
+    route's per-reference code, then the fetch boundary's reasons) plus the loader's own: `not_utf8` for bytes that are
+    no UTF-8 text, and `not_json_object` for a stored JSON value that is no JSON object. `status` is the store's HTTP
+    status when one was received.
+
+    Its `problem` is the fetch failure's own when the bytes could not be read (`artifact_fetch_problem`), and
+    `client.response_unreadable` naming the run when they were read but are not the value. A caller who wants the
+    result anyway reads it with the loading turned off (`load_stored_texts=False`) and gets every stored text as its
+    reference. Mirrors `@pipelex/sdk`'s `StoredTextLoadError`.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        uri: str,
+        path: str,
+        reason: str,
+        status: int | None = None,
+        problem: Problem | None = None,
+    ) -> None:
+        super().__init__(message, problem=problem or artifact_fetch_problem(reason=reason, uri=uri, status=status))
+        self.uri = uri
+        self.path = path
+        self.reason = reason
+        self.status = status
+
+
 def artifact_fetch_problem(*, reason: str, uri: str, status: int | None = None) -> Problem:
     """The problem of one reference's fetch failure that its raise site states none for.
 

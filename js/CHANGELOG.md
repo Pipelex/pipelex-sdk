@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Stored texts loaded by default**: `getRunResult`, `waitForResult` and `startAndWaitForResult` load every stored text of `main_stuff`, a `Text`, `Markdown`, `Html` or `JSON` value the runtime holds as its reference `{ url, size, mime_type, preview }`, into its inline form (`{ text }`, `{ inner_html }`, `{ json_obj }`) through the bulk resolve route and a bounded fetch of each signed link, so the generated parser reads the loaded shape; `loadStoredTexts: false` returns the wire shape, `loadStoredTexts(client, results)` loads one later, and a text that cannot be loaded throws `StoredTextLoadError` naming its `uri`, `path` and `reason` (`docs/run-results.md`).
+- **Stored texts told from files by concept**: `locateArtifacts` and `collectArtifacts` take the walked value's descriptor node (`mainStuffNode(results)`) and then skip stored texts, `locateStoredReferences` answers both kinds with each text's `kind`, `size`, `mime_type` and `preview`, and `storedTextKindOf`, `storedTextKindOfNode`, `isStoredTextConcept`, `mainStuffNode` and `workingMemoryNode` are exported (`docs/artifact-download.md`).
+
+### Changed
+
+- **`downloadArtifacts` saves stored texts as text files (Breaking)**: each verdict entry carries `kind`, `"file"` or `"text"`, a stored text is saved under a name whose extension comes from the MIME type its reference states, never its storage key, and a download by `run_id` reads the run's `working_memory`, `output_form` and `input_form` beside its scope when the scope may hold one.
+- **A result read by default holds no stored-text reference (Breaking)**: code that read a stored text's `url` or `preview` off `main_stuff` now passes `loadStoredTexts: false`, and a narrowed `artifacts` read that may hold one makes a second read for the run's concepts.
+
 ## [v0.67.1] - 2026-11-10
 
 ### Added

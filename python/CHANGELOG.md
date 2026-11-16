@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Stored texts loaded by default**: `get_run_result`, `wait_for_result` and `start_and_wait` load every stored text of `main_stuff`, a `Text`, `Markdown`, `Html` or `JSON` value the runtime holds as its reference `{url, size, mime_type, preview}`, into its inline form (`{text}`, `{inner_html}`, `{json_obj}`) through the bulk resolve route and a bounded fetch of each signed link, so the generated parser reads the loaded shape; `load_stored_texts=False` returns the wire shape, `pipelex_sdk.artifacts.load_stored_texts(client, results)` loads one later, and a text that cannot be loaded raises `StoredTextLoadError` naming its `uri`, `path` and `reason` (`docs/run-results.md`).
+- **Stored texts told from files by concept**: `locate_artifacts` and `collect_artifacts` take the walked value's descriptor node (`main_stuff_node(results)`) and then skip stored texts, `locate_stored_references` answers both kinds with each text's `kind`, `size`, `mime_type` and `preview`, and `pipelex_sdk.stored_texts` holds the concept tests and the node finders (`docs/artifact-download.md`).
+
+### Changed
+
+- **`download_artifacts` saves stored texts as text files (Breaking)**: each verdict entry carries `kind`, a `DownloadedKind`, `FILE` or `TEXT`, a stored text is saved under a name whose extension comes from the MIME type its reference states, never its storage key, and a download by `run_id` reads the run's `working_memory`, `output_form` and `input_form` beside its scope when the scope may hold one.
+- **A result read by default holds no stored-text reference (Breaking)**: code that read a stored text's `url` or `preview` off `main_stuff` now passes `load_stored_texts=False`, and a narrowed `artifacts` read that may hold one makes a second read for the run's concepts.
+
 ## [v0.68.0] - 2026-11-15
 
 ### Changed

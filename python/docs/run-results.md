@@ -259,6 +259,20 @@ match state:
 
 The `failed` arm and `RunFailedError` carry the same facts: the run's `status`, the `message` naming the reason, `problem`, the platform's `run.failed` document, and the run's own problem, which `run.failed` nests as `run_error`: the arm's `error`, `None` when the run ended without one, and the error's `run_error`. A run the platform ends or settles itself, such as one whose workflow task kept failing or one past its time limit (`run.timed_out`), carries a problem the platform wrote. [`errors.md`](errors.md#a-failed-run--runfailederror) describes both.
 
+## Stored texts — loaded by default
+
+The runtime keeps a large text out of a run's results. A `native.Text`, `native.Markdown`, `native.Html` or `native.JSON` value past its inline threshold, or a value of a concept that refines one of them or is description-only, is stored under the run's scope and travels as its reference, in place of its value field:
+
+```json
+{"url": "pipelex-storage://org/…/generated/3f9c…/value.md", "size": 182344, "mime_type": "text/markdown", "preview": "# Quarterly review…"}
+```
+
+An inline value arrives as `{"text": "…"}`, `{"inner_html": "…"}` (its `css_class` beside it) or `{"json_obj": {…}}`. **The result readers load every stored text of `main_stuff` before they return**, so it reaches the generated parser in the shape the method's concepts describe, the value field required: `get_run_result`, `wait_for_result` and `start_and_wait` resolve the references through the platform's bulk route, at most `BULK_RESOLVE_MAX_URIS` per request, fetch each signed link under the bounds `fetch_artifact` applies (100 MiB per text by default, `LoadStoredTextsOptions`), and decode the bytes as UTF-8, a JSON value being the object they serialize. A text that cannot be loaded raises `StoredTextLoadError`, naming its `uri`, its `path` in `main_stuff` and a `reason` (`not_found`, `forbidden`, `too_large`, `not_utf8`, `not_json_object`, …).
+
+**`load_stored_texts=False` hands the wire shape back**, the references untouched, on all three readers. The generated `<Name>Wire` types describe that shape, the value field optional beside the reference's fields. `pipelex_sdk.artifacts.load_stored_texts(client, results, options)` loads such a result later, and returns a new one, never changing the one it is given.
+
+**Which values are stored texts is decided by concept, never by URL or MIME type**, as the standard rules: a `Document` may be `text/plain` too. The concept at each path comes from the run's own artifacts: the main stuff's concept from `working_memory`, and its structure from the `output_form` node naming that concept (`pipelex_sdk.stored_texts.main_stuff_node(results)` gives that node). A read whose `artifacts` selection left out `working_memory`, `output_form` or `input_form` while `main_stuff` may hold a reference reads those three again by the run's id, with the result returned holding only what was asked for. A result that carries no working memory is returned as it is.
+
 ## `working_memory` — every named stuff of the run
 
 `working_memory` is everything the run held when it finished — the inputs it was given, the intermediates it produced and the main output, each under the name the method gave it. It is a declared field on both paths and reads the same on each: on the hosted path the platform relays the `working_memory.json` artifact as its own key, and on the blocking path the SDK lifts it off `pipe_output.working_memory`. The standard declares that member required on the runner's output, so on the blocking path the field always carries a value.

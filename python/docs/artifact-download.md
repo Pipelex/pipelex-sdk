@@ -35,6 +35,8 @@ Walks any JSON-shaped value and returns every string that **is** a `pipelex-stor
 
 Both are pure — no network, no key — so a consumer can count, list or place a result's files without resolving any of them.
 
+**Stored texts are not files.** A large `Text`, `Markdown`, `Html` or `JSON` value the runtime stored travels as a `pipelex-storage://` reference too ([`run-results.md`](./run-results.md#stored-texts--loaded-by-default)), and only its concept tells it from a file. Both walks take the walked value's descriptor node as a second argument, `locate_artifacts(results.main_stuff, main_stuff_node(results))`, and then skip every stored text; without it nothing says what a value is, so every reference counts as a file. A result read with its texts loaded, the default, holds none. `locate_stored_references(value, node)` answers both kinds as a `StoredReferences`: the files as `locate_artifacts` gives them, and each text as a `StoredTextLocation` carrying its `kind` (`text`, `html` or `json`), `size`, `mime_type` and `preview`, its `found_at` being the path of its `url`.
+
 ### `resolve_artifacts(uris)` — fresh links for a whole list
 
 ```python
@@ -97,6 +99,8 @@ if not verdict.all_saved:
 
 `client.download_artifacts(dir_path=…, run_id=…)` is the same thing as a method.
 
+**Stored texts are saved as text files.** The walk follows the concepts of the run (`main_stuff_node`, or each stuff's concept for `working_memory`), so a stored text is saved beside the files rather than counted as one: its verdict entry has `kind` `DownloadedKind.TEXT` where a file's has `DownloadedKind.FILE`, its `content_type` is the MIME type its reference states, and its file is named by that type. A download by `run_id` reads the run's `working_memory`, `output_form` and `input_form` beside its scope when the scope may hold a stored text, and reads the scope with `load_stored_texts=False`.
+
 **Where it reads from.** Exactly one of `run_id` and `results`. A `run_id` re-reads the results through `get_run_result`, asking only for the artifact the scope walks, so a completed run is downloadable days later from its id alone; a `RunResults` already in hand is read as it is, with no request. `scope` picks the artifact walked for references: `main_stuff` (the default) is the run's output, and `working_memory` is the opt-in that also brings down the echoed inputs and every intermediate stuff — it is read off `RunResults.working_memory`, the declared field both paths deliver ([`run-results.md`](./run-results.md#working_memory--every-named-stuff-of-the-run)).
 
 **How it downloads.** The whole set is resolved through the bulk route ahead of the work, then an `asyncio.Semaphore` bounds how many references are in flight at once (`concurrency`, default 4) over the whole per-reference pipeline: fetch, create the file exclusively, stream the body in. Resolution is just-in-time where it matters: a link that has expired by the time its task reaches it — a large set downloaded a few at a time can outlive the fifteen-minute link — is resolved again for that reference alone, so no fetch ever runs on a stale signature.
@@ -108,7 +112,7 @@ if not verdict.all_saved:
 3. The segments are joined with `-`. A reference that is the walked value itself, or its `url`, has no segment left and takes the scope's name, so an output that is one image is saved as `main_stuff.png`.
 4. A name over the length cap (128 characters, extension included) keeps its tail: whole leading segments are dropped first, since the last ones are the specific ones, and a single segment still too long is cut to fit.
 5. A stem Windows reserves for a device — `con`, `prn`, `aux`, `nul`, `com0` to `com9` or `lpt0` to `lpt9`, in any case — gets a trailing `_`, so a field named `aux` is saved as `aux_.png`. Windows reserves those names whatever the extension, and a field name is the method author's to choose.
-6. The extension is the one the storage key's last segment carries, reduced to `[A-Za-z0-9]`, when it has a short one; otherwise the content type's, for the types a run produces (`image/png` gives `.png`, `application/pdf` gives `.pdf`); otherwise there is none. The segment is percent-decoded the way `decodeURIComponent` decodes it, and read as typed where that would fail, so both SDKs find the same extension in the same key.
+6. The extension is the one the storage key's last segment carries, reduced to `[A-Za-z0-9]`, when it has a short one; otherwise the content type's, for the types a run produces (`image/png` gives `.png`, `application/pdf` gives `.pdf`); otherwise there is none. The segment is percent-decoded the way `decodeURIComponent` decodes it, and read as typed where that would fail, so both SDKs find the same extension in the same key. A stored text is named by the MIME type its reference states instead, never by its storage key: `text/plain` gives `.txt`, `text/markdown` `.md`, `text/html` `.html` and `application/json` `.json`, and a type outside those gives its kind's (`.txt`, `.html`, `.json`).
 
 For example, a home-staging method whose output is
 
