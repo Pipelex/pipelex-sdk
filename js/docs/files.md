@@ -134,7 +134,7 @@ console.log(renamed.name); // "March invoice.pdf"
 `linkFiles` asks for fresh links to read files, each named by exactly one of its record's id, `{ file_id }`, and its address, `{ uri }`, at most 100 in one request. The answer holds exactly one `FileLink` per requested file, in the request's order. **Branch on each item's `error`, never on the status**: the request is a `200` whenever every file got a verdict.
 
 - A linked file carries `url`, a presigned `GET` valid for fifteen minutes, its `expires_at`, the `name` a download saves under and its `media_type`, with `error` `null`.
-- A file that got no link carries `error`, a `FileLinkError` `{ code, detail }`, and `null` `url`, `expires_at`, `name` and `media_type`: `not_found` for an unknown file id, `conflict` for a file whose upload has not finished, `invalid_storage_uri` for a malformed address and `forbidden` for another organization's. `code` is typed as a string, so a code a later platform adds still reads.
+- A file that got no link carries `error`, a `FileLinkError` `{ code, detail }`, and `null` `url`, `expires_at`, `name` and `media_type`: the platform's registry codes, `request.invalid` naming `file_id` or `uri` for an unknown file or one whose upload has not finished, `pipelex.storage.uri_invalid` for a malformed address and `pipelex.org.mismatch` for another organization's. `code` is typed as a string, so a code a later platform adds still reads.
 
 ```ts
 const { items } = await client.linkFiles([{ file_id: "fl_0199" }, { uri: input.uri }]);

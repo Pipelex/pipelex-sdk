@@ -95,6 +95,7 @@ export { inputFormFault } from "./prepare-inputs.js";
 export {
   locateArtifacts,
   collectArtifacts,
+  locateStoredReferences,
   artifactFilename,
   PIPELEX_STORAGE_SCHEME,
   BULK_RESOLVE_MAX_URIS,
@@ -102,7 +103,20 @@ export {
   DEFAULT_ARTIFACT_TIMEOUT_MS,
   DEFAULT_DOWNLOAD_MAX_TOTAL_BYTES,
   DEFAULT_DOWNLOAD_CONCURRENCY,
+  loadStoredTexts,
+  DEFAULT_STORED_TEXT_MAX_BYTES,
+  DEFAULT_STORED_TEXT_CONCURRENCY,
 } from "./artifacts.js";
+// Stored texts — which values of a run the runtime holds by reference, told by concept.
+export {
+  STORED_TEXT_CONCEPT_REFS,
+  isStoredTextConcept,
+  storedTextKindOf,
+  storedTextKindOfNode,
+  mainStuffNode,
+  workingMemoryNode,
+} from "./stored-texts.js";
+export type { StoredTextKind } from "./stored-texts.js";
 export type {
   ArtifactItemError,
   ArtifactLocation,
@@ -113,8 +127,12 @@ export type {
   DownloadArtifactsRequest,
   DownloadArtifactsResult,
   DownloadedArtifact,
+  DownloadedKind,
   FetchArtifactOptions,
+  LoadStoredTextsOptions,
   ResolvedArtifact,
+  StoredReferences,
+  StoredTextLocation,
 } from "./artifacts.js";
 
 // ── Wire models (Dict concretes, validate surface, tools + crate routes, model check) ──
@@ -453,6 +471,7 @@ export {
   ArtifactOperationError,
   ArtifactAuthenticationError,
   ArtifactFetchError,
+  StoredTextLoadError,
   ScopeUnavailableError,
   MethodFileTransferError,
 } from "./errors.js";

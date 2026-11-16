@@ -25,6 +25,7 @@ from pipelex_sdk.command.loop import before_request, run_until_done
 from pipelex_sdk.command.method import AddressSelector, CatalogSelector, PathSelector, check_pipe_ref, classify_method
 from pipelex_sdk.command.present import print_result
 from pipelex_sdk.command.source import AddressSource, BundleSource, CatalogSource, crate_selector, describe_pipe, run_selector
+from pipelex_sdk.errors import StoredTextLoadError
 from pipelex_sdk.runs import RunArtifact, WaitForResultOptions
 
 if TYPE_CHECKING:
@@ -129,19 +130,27 @@ async def _run(
     async with client:
         prepared = await _prepare(client, source, pipe, inputs, io)
         await before_request()
-        results = await client.start_and_wait(
-            pipe_code=pipe,
-            # The bundle still travels as the Pipelex API's `mthds_contents`, riding `extra` since the
-            # client names no such argument; the case file both CLIs share holds this body.
-            extra={"mthds_contents": selector.mthds_contents} if selector.mthds_contents is not None else None,
-            inputs=prepared,
-            wait_options=wait_options,
-            method_ref=selector.method_ref,
-            method_id=selector.method_id,
-            artifacts=[RunArtifact.MAIN_STUFF],
-            on_started=on_started,
-            on_starting=on_starting,
-        )
+        try:
+            results = await client.start_and_wait(
+                pipe_code=pipe,
+                # The bundle still travels as the Pipelex API's `mthds_contents`, riding `extra` since the
+                # client names no such argument; the case file both CLIs share holds this body.
+                extra={"mthds_contents": selector.mthds_contents} if selector.mthds_contents is not None else None,
+                inputs=prepared,
+                wait_options=wait_options,
+                method_ref=selector.method_ref,
+                method_id=selector.method_id,
+                artifacts=[RunArtifact.MAIN_STUFF],
+                on_started=on_started,
+                on_starting=on_starting,
+            )
+        except StoredTextLoadError as exc:
+            # The run completed. When the error carries its answer, a bare runner's blocking run of which
+            # nothing else keeps a copy, the output is printed as answered, each stored text still its
+            # reference, before the failure is.
+            if exc.wire_results is not None:
+                print_result(exc.wire_results.main_stuff, io)
+            raise
     progress.starting = False
     progress.waiting_on_run = None
     print_result(results.main_stuff, io)

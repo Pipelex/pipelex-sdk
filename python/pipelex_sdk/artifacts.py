@@ -26,6 +26,9 @@ instead of a returned `Response` (an httpx stream is only live inside its own bl
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import copy
 import errno
 import json
 import math
@@ -36,7 +39,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypeAlias, cast
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
 import httpx
 from httpx._decoders import SUPPORTED_DECODERS  # ruff: ignore[import-private-name]
@@ -57,11 +60,16 @@ from pipelex_sdk.artifact_models import (
     DownloadArtifactsOptions,
     DownloadArtifactsResult,
     DownloadedArtifact,
+    DownloadedKind,
     FetchArtifactOptions,
+    LoadStoredTextsOptions,
     ResolvedArtifact,
+    StoredReferences,
+    StoredTextLocation,
 )
 from pipelex_sdk.errors import (
     ApiResponseError,
+    ApiUnreachableError,
     ArtifactAuthenticationError,
     ArtifactFetchError,
     ArtifactOperationError,
@@ -69,15 +77,26 @@ from pipelex_sdk.errors import (
     RunFailedError,
     RunStillRunningError,
     ScopeUnavailableError,
+    StoredTextLoadError,
     argument_invalid_problem,
     response_unreadable_problem,
 )
 from pipelex_sdk.runs import RunArtifact, RunResultCompleted, RunResultFailed, RunResultRunning, RunResults
+from pipelex_sdk.stored_texts import (
+    STORED_TEXT_REFERENCE_FIELDS,
+    STORED_TEXT_VALUE_FIELDS,
+    StoredTextKind,
+    child_node,
+    main_stuff_node,
+    stored_text_kind_of_node,
+    working_memory_node,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Sequence
     from contextlib import AbstractAsyncContextManager
 
+    from mthds.protocol.input_form import InputFormItem
     from mthds.protocol.problem.models import Problem
 
     from pipelex_sdk.runs import RunResultState
@@ -136,6 +155,15 @@ _EXTENSION_BY_CONTENT_TYPE: dict[str, str] = {
     "application/json": ".json",
 }
 
+#: The extension a saved stored text takes from the MIME type its reference states, the text types the runtime stores
+#: as. A stored text is named by its MIME type, never by its storage key.
+_TEXT_EXTENSION_BY_MIME_TYPE: dict[str, str] = {
+    "text/plain": ".txt",
+    "text/markdown": ".md",
+    "text/html": ".html",
+    "application/json": ".json",
+}
+
 #: The codings the installed httpx decodes for us, read from its own decoder table (the one place
 #: that knows): `br` and `zstd` join it only when their optional packages are installed, and
 #: `x-gzip` never does. A coding it did not decode keeps its header, since the bytes handed on are
@@ -158,9 +186,17 @@ class BulkResolveClient(Protocol):
 
 
 class ArtifactCapableClient(BulkResolveClient, Protocol):
-    """What `download_artifacts` needs on top: the single-shot result lookup, for the `run_id` arm."""
+    """What `download_artifacts` needs on top: the single-shot result lookup, for the `run_id` arm and for
+    the concepts that tell a stored text from a file.
+    """
 
-    async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None) -> RunResultState: ...
+    async def get_run_result(
+        self,
+        run_id: str,
+        *,
+        artifacts: Sequence[RunArtifact] | None = None,
+        load_stored_texts: bool = True,
+    ) -> RunResultState: ...
 
 
 # ── locate_artifacts / collect_artifacts ─────────────────────────────
@@ -179,6 +215,9 @@ class _LocatedReference:
 
     uri: str
     paths: list[tuple[_PathSegment, ...]]
+    #: Set for a stored text's reference, found only when the walk was asked for texts.
+    text_kind: StoredTextKind | None = None
+    text_reference: dict[str, Any] | None = None
 
 
 def is_storage_reference(value: str) -> bool:
@@ -186,7 +225,32 @@ def is_storage_reference(value: str) -> bool:
     return value.startswith(PIPELEX_STORAGE_SCHEME) and len(value) > len(PIPELEX_STORAGE_SCHEME)
 
 
-def locate_artifacts(value: Any) -> list[ArtifactLocation]:
+def is_loadable_stored_text_url(url: str) -> bool:
+    """A `url` a stored text may be loaded from: a `pipelex-storage://` reference, resolved through the platform's bulk
+    route to a link it signs, or a `data:` URL, decoded where it is. A stored text at any other URL is never fetched, so a
+    method cannot have the SDK read a host the caller did not choose: the loader refuses it as `unsupported_url`.
+
+    The file walks (`locate_stored_references`, `download_artifacts`) report the first kind only, since a `data:` URL
+    holds its value inline and has nothing to resolve or save.
+    """
+    return is_storage_reference(url) or url.startswith("data:")
+
+
+def _stored_text_reference_url(value: Any, kind: StoredTextKind) -> str | None:
+    """The `url` of a stored text's reference, `value` sitting where the concept is a stored text: an object carrying a
+    string `url` and no value field. `None` for anything else, an inline value included. The one recognition the walk
+    and the loader share, each then applying its own rule to the URL.
+    """
+    if not isinstance(value, dict):
+        return None
+    reference = cast("dict[str, Any]", value)
+    url = reference.get("url")
+    if not isinstance(url, str) or reference.get(kind.value_field) is not None:
+        return None
+    return url
+
+
+def locate_artifacts(value: Any, node: InputFormItem | None = None) -> list[ArtifactLocation]:
     """Every `pipelex-storage://` reference inside a JSON-shaped value, each with every path at which
     it occurs.
 
@@ -199,11 +263,18 @@ def locate_artifacts(value: Any) -> list[ArtifactLocation]:
     typical path ends there: `$.rooms[3].staged_photo.url`, `$.items[0].url`, or `$.url` for an
     output that is one image. Pure — no network, no key. Mappings, sequences and pydantic models are
     walked alike, a model by its `model_dump()` keys.
+
+    `node` is the descriptor node of the walked value, the standard's output-form node for a run's
+    output (`pipelex_sdk.stored_texts.main_stuff_node` finds it in the run's results). Given, the walk
+    follows the concept at each path and skips a stored text — a `Text`, `Markdown`, `Html` or `JSON`
+    value, or one refining them, which the runtime may hold by a `pipelex-storage://` reference too —
+    since a stored text is a value of the run, never a file. Without it, nothing says what a value is,
+    so every reference counts. A result read with its stored texts loaded, the default, holds none.
     """
-    return [_render_location(located) for located in _walk_references(value, with_paths=True)]
+    return [_render_location(located) for located in _walk_references(value, with_paths=True, node=node)]
 
 
-def collect_artifacts(value: Any) -> list[str]:
+def collect_artifacts(value: Any, node: InputFormItem | None = None) -> list[str]:
     """Every `pipelex-storage://` reference inside a JSON-shaped value, deduplicated, in discovery
     order — the references of `locate_artifacts`, without their paths.
 
@@ -213,12 +284,38 @@ def collect_artifacts(value: Any) -> list[str]:
     content carrying its reference in `url`, beside an expiring `public_url` this walk ignores. Pure
     — no network, no key — so a consumer can count or list a run's produced files without resolving
     any of them. Mappings, sequences and pydantic models are walked alike, so `results.main_stuff`
-    (a parsed JSON value) and a whole `RunResults` both work.
+    (a parsed JSON value) and a whole `RunResults` both work. `node` skips the stored texts by concept,
+    as on `locate_artifacts`.
     """
-    return [located.uri for located in _walk_references(value, with_paths=False)]
+    return [located.uri for located in _walk_references(value, with_paths=False, node=node)]
 
 
-def _walk_references(value: Any, *, with_paths: bool) -> list[_LocatedReference]:
+def locate_stored_references(value: Any, node: InputFormItem | None = None) -> StoredReferences:
+    """Every `pipelex-storage://` reference inside a JSON-shaped value, told apart by concept: the stored files, exactly
+    as `locate_artifacts` answers them, and the stored texts, each with what its reference states.
+
+    Each list is deduplicated and in discovery order. A stored text is found where `node` describes a stored-text
+    concept (`pipelex_sdk.stored_texts.stored_text_kind_of_node`) and the value there is its reference, a
+    `pipelex-storage://` `url` with no value field. Without `node` nothing says what a value is, so every reference is
+    a file: a file count one too high, never a file hidden. For a run's output, `node` is
+    `pipelex_sdk.stored_texts.main_stuff_node` of its results. Pure — no network.
+    """
+    references = StoredReferences()
+    for located in _walk_references(value, with_paths=True, node=node, include_texts=True):
+        if located.text_kind is None:
+            references.files.append(_render_location(located))
+        else:
+            references.texts.append(_render_text_location(located, located.text_kind))
+    return references
+
+
+def _walk_references(
+    value: Any,
+    *,
+    with_paths: bool,
+    node: InputFormItem | None = None,
+    include_texts: bool = False,
+) -> list[_LocatedReference]:
     """The walk both public functions share: depth first, keys in mapping order.
 
     With `with_paths` off it records each reference once and no path at all, which is what
@@ -229,39 +326,67 @@ def _walk_references(value: Any, *, with_paths: bool) -> list[_LocatedReference]
     by_uri: dict[str, _LocatedReference] = {}
     trail: list[_PathSegment] = []
 
-    def visit(node: Any) -> None:
-        if isinstance(node, str):
-            if not is_storage_reference(node):
-                return
-            known = by_uri.get(node)
-            if known is None:
-                known = _LocatedReference(uri=node, paths=[])
-                by_uri[node] = known
-            if with_paths:
-                known.paths.append(tuple(trail))
+    def record(uri: str, path: tuple[_PathSegment, ...], text_kind: StoredTextKind | None, text_reference: dict[str, Any] | None) -> None:
+        known = by_uri.get(uri)
+        if known is None:
+            known = _LocatedReference(uri=uri, paths=[], text_kind=text_kind, text_reference=text_reference)
+            by_uri[uri] = known
+        if with_paths:
+            known.paths.append(path)
+
+    def visit(current: Any, described: InputFormItem | None) -> None:
+        if isinstance(current, BaseModel):
+            visit(current.model_dump(), described)
             return
-        if isinstance(node, BaseModel):
-            visit(node.model_dump())
+        # A stored text is a value of the run, never a file: its reference is recorded as a text when asked for, and
+        # never counts as a file.
+        kind = stored_text_kind_of_node(described)
+        if kind is not None:
+            url = _stored_text_reference_url(current, kind) if include_texts else None
+            if url is not None and is_storage_reference(url):
+                record(url, (*trail, "url"), kind, cast("dict[str, Any]", current))
             return
-        if isinstance(node, dict):
-            for key, entry in cast("dict[Any, Any]", node).items():
+        if isinstance(current, str):
+            if is_storage_reference(current):
+                record(current, tuple(trail), None, None)
+            return
+        if isinstance(current, dict):
+            mapping = cast("dict[Any, Any]", current)
+            for key, entry in mapping.items():
                 # A JSON object's keys are strings; any other key is read as the string it prints as.
-                trail.append(key if isinstance(key, str) else str(key))
-                visit(entry)
+                segment = key if isinstance(key, str) else str(key)
+                trail.append(segment)
+                visit(entry, child_node(described, mapping, segment))
                 trail.pop()
             return
-        if isinstance(node, (list, tuple)):
-            for index_item, item in enumerate(cast("list[Any]", node)):
+        if isinstance(current, (list, tuple)):
+            sequence = cast("list[Any]", current)
+            for index_item, item in enumerate(sequence):
                 trail.append(index_item)
-                visit(item)
+                visit(item, child_node(described, sequence, index_item))
                 trail.pop()
 
-    visit(value)
+    visit(value, node)
     return list(by_uri.values())
 
 
 def _render_location(located: _LocatedReference) -> ArtifactLocation:
     return ArtifactLocation(uri=located.uri, found_at=[_render_path(segments) for segments in located.paths])
+
+
+def _render_text_location(located: _LocatedReference, kind: StoredTextKind) -> StoredTextLocation:
+    reference = located.text_reference or {}
+    size = reference.get("size")
+    mime_type = reference.get("mime_type")
+    preview = reference.get("preview")
+    return StoredTextLocation(
+        uri=located.uri,
+        found_at=[_render_path(segments) for segments in located.paths],
+        kind=kind,
+        size=size if isinstance(size, int) and not isinstance(size, bool) else None,
+        mime_type=mime_type if isinstance(mime_type, str) else None,
+        preview=preview if isinstance(preview, str) else None,
+    )
 
 
 def _render_path(segments: Sequence[_PathSegment]) -> str:
@@ -336,7 +461,9 @@ def artifact_filename(location: ArtifactLocation, content_type: str | None, scop
     5. A stem Windows reserves for a device (`con`, `prn`, `aux`, `nul`, `com0` to `com9`,
        `lpt0` to `lpt9`, in any case) gets a trailing `_`, so `$.aux.url` is saved as `aux_.png`.
     6. The extension is the storage key's own, reduced to `[A-Za-z0-9]`, when it has a short one;
-       otherwise the content type's, for the types a run produces; otherwise there is none.
+       otherwise the content type's, for the types a run produces; otherwise there is none. A stored
+       text (a `StoredTextLocation`, or a verdict item of kind `text`) is named by its MIME type
+       instead, never by its storage key: `.txt`, `.md`, `.html` or `.json`, else its kind's.
 
     So `$.rooms[3].staged_photo.url` is saved as `rooms-3-staged_photo.png`, and `$.url` in
     `main_stuff` as `main_stuff.png`. The stem is ASCII letters, digits, `_` and the `-` joins, never
@@ -360,10 +487,17 @@ def artifact_filename(location: ArtifactLocation, content_type: str | None, scop
     if segments is None:
         msg = f'artifact_filename needs a location whose first "found_at" entry is a path such as "$.items[0].url"; got {first!r}.'
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument="location", reason="not_a_path"))
-    return _filename_for(segments, loose.uri, content_type, checked_scope)
+    extension: str
+    if isinstance(loose, StoredTextLocation):
+        extension = _text_extension_for(loose.kind, loose.mime_type or content_type)
+    elif isinstance(loose, DownloadedArtifact) and loose.kind.is_text:
+        extension = _text_extension_for(StoredTextKind.TEXT, content_type or loose.content_type)
+    else:
+        extension = _extension_for(loose.uri, content_type)
+    return _filename_for(segments, extension=extension, scope=checked_scope)
 
 
-def _filename_for(segments: Sequence[_PathSegment], uri: str, content_type: str | None, scope: ArtifactScope) -> str:
+def _filename_for(segments: Sequence[_PathSegment], *, extension: str, scope: ArtifactScope) -> str:
     """The naming rule of `artifact_filename`, over the walk's own segments."""
     named = segments[:-1] if segments and segments[-1] == "url" else segments
     words: list[str] = []
@@ -372,7 +506,6 @@ def _filename_for(segments: Sequence[_PathSegment], uri: str, content_type: str 
         # Only the empty key reduces to nothing, and it says nothing about the field.
         if word:
             words.append(word)
-    extension = _extension_for(uri, content_type)
     stem = _fit_stem(words or [scope], _MAX_FILENAME_LENGTH - len(extension))
     # A device stem is at most four characters, so the `_` cannot overrun the cap.
     if _WINDOWS_DEVICE_STEM.fullmatch(stem):
@@ -398,6 +531,21 @@ def _extension_for(uri: str, content_type: str | None) -> str:
     if content_type is None:
         return ""
     return _EXTENSION_BY_CONTENT_TYPE.get(content_type.split(";")[0].strip().lower(), "")
+
+
+def _text_extension_for(kind: StoredTextKind, mime_type: str | None) -> str:
+    """`.ext` for a saved stored text — its MIME type's, else its kind's — never its storage key's."""
+    if mime_type is not None:
+        named = _TEXT_EXTENSION_BY_MIME_TYPE.get(mime_type.split(";")[0].strip().lower())
+        if named is not None:
+            return named
+    match kind:
+        case StoredTextKind.TEXT:
+            return ".txt"
+        case StoredTextKind.HTML:
+            return ".html"
+        case StoredTextKind.JSON:
+            return ".json"
 
 
 def _storage_key_extension(uri: str) -> str:
@@ -757,6 +905,312 @@ def _format_mib(byte_count: float) -> str:
     return f"{int(mib)} MiB" if mib.is_integer() else f"{mib:.1f} MiB"
 
 
+# ── load_stored_texts ────────────────────────────────────────────────
+
+#: The result artifacts the concept at each path is read from.
+_CONCEPT_ARTIFACTS: tuple[RunArtifact, ...] = (RunArtifact.WORKING_MEMORY, RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM)
+
+
+@dataclass(frozen=True)
+class _StoredTextSite:
+    """One stored text the walk found: where it sits, what it holds, and its reference."""
+
+    segments: tuple[_PathSegment, ...]
+    kind: StoredTextKind
+    url: str
+    reference: dict[str, Any]
+
+    @property
+    def path(self) -> str:
+        return _render_path(self.segments)
+
+
+async def load_stored_texts(
+    client: BulkResolveClient,
+    results: RunResults,
+    options: LoadStoredTextsOptions | None = None,
+) -> RunResults:
+    """A run's result with every stored text in `main_stuff` loaded.
+
+    Each value the runtime holds by reference, `{url, size, mime_type, preview}`, is replaced by its inline form,
+    `{text}`, `{inner_html}` (its `css_class` kept) or `{json_obj}`, which is the shape the generated types parse. The
+    result readers (`get_run_result`, `wait_for_result`, `start_and_wait_for_result`) call it by default; a caller
+    holding a result read with `load_stored_texts=False` calls it later.
+
+    Which values are stored texts is decided by concept, never by URL or MIME type: the concept at each path comes
+    from the run's working memory and output form (`pipelex_sdk.stored_texts.main_stuff_node`), so the results must
+    carry them; a result that carries neither is returned as it is. A `pipelex-storage://` reference is resolved
+    through the platform's bulk route, at most `BULK_RESOLVE_MAX_URIS` per request, and its signed link fetched under
+    the same bounds as `fetch_artifact`, and a `data:` URL is decoded. A stored text under any other URL
+    (`is_loadable_stored_text_url`) is refused before anything is sent, since fetching it would read a host the method
+    chose rather than the caller; a result read with `load_stored_texts=False` keeps it as written. The bytes are UTF-8
+    by the standard's rule, and a JSON value is the object they serialize.
+
+    The result passed in is never changed: a new one is returned, or the same one when there is nothing to load.
+
+    Raises:
+        StoredTextLoadError: Naming the text that could not be loaded, where it sits and why, a whole-request failure of
+            the resolve route included (`resolve_failed`, the route's error as its cause).
+        ArtifactOperationError: For nonsense bounds.
+    """
+    if results.main_stuff is None:
+        return results
+    node = main_stuff_node(results)
+    if node is None:
+        return results
+    loaded = await _load_stored_text_values(client, results.main_stuff, node, options or LoadStoredTextsOptions(), run_id=results.pipeline_run_id)
+    if loaded is results.main_stuff:
+        return results
+    return results.model_copy(update={"main_stuff": loaded})
+
+
+def may_hold_stored_texts(value: Any) -> bool:
+    """Whether a value holds anything shaped like a stored text's reference, which is what makes a read that left the
+    concepts out read them again: an object carrying a string `url`, no inline value field, and a `size` or a
+    `preview`, which the runtime sets on every reference it stores and an image or a document content never carries.
+    So an output of images and documents alone answers `False`. `True` says only that the concepts are worth reading,
+    the concept at each path still deciding; `False` says no stored text the runtime made can be there.
+    """
+    if isinstance(value, BaseModel):
+        return may_hold_stored_texts(value.model_dump())
+    if isinstance(value, (list, tuple)):
+        return any(may_hold_stored_texts(item) for item in cast("list[Any]", value))
+    if not isinstance(value, dict):
+        return False
+    fields = cast("dict[str, Any]", value)
+    if (
+        isinstance(fields.get("url"), str)
+        and all(fields.get(field_name) is None for field_name in STORED_TEXT_VALUE_FIELDS)
+        and ("size" in fields or "preview" in fields)
+    ):
+        return True
+    return any(may_hold_stored_texts(entry) for entry in fields.values())
+
+
+def carries_concept_artifacts(selection: Sequence[RunArtifact] | None) -> bool:
+    """Whether a results read narrowed to `selection` carried every artifact the concept at each path is read from:
+    the working memory and both forms. `None`, a read of every artifact, does.
+    """
+    return selection is None or all(artifact in selection for artifact in _CONCEPT_ARTIFACTS)
+
+
+async def with_concept_artifacts(
+    client: ArtifactCapableClient,
+    results: RunResults,
+    *,
+    selection: Sequence[RunArtifact] | None,
+) -> RunResults:
+    """The concept facts of a run's results: the results themselves when their read carried the working memory and
+    the forms (`selection` `None` reads every artifact), else those three read again by the run's id and set beside
+    the results. Nothing is read when nothing is missing, and a second read that finds no completed run leaves the
+    results as they are.
+    """
+    if selection is None:
+        return results
+    missing = [artifact for artifact in _CONCEPT_ARTIFACTS if artifact not in selection]
+    if not missing:
+        return results
+    state = await client.get_run_result(results.pipeline_run_id, artifacts=missing, load_stored_texts=False)
+    if not isinstance(state, RunResultCompleted):
+        return results
+    concepts = {str(artifact): getattr(state.result, str(artifact)) for artifact in missing}
+    return results.model_copy(update=concepts)
+
+
+async def _load_stored_text_values(
+    client: BulkResolveClient,
+    value: Any,
+    node: InputFormItem,
+    options: LoadStoredTextsOptions,
+    *,
+    run_id: str | None,
+) -> Any:
+    """`value` with its stored texts loaded, walked with `node`; `value` itself when it holds none."""
+    sites = _find_stored_texts(value, node)
+    if not sites:
+        return value
+    if options.concurrency < 1:
+        msg = f'"concurrency" must be a positive integer, got {options.concurrency}.'
+        raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument="concurrency", reason="not_positive"))
+    bounds = _validated_bounds(
+        FetchArtifactOptions(max_bytes=options.max_bytes, timeout_seconds=options.timeout_seconds, allow_http=options.allow_http)
+    )
+
+    # One read per distinct URL, named by the first place it was found.
+    first_site: dict[str, _StoredTextSite] = {}
+    for site in sites:
+        first_site.setdefault(site.url, site)
+    urls = list(first_site)
+    references = [url for url in urls if is_storage_reference(url)]
+    resolved = dict(zip(references, await _resolve_for_texts(client, references, first_site), strict=True))
+
+    texts: dict[str, Any] = {}
+    semaphore = asyncio.Semaphore(options.concurrency)
+    storage_client = _new_storage_client(bounds.timeout_seconds)
+
+    async def load_one(url: str) -> None:
+        async with semaphore:
+            site = first_site[url]
+            raw = await _read_stored_bytes(storage_client, site, resolved.get(url), bounds)
+            texts[url] = _decode_stored_value(site, raw, run_id=run_id)
+
+    try:
+        await asyncio.gather(*[load_one(url) for url in urls])
+    finally:
+        await storage_client.aclose()
+
+    loaded = copy.deepcopy(value.model_dump() if isinstance(value, BaseModel) else value)
+    for site in sites:
+        loaded = _replace_at(loaded, site.segments, _loaded_form(site, texts[site.url]))
+    return loaded
+
+
+async def _resolve_for_texts(client: BulkResolveClient, references: list[str], first_site: dict[str, _StoredTextSite]) -> list[ResolvedArtifact]:
+    """The bulk resolve of the stored texts' references, a whole-request failure being the first text's load error."""
+    try:
+        return await resolve_artifacts(client, references)
+    except (ApiResponseError, ApiUnreachableError, ArtifactOperationError) as exc:
+        site = first_site[references[0]]
+        status = exc.status if isinstance(exc, ApiResponseError) else None
+        msg = f"The stored text at {site.path} could not be loaded: the platform's bulk resolve route failed: {exc}"
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="resolve_failed", status=status, problem=exc.problem) from exc
+
+
+def _find_stored_texts(value: Any, node: InputFormItem) -> list[_StoredTextSite]:
+    """Every stored text's reference in `value`, in walk order, the concept at each path read off `node`.
+
+    Raises:
+        StoredTextLoadError: `unsupported_url` for a stored text whose `url` the loader never reads
+            (`is_loadable_stored_text_url`), before anything is sent.
+    """
+    sites: list[_StoredTextSite] = []
+    trail: list[_PathSegment] = []
+
+    def visit(current: Any, described: InputFormItem | None) -> None:
+        if isinstance(current, BaseModel):
+            current = current.model_dump()
+        kind = stored_text_kind_of_node(described)
+        if kind is not None:
+            url = _stored_text_reference_url(current, kind)
+            if url is None:
+                return
+            site = _StoredTextSite(segments=tuple(trail), kind=kind, url=url, reference=cast("dict[str, Any]", current))
+            if not is_loadable_stored_text_url(url):
+                msg = (
+                    f"The stored text at {site.path} could not be loaded: its url is neither a pipelex-storage:// reference "
+                    "nor a data: URL, so it is not fetched; read the result with load_stored_texts=False to see it as written."
+                )
+                raise StoredTextLoadError(msg, uri=url, path=site.path, reason="unsupported_url")
+            sites.append(site)
+            return
+        if isinstance(current, (list, tuple)):
+            sequence = cast("list[Any]", current)
+            for index_item, item in enumerate(sequence):
+                trail.append(index_item)
+                visit(item, child_node(described, sequence, index_item))
+                trail.pop()
+            return
+        if isinstance(current, dict):
+            mapping = cast("dict[str, Any]", current)
+            for key, entry in mapping.items():
+                trail.append(key)
+                visit(entry, child_node(described, mapping, key))
+                trail.pop()
+
+    visit(value, node)
+    return sites
+
+
+async def _read_stored_bytes(
+    storage_client: httpx.AsyncClient,
+    site: _StoredTextSite,
+    resolved: ResolvedArtifact | None,
+    bounds: _FetchBounds,
+) -> bytes:
+    """The bytes of one stored text: a reference's signed link fetched, or a `data:` URL decoded. Nothing else is read."""
+    if site.url.startswith("data:"):
+        decoded = _decode_data_url(site.url)
+        if decoded is None:
+            msg = f"The stored text at {site.path} could not be loaded: its data URL does not decode."
+            raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="unsupported_url")
+        if len(decoded) > bounds.max_bytes:
+            size = _format_mib(len(decoded))
+            msg = f"The stored text at {site.path} could not be loaded: it is {size}, over the {_format_mib(bounds.max_bytes)} cap."
+            raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="too_large", problem=_over_the_cap(bounds.max_bytes))
+        return decoded
+    if resolved is None:
+        # Unreachable: the walk admits only a reference or a data: URL, and every reference is resolved first.
+        msg = f"The stored text at {site.path} could not be loaded: its url was not resolved by the platform."
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="unsupported_url")
+    if resolved.error is not None:
+        msg = f"The stored text at {site.path} could not be loaded: {resolved.error.detail}"
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=resolved.error.code)
+    if resolved.url is None:
+        msg = f"The stored text at {site.path} could not be loaded: the bulk resolve route answered its item with neither a link nor an error."
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="resolve_failed", problem=response_unreadable_problem(status=200))
+    try:
+        async with _stream_resolved_url(storage_client, site.url, resolved.url, bounds) as stream:
+            return await stream.read()
+    except ArtifactFetchError as exc:
+        msg = f"The stored text at {site.path} could not be loaded: {exc}"
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=exc.reason, status=exc.status, problem=exc.problem) from exc
+
+
+def _decode_data_url(url: str) -> bytes | None:
+    """A `data:` URL's bytes, base64 or percent-encoded, or `None` when it is no data URL."""
+    header, separator, payload = url.removeprefix("data:").partition(",")
+    if not separator:
+        return None
+    if header.lower().endswith(";base64"):
+        try:
+            return base64.b64decode(payload, validate=True)
+        except binascii.Error:
+            return None
+    return unquote_to_bytes(payload)
+
+
+def _decode_stored_value(site: _StoredTextSite, raw: bytes, *, run_id: str | None) -> Any:
+    """The value one stored text holds: its UTF-8 text, or for a JSON value the object that text serializes."""
+    problem = response_unreadable_problem(status=200, pipeline_run_id=run_id)
+    try:
+        # The bytes as stored, a byte-order mark included: the value is exactly what was stored.
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        msg = f"The stored text at {site.path} could not be loaded: its bytes are not UTF-8 text."
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="not_utf8", problem=problem) from exc
+    match site.kind:
+        case StoredTextKind.TEXT | StoredTextKind.HTML:
+            return text
+        case StoredTextKind.JSON:
+            try:
+                parsed: Any = json.loads(text)
+            except json.JSONDecodeError as exc:
+                msg = f"The stored text at {site.path} could not be loaded: its bytes are not JSON."
+                raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="not_json_object", problem=problem) from exc
+            if not isinstance(parsed, dict):
+                msg = f"The stored text at {site.path} could not be loaded: its JSON is not an object."
+                raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="not_json_object", problem=problem)
+            return cast("dict[str, Any]", parsed)
+
+
+def _loaded_form(site: _StoredTextSite, value: Any) -> dict[str, Any]:
+    """The inline form of a loaded stored text: its value field first, its other inline fields kept."""
+    loaded: dict[str, Any] = {site.kind.value_field: value}
+    loaded.update({key: entry for key, entry in site.reference.items() if key not in STORED_TEXT_REFERENCE_FIELDS})
+    return loaded
+
+
+def _replace_at(root: Any, segments: Sequence[_PathSegment], value: Any) -> Any:
+    """`root` with the value at `segments` replaced, in place below the root; the new value itself at `$`."""
+    if not segments:
+        return value
+    parent: Any = root
+    for segment in segments[:-1]:
+        parent = parent[segment]
+    parent[segments[-1]] = value
+    return root
+
+
 # ── download_artifacts ───────────────────────────────────────────────
 
 
@@ -821,11 +1275,24 @@ async def download_artifacts(
     read_results = results if results is not None else await _read_completed_results(client, cast("str", run_id), scope)
     walked = _scope_value(read_results, scope, read_here=results is None)
 
-    # The walk's own record names the files; `locations` is what the verdict reports.
-    located = _walk_references(walked, with_paths=True)
+    # The concept at each path tells a stored text, a value of the run, from a file. A run read by id
+    # asked for its scope alone, so its concepts are read beside it when the walk may need them.
+    source = read_results
+    if results is None and may_hold_stored_texts(walked):
+        source = await with_concept_artifacts(client, read_results, selection=[scope.run_artifact])
+    node: InputFormItem | None
+    match scope:
+        case ArtifactScope.MAIN_STUFF:
+            node = main_stuff_node(source)
+        case ArtifactScope.WORKING_MEMORY:
+            node = working_memory_node(source)
+
+    # The walk's own record names the files; `locations` is what the verdict reports. A stored text is saved too, as
+    # a text file named by its MIME type.
+    located = _walk_references(walked, with_paths=True, node=node, include_texts=True)
     if not located:
         return _assemble_verdict(scope, [])
-    locations = [_render_location(reference) for reference in located]
+    locations = [_download_location(reference) for reference in located]
     uris = [reference.uri for reference in located]
 
     target_dir = Path(dir_path).resolve()
@@ -862,6 +1329,7 @@ async def download_artifacts(
                     scope=scope,
                     location=location,
                     name_path=located[index].paths[0],
+                    text_kind=located[index].text_kind,
                     entry=resolved[index],
                 )
                 for index, location in enumerate(locations)
@@ -884,7 +1352,8 @@ async def _read_completed_results(client: ArtifactCapableClient, run_id: str, sc
     Asks for the scope's one artifact only, so a download never pays for the graph, the forms or
     the usage it does not walk.
     """
-    state = await client.get_run_result(run_id, artifacts=[scope.run_artifact])
+    # Files only: the stored texts are values, which the walk skips by concept rather than loads.
+    state = await client.get_run_result(run_id, artifacts=[scope.run_artifact], load_stored_texts=False)
     if isinstance(state, RunResultRunning):
         retry = state.retry_after_seconds
         hint = f" — retry in {retry}s." if retry is not None else "."
@@ -921,10 +1390,37 @@ def _is_credential_refusal(exc: ApiResponseError) -> bool:
     return exc.status in {401, 403}
 
 
-def _item_error(location: ArtifactLocation, content_type: str | None, code: str, detail: str) -> DownloadedArtifact:
+class _DownloadLocation(ArtifactLocation):
+    """A reference of a download: where it sits, whether it is a stored file or a stored text, and the MIME type a
+    stored text's reference states.
+    """
+
+    kind: DownloadedKind
+    stated_mime_type: str | None = None
+
+    def content_type(self, resolved: str | None) -> str | None:
+        """A stored text's MIME type is its reference's; otherwise the platform's guess from the key."""
+        return self.stated_mime_type or resolved
+
+
+def _download_location(located: _LocatedReference) -> _DownloadLocation:
+    rendered = _render_location(located)
+    if located.text_kind is None:
+        return _DownloadLocation(uri=rendered.uri, found_at=rendered.found_at, kind=DownloadedKind.FILE)
+    stated = (located.text_reference or {}).get("mime_type")
+    return _DownloadLocation(
+        uri=rendered.uri,
+        found_at=rendered.found_at,
+        kind=DownloadedKind.TEXT,
+        stated_mime_type=stated if isinstance(stated, str) else None,
+    )
+
+
+def _item_error(location: _DownloadLocation, content_type: str | None, code: str, detail: str) -> DownloadedArtifact:
     """One reference's failure, as a value on the verdict — still saying where the reference sits."""
     return DownloadedArtifact(
         uri=location.uri,
+        kind=location.kind,
         found_at=location.found_at,
         path=None,
         content_type=content_type,
@@ -955,8 +1451,9 @@ async def _process_one(
     bounds: _FetchBounds,
     target_dir: Path,
     scope: ArtifactScope,
-    location: ArtifactLocation,
+    location: _DownloadLocation,
     name_path: Sequence[_PathSegment],
+    text_kind: StoredTextKind | None,
     entry: ResolvedArtifact,
 ) -> DownloadedArtifact:
     """One reference's whole pipeline — the semaphore's slot, a re-resolve on expiry, then the save
@@ -965,36 +1462,38 @@ async def _process_one(
     uri = location.uri
     async with semaphore:
         if budget.credential_failure is not None:
-            return _item_error(location, entry.content_type, "aborted", _SKIPPED_CREDENTIAL)
+            return _item_error(location, location.content_type(entry.content_type), "aborted", _SKIPPED_CREDENTIAL)
         if entry.error is None and _is_expired(entry.expires_at):
             try:
                 entry = (await resolve_artifacts(client, [uri]))[0]
             except ApiResponseError as exc:
                 if _is_credential_refusal(exc):
                     budget.credential_failure = exc
-                    return _item_error(location, entry.content_type, "aborted", _SKIPPED_CREDENTIAL)
+                    return _item_error(location, location.content_type(entry.content_type), "aborted", _SKIPPED_CREDENTIAL)
                 msg = f"The expired link could not be re-resolved: {exc}."
-                return _item_error(location, entry.content_type, "resolve_failed", msg)
+                return _item_error(location, location.content_type(entry.content_type), "resolve_failed", msg)
             except (PipelineRequestError, ValidationError, ValueError) as exc:
                 # Anything else the re-resolve can fail with — an unreachable host, a malformed
                 # answer, a body that does not parse — is this one reference's error, never the
                 # whole download's: the other references already have their links.
                 msg = f"The expired link could not be re-resolved: {exc}."
-                return _item_error(location, entry.content_type, "resolve_failed", msg)
+                return _item_error(location, location.content_type(entry.content_type), "resolve_failed", msg)
         if entry.error is not None:
-            return _item_error(location, None, entry.error.code, entry.error.detail)
+            return _item_error(location, location.content_type(None), entry.error.code, entry.error.detail)
+        content_type = location.content_type(entry.content_type)
         if entry.url is None:
             msg = "The bulk resolve route answered an item with neither a link nor an error."
-            return _item_error(location, entry.content_type, "resolve_failed", msg)
+            return _item_error(location, content_type, "resolve_failed", msg)
+        extension = _extension_for(uri, content_type) if text_kind is None else _text_extension_for(text_kind, content_type)
         return await _save_one(
             storage_client=storage_client,
             budget=budget,
             bounds=bounds,
             target_dir=target_dir,
             location=location,
-            filename=_filename_for(name_path, uri, entry.content_type, scope),
+            filename=_filename_for(name_path, extension=extension, scope=scope),
             download_url=entry.url,
-            content_type=entry.content_type,
+            content_type=content_type,
         )
 
 
@@ -1054,7 +1553,7 @@ async def _save_one(
     budget: _DownloadBudget,
     bounds: _FetchBounds,
     target_dir: Path,
-    location: ArtifactLocation,
+    location: _DownloadLocation,
     filename: str,
     download_url: str,
     content_type: str | None,
@@ -1147,7 +1646,9 @@ async def _save_one(
 
     # A body shorter than it declared gives the unused reservation back.
     budget.committed -= share() - written
-    return DownloadedArtifact(uri=uri, found_at=location.found_at, path=str(target.path), content_type=content_type, size=written, error=None)
+    return DownloadedArtifact(
+        uri=uri, kind=location.kind, found_at=location.found_at, path=str(target.path), content_type=content_type, size=written, error=None
+    )
 
 
 def _assemble_verdict(scope: ArtifactScope, artifacts: list[DownloadedArtifact]) -> DownloadArtifactsResult:

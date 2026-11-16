@@ -1719,10 +1719,10 @@ class FileLinkTarget(BaseModel):
 class FileLinkError(BaseModel):
     """Why one file got no link — a value, never a raised error.
 
-    `code` is `not_found` (an unknown file, or one deleted meanwhile), `conflict` (a file whose upload has
-    not finished), `invalid_storage_uri` (a malformed address) or `forbidden` (another organization's
-    address), and stays a `str` so a code a later platform adds still reads; `detail` is the sentence a
-    person reads.
+    `code` is the platform's registry code: `request.invalid` naming `file_id` or `uri` (an unknown file, one
+    deleted meanwhile, or one whose upload has not finished), `pipelex.storage.uri_invalid` (a malformed address)
+    or `pipelex.org.mismatch` (another organization's address), and stays a `str` so a code a later platform adds
+    still reads; `detail` is the sentence a person reads.
     """
 
     model_config = ConfigDict(extra="allow")

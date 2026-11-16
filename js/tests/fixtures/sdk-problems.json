@@ -614,12 +614,12 @@
   ],
   "artifact_fetch": [
     {
-      "reason": "invalid_storage_uri",
+      "reason": "pipelex.storage.uri_invalid",
       "status": null,
       "code": "input.reference_not_found"
     },
     {
-      "reason": "forbidden",
+      "reason": "pipelex.org.mismatch",
       "status": null,
       "code": "input.reference_not_found"
     },

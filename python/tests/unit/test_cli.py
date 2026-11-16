@@ -667,6 +667,59 @@ class TestCli:
         _check(case, outcome, root)
         assert f"Error: could not reach the Pipelex API at http://api.test ({code}).\n" in outcome.stderr, outcome.shown
 
+    # ── A completed hosted run whose stored text does not load ────────────────────────────────────
+
+    def test_a_completed_run_whose_stored_text_does_not_load_is_not_said_to_be_going(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The table cannot hold this case: the concept re-read names its artifacts in each SDK's own order, so
+        its route differs. Its twin is `@pipelex/sdk`'s "a completed hosted run whose stored text does not load".
+        """
+        stored = "pipelex-storage://acme/runs/run-7/generated/3f9a/value.txt"
+        reference = {"url": stored, "size": 48210, "mime_type": "text/plain", "preview": "All good"}
+        refusal = {"code": "pipelex.org.mismatch", "detail": "another organization"}
+        case: dict[str, Any] = {
+            "name": "python/hosted-stored-text-unloadable",
+            "argv": ["run", "--method", "mt_receipts01"],
+            "routes": {
+                "GET /v1/version": [{"answer": "version/hosted"}],
+                "POST /v1/start": [{"status": 202, "body": {"pipeline_run_id": "run-7", "state": "STARTED", "created_at": "2026-10-08T10:00:00Z"}}],
+                "GET /v1/runs/run-7/results?artifacts=main_stuff": [{"status": 200, "body": {"pipeline_run_id": "run-7", "main_stuff": reference}}],
+                "GET /v1/runs/run-7/results?artifacts=input_form,output_form,working_memory": [
+                    {
+                        "status": 200,
+                        "body": {
+                            "pipeline_run_id": "run-7",
+                            "working_memory": {
+                                "root": {"review": {"concept": "native.Text", "content": reference}},
+                                "aliases": {"main_stuff": "review"},
+                            },
+                            "output_form": {},
+                            "input_form": {},
+                        },
+                    }
+                ],
+                "POST /v1/resolve-storage-url/bulk": [
+                    {"status": 200, "body": {"items": [{"uri": stored, "url": None, "expires_at": None, "content_type": None, "error": refusal}]}}
+                ],
+            },
+            "expect": {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": [
+                    "Run started: run-7\n",
+                    "Error: the run completed, but the stored text at $ in its output could not be loaded (pipelex.org.mismatch).\n",
+                    "Reason: The input 'pipelex-storage://acme/runs/run-7/generated/3f9a/value.txt' refers to something that does not exist.\n",
+                ],
+                "stderr_excludes": ["may still be going", "unexpected failure", "The output above"],
+            },
+        }
+        root = tmp_path.resolve()
+
+        outcome = _run_case(case, root, mocker, monkeypatch)
+
+        _check(case, outcome, root)
+
     # ── An interrupt the table cannot express ─────────────────────────────────────────────────────
 
     @pytest.mark.parametrize(("early", "case"), [(early, case) for _, early, case in _EARLY_SCENARIOS], ids=[name for name, _, _ in _EARLY_SCENARIOS])

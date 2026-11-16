@@ -8,7 +8,8 @@ import {
   RunLifecycleUnavailableError,
   RunTimeoutError,
 } from "./errors.js";
-import { MAX_TIMER_DELAY_MS } from "./timers.js";
+import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
+import { eitherSignal } from "./signals.js";
 import { dropUnfit, isPlainObject } from "./records.js";
 import type { DictPipeOutput, DictWorkingMemory, PipelexRunResultStart } from "./models.js";
 
@@ -719,6 +720,18 @@ export interface GetRunResultOptions {
    * or an unknown name is a `RequestArgumentError` before any request.
    */
   artifacts?: readonly RunResultArtifact[];
+  /**
+   * Load the stored texts of a completed run's `main_stuff` before handing the result back:
+   * `true`, the default. A `Text`, `Markdown`, `Html` or `JSON` value past the runtime's inline
+   * threshold travels as its reference, `{ url, size, mime_type, preview }`, and the read replaces
+   * each one by its inline form (`{ text }`, `{ inner_html }`, `{ json_obj }`), so the generated
+   * types' loaded shape parses it. `false` hands the wire shape back as the platform relayed it,
+   * for the generated `<Name>Wire` type, and loads nothing. The concept at each path decides what
+   * is a stored text; a read narrowed by `artifacts` that holds a possible reference reads the
+   * working memory and the forms beside it, and returns only what it was asked for. See
+   * `docs/run-results.md`, "Stored texts".
+   */
+  loadStoredTexts?: boolean;
 }
 
 /**
@@ -909,6 +922,15 @@ export interface WaitForResultOptions {
    * artifact the runner sent.
    */
   artifacts?: readonly RunResultArtifact[];
+  /**
+   * Load the stored texts of the completed result's `main_stuff` — `getRunResult`'s
+   * `loadStoredTexts`, `true` by default. `timeoutMs` bounds the load too: a run that completed
+   * but whose texts did not load in the time the wait had left throws `RunTimeoutError` saying so,
+   * and `getRunResult` reads it again. `startAndWaitForResult`'s blocking fallback honours it too,
+   * a failed load there throwing `StoredTextLoadError` with the completed result on its
+   * `wireResults`.
+   */
+  loadStoredTexts?: boolean;
 }
 
 /**
@@ -948,6 +970,16 @@ export type FetchResultOnce = (
   options?: GetRunResultOptions,
 ) => Promise<RunResultState>;
 
+/**
+ * The load of a completed result's stored texts — what the poll loop calls once a status read
+ * answers completed, under the wait's own deadline, so a timeout tells a run that did not finish
+ * from one whose texts did not load in time.
+ */
+export type LoadCompletedResult = (
+  result: RunResults,
+  options: { signal: AbortSignal },
+) => Promise<RunResults>;
+
 /** A single progress read — what the poll loop calls on each poll for `onProgress`. */
 export type FetchProgressOnce = (
   runId: string,
@@ -977,6 +1009,12 @@ export function assertWaitOptions(options: WaitForResultOptions = {}): void {
  * problem, which nests the run's own — and throws `RunTimeoutError` if `timeoutMs` elapses first (the run
  * keeps executing server-side — re-poll by id later).
  *
+ * `timeoutMs` is one deadline for the whole wait: it bounds each status read, each progress read
+ * and each sleep, and, with `loadCompleted`, the load of the completed result's stored texts. The
+ * status read then never loads, so a deadline that passes during the load throws a
+ * `RunTimeoutError` saying the run completed and its texts did not load in time, while one that
+ * passes earlier says the run did not reach a terminal state.
+ *
  * With `options.onProgress` and a `fetchProgress`, each poll that finds the run still running also
  * reads its progress and hands `onProgress` the snapshot when it is fresher than the last one
  * delivered (`isFresherRunProgress`). A progress read that fails only skips that poll's snapshot;
@@ -991,69 +1029,116 @@ export async function pollUntilResult(
   runId: string,
   options: WaitForResultOptions = {},
   fetchProgress?: FetchProgressOnce,
+  loadCompleted?: LoadCompletedResult,
 ): Promise<RunResults> {
   assertWaitOptions(options);
   const intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
   const startedAt = Date.now();
-  let attempt = 0;
-  const { onProgress } = options;
-  // No progress request at all unless the caller asked for progress.
-  let readsProgress = onProgress !== undefined && fetchProgress !== undefined;
-  let delivered: RunProgress | undefined;
-
-  for (;;) {
-    throwIfAborted(options.signal);
-
-    // Enforce the deadline BEFORE each lookup, so a poll is never issued past the
-    // timeout (the previous wait is clamped to the deadline, so the next loop
-    // would otherwise fire one extra fetch right at it).
-    const elapsedMs = Date.now() - startedAt;
-    if (elapsedMs >= timeoutMs) {
-      throw new RunTimeoutError(
-        `Run ${runId} did not reach a terminal state within ${timeoutMs}ms.`,
-        runId,
-        timeoutMs,
-      );
-    }
-
-    const state = await fetchOnce(
+  // One deadline for the whole wait, carried by every request and sleep below beside the caller's
+  // own signal. A timeout the timer cannot hold is left to the elapsed-time check alone.
+  const deadline = new AbortController();
+  const timer = isTimerDelay(timeoutMs)
+    ? setTimeout(() => {
+        deadline.abort(new DOMException(`The wait for run ${runId} timed out.`, "TimeoutError"));
+      }, timeoutMs)
+    : undefined;
+  const linked = eitherSignal(deadline.signal, options.signal);
+  const { signal } = linked;
+  // The deadline, not the caller, ended the step: the wait's own timeout.
+  const timedOut = (): boolean => deadline.signal.aborted && options.signal?.aborted !== true;
+  const notFinished = (): RunTimeoutError =>
+    new RunTimeoutError(
+      `Run ${runId} did not reach a terminal state within ${timeoutMs}ms.`,
       runId,
-      options.artifacts === undefined
-        ? { signal: options.signal }
-        : { signal: options.signal, artifacts: options.artifacts },
+      timeoutMs,
     );
 
-    if (state.state === "completed") {
-      return state.result;
-    }
-    if (state.state === "failed") {
-      throw new RunFailedError(state.message, runId, state.status, { problem: state.problem });
-    }
+  try {
+    let attempt = 0;
+    const { onProgress } = options;
+    // No progress request at all unless the caller asked for progress.
+    let readsProgress = onProgress !== undefined && fetchProgress !== undefined;
+    let delivered: RunProgress | undefined;
 
-    if (readsProgress && onProgress !== undefined && fetchProgress !== undefined) {
-      let progress: RunProgress | undefined;
+    for (;;) {
+      throwIfAborted(options.signal);
+
+      // Enforce the deadline BEFORE each lookup, so a poll is never issued past the
+      // timeout (the previous wait is clamped to the deadline, so the next loop
+      // would otherwise fire one extra fetch right at it).
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs >= timeoutMs || deadline.signal.aborted) throw notFinished();
+
+      // With `loadCompleted`, the status read never loads: the load runs below, so a timeout
+      // says truthfully whether the run had completed.
+      const loadStoredTexts = loadCompleted === undefined ? options.loadStoredTexts : false;
+      let state: RunResultState;
       try {
-        progress = await fetchProgress(runId, { signal: options.signal });
+        state = await fetchOnce(runId, {
+          signal,
+          ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+          ...(loadStoredTexts === undefined ? {} : { loadStoredTexts }),
+        });
       } catch (error) {
-        // The caller's abort ends the wait. Any other failure skips this poll's snapshot, since
-        // the results read, not the progress, is the truth about the run.
-        throwIfAborted(options.signal);
-        // A server without the route answers every read with the same 404: stop asking.
-        if (error instanceof RunLifecycleUnavailableError) readsProgress = false;
+        if (timedOut()) throw notFinished();
+        throw error;
       }
-      if (progress !== undefined && isFresherRunProgress(progress, delivered)) {
-        delivered = progress;
-        onProgress(progress);
+
+      if (state.state === "completed") {
+        if (loadCompleted === undefined) return state.result;
+        try {
+          return await loadCompleted(state.result, { signal });
+        } catch (error) {
+          if (timedOut()) {
+            throw new RunTimeoutError(
+              `Run ${runId} completed, but its stored texts did not load within ${timeoutMs}ms; ` +
+                "read it again with getRunResult, or with loadStoredTexts: false for the wire shape.",
+              runId,
+              timeoutMs,
+            );
+          }
+          throw error;
+        }
+      }
+      if (state.state === "failed") {
+        throw new RunFailedError(state.message, runId, state.status, { problem: state.problem });
+      }
+
+      if (readsProgress && onProgress !== undefined && fetchProgress !== undefined) {
+        let progress: RunProgress | undefined;
+        try {
+          progress = await fetchProgress(runId, { signal });
+        } catch (error) {
+          // The caller's abort ends the wait, and so does the deadline. Any other failure skips
+          // this poll's snapshot, since the results read, not the progress, is the truth about
+          // the run.
+          throwIfAborted(options.signal);
+          if (timedOut()) throw notFinished();
+          // A server without the route answers every read with the same 404: stop asking.
+          if (error instanceof RunLifecycleUnavailableError) readsProgress = false;
+        }
+        if (progress !== undefined && isFresherRunProgress(progress, delivered)) {
+          delivered = progress;
+          onProgress(progress);
+        }
+      }
+
+      attempt += 1;
+      options.onPoll?.({ attempt, elapsedMs });
+
+      const retryMs = state.retry_after_seconds != null ? state.retry_after_seconds * 1000 : 0;
+      const waitMs = Math.min(Math.max(intervalMs, retryMs), timeoutMs - elapsedMs);
+      try {
+        await sleep(waitMs, signal);
+      } catch (error) {
+        if (timedOut()) throw notFinished();
+        throw error;
       }
     }
-
-    attempt += 1;
-    options.onPoll?.({ attempt, elapsedMs });
-
-    const retryMs = state.retry_after_seconds != null ? state.retry_after_seconds * 1000 : 0;
-    const waitMs = Math.min(Math.max(intervalMs, retryMs), timeoutMs - elapsedMs);
-    await sleep(waitMs, options.signal);
+  } finally {
+    clearTimeout(timer);
+    linked.dispose();
   }
 }
 
