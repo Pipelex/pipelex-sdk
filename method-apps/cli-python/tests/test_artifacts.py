@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, NoReturn, cast
 
 import pytest
-from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult, DownloadedArtifact
+from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult
 from pipelex_sdk.client import PipelexAPIClient
 from rich.console import Console
 
@@ -30,7 +30,7 @@ from pipelex_method_cli_python.lib.artifacts import (
     download_produced_files,
     print_downloads,
 )
-from tests.support import IMAGE_OUTPUT, RUN_ID, TEXT_OUTPUT, TWO_FILES_OUTPUT, FakeClient, download_verdict, run_results
+from tests.support import IMAGE_OUTPUT, RUN_ID, TEXT_OUTPUT, TWO_FILES_OUTPUT, FakeClient, download_verdict, downloaded_artifact, run_results
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -55,7 +55,7 @@ class TestDownloadProducedFiles:
 
     async def test_an_output_referencing_a_file_goes_through_the_client(self, tmp_path: Path):
         fake = FakeClient()
-        saved = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=str(tmp_path / "main_stuff.png"), size=3)
+        saved = downloaded_artifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=str(tmp_path / "main_stuff.png"), size=3)
         fake.download_answer = download_verdict(saved)
         downloaded = await download_produced_files(_as_client(fake), run_results(IMAGE_OUTPUT), out_dir=tmp_path)
         assert isinstance(downloaded, DownloadArtifactsResult)
@@ -77,8 +77,8 @@ class TestCompletionEvidence:
         earlier = DEFAULT_OUTPUT_ROOT / RUN_ID
         fake = FakeClient()
         fake.download_answer = download_verdict(
-            DownloadedArtifact(uri=TWO_FILES_OUTPUT["first"]["url"], found_at=["$.first.url"], path=str(earlier / "first.png"), size=3),
-            DownloadedArtifact(uri=TWO_FILES_OUTPUT["second"]["url"], found_at=["$.second.url"], path=str(earlier / "second.png"), size=5),
+            downloaded_artifact(uri=TWO_FILES_OUTPUT["first"]["url"], found_at=["$.first.url"], path=str(earlier / "first.png"), size=3),
+            downloaded_artifact(uri=TWO_FILES_OUTPUT["second"]["url"], found_at=["$.second.url"], path=str(earlier / "second.png"), size=5),
         )
         downloaded = await download_produced_files(_as_client(fake), run_results(TWO_FILES_OUTPUT), out_dir=None)
         assert isinstance(downloaded, DownloadArtifactsResult) and downloaded.all_saved
@@ -158,8 +158,8 @@ class TestCompletionEvidence:
         earlier = DEFAULT_OUTPUT_ROOT / RUN_ID
         fake = FakeClient()
         fake.download_answer = download_verdict(
-            DownloadedArtifact(uri=TWO_FILES_OUTPUT["first"]["url"], found_at=["$.first.url"], path=str(earlier / "first.png"), size=3),
-            DownloadedArtifact(
+            downloaded_artifact(uri=TWO_FILES_OUTPUT["first"]["url"], found_at=["$.first.url"], path=str(earlier / "first.png"), size=3),
+            downloaded_artifact(
                 uri=TWO_FILES_OUTPUT["second"]["url"], found_at=["$.second.url"], error=ArtifactItemError(code="gone", detail="Gone.")
             ),
         )
@@ -292,21 +292,23 @@ class TestPrintDownloads:
         assert "none were fetched" in rendered
 
     def test_names_each_saved_file(self):
-        rendered = _render(download_verdict(DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path="/tmp/out/cat.png", size=3)))
+        rendered = _render(download_verdict(downloaded_artifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path="/tmp/out/cat.png", size=3)))
         assert "Saved /tmp/out/cat.png" in rendered
 
     def test_names_a_reference_that_did_not_come_down(self):
-        failed = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="forbidden", detail="Not your run."))
+        failed = downloaded_artifact(
+            uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run.")
+        )
         rendered = _render(download_verdict(failed))
         # The reference, the machine code and the sentence a person reads: a failed reference is
         # reported rather than raised, so the message is the only place it surfaces.
         assert IMAGE_OUTPUT["url"] in rendered
-        assert "forbidden" in rendered
+        assert "pipelex.org.mismatch" in rendered
         assert "Not your run." in rendered
 
     def test_reports_both_arms_of_a_partial_download(self):
-        saved = DownloadedArtifact(uri="pipelex-storage://run-1/ok.png", found_at=["$[0].url"], path="/tmp/out/ok.png", size=3)
-        failed = DownloadedArtifact(
+        saved = downloaded_artifact(uri="pipelex-storage://run-1/ok.png", found_at=["$[0].url"], path="/tmp/out/ok.png", size=3)
+        failed = downloaded_artifact(
             uri="pipelex-storage://run-1/bad.png", found_at=["$[1].url"], error=ArtifactItemError(code="write_failed", detail="Disk full.")
         )
         rendered = _render(download_verdict(saved, failed))

@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ApiResponseError, ApiUnreachableError, ArtifactFetchError } from "@pipelex/sdk";
+import {
+  ApiResponseError,
+  ApiUnreachableError,
+  ArtifactFetchError,
+  buildProblem,
+} from "@pipelex/sdk";
 
 const fetchArtifact = vi.fn();
 
@@ -104,9 +109,17 @@ describe("GET /api/assets/[...path]", () => {
   });
 
   it("answers 404 alike for a reference that is not the key's and one that names nothing", async () => {
-    for (const code of ["forbidden", "not_found", "invalid_storage_uri"]) {
+    // The resolve route's refusals as the platform sends them, then the
+    // store's missing object. The SDK reads each one as the problem
+    // `input.reference_not_found`, which is what the route keys on, so the
+    // test hands it over as the SDK raises it rather than relying on which
+    // reasons a given SDK release maps onto it.
+    const uri = "pipelex-storage://org/x.png";
+    for (const reason of ["pipelex.org.mismatch", "not_found", "pipelex.storage.uri_invalid"]) {
       fetchArtifact.mockRejectedValueOnce(
-        new ArtifactFetchError("refused", "pipelex-storage://org/x.png", code),
+        new ArtifactFetchError("refused", uri, reason, undefined, {
+          problem: buildProblem("input.reference_not_found", { input: uri }),
+        }),
       );
       const response = await get(["org", "x.png"]);
       expect(response.status).toBe(404);
