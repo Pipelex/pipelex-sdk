@@ -170,6 +170,7 @@ import {
   RequestArgumentError,
   RunLifecycleUnavailableError,
   RunStillRunningError,
+  StoredTextLoadError,
 } from "./errors.js";
 import { isPlainObject } from "./records.js";
 import { readProblemItems } from "./problem-items.js";
@@ -183,7 +184,6 @@ import {
   announcedTreeLimits,
   contentsTreeSource,
   declaresBlobStore,
-  eitherSignal,
   emptyTreeRefusal,
   fileByBlob,
   forEachConcurrently,
@@ -234,6 +234,7 @@ import type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.
 import { prepareInputs as prepareInputsImpl } from "./prepare-inputs.js";
 import type { PrepareInputsRequest, PreparedInputs } from "./prepare-inputs.js";
 import {
+  carriesConceptArtifacts,
   downloadArtifacts as downloadArtifactsImpl,
   fetchArtifact as fetchArtifactImpl,
   loadStoredTexts as loadStoredTextsImpl,
@@ -251,6 +252,7 @@ import type {
 } from "./artifacts.js";
 import { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
 import { ExactJsonUnsupportedError, parseExactJson, stringifyExactJson } from "./exact-json.js";
+import { eitherSignal } from "./signals.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // A pure RUNAWAY guard on the paged-list iterators (`iterateMethods`,
@@ -2850,17 +2852,22 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
   /**
    * A completed result with the stored texts of its `main_stuff` loaded, as the result readers
-   * hand it back by default (`loadStoredTexts`). A `main_stuff` holding no possible reference is
-   * returned untouched, with nothing read; one that may hold some is walked by concept, the working
-   * memory and the forms read again by the run's id when the read's `selection` left them out, and
-   * only `main_stuff` changes in the result handed back.
+   * hand it back by default (`loadStoredTexts`); only `main_stuff` changes in the result handed
+   * back. A read that carried the concepts is walked by them at once, which costs no request when
+   * nothing is stored. A read whose `selection` left them out reads the working memory and the
+   * forms again by the run's id only when `main_stuff` holds a value shaped like a stored text's
+   * reference ({@link mayHoldStoredTexts}), so a narrowed read of images and documents stays one
+   * request.
    */
   private async withStoredTextsLoaded(
     result: RunResults,
     selection: readonly RunResultArtifact[] | undefined,
     signal: AbortSignal | undefined,
   ): Promise<RunResults> {
-    if (result.main_stuff == null || !mayHoldStoredTexts(result.main_stuff)) return result;
+    if (result.main_stuff == null) return result;
+    if (!carriesConceptArtifacts(selection) && !mayHoldStoredTexts(result.main_stuff)) {
+      return result;
+    }
     const source = await withConceptArtifacts(this, result, selection, signal);
     const loaded = await loadStoredTextsImpl(this, { ...result, ...source } as RunResults, {
       signal,
@@ -2874,14 +2881,20 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * Poll an already-started run (by id) until it reaches a terminal state. With `onProgress`,
    * each poll that finds the run still running also reads `getRunProgress` and hands the callback
    * every snapshot fresher than the last it delivered; a failed progress read never fails the wait
-   * (see `WaitForResultOptions.onProgress`).
+   * (see `WaitForResultOptions.onProgress`). `timeoutMs` bounds the whole wait, the load of the
+   * completed result's stored texts included: a run that completed but whose texts did not load
+   * in the time left throws `RunTimeoutError` saying so.
    */
   async waitForResult(runId: string, options?: WaitForResultOptions): Promise<RunResults> {
+    const selection = options?.artifacts;
     return pollUntilResult(
       (id, opts) => this.getRunResult(id, opts),
       runId,
       options,
       (id, opts) => this.getRunProgress(id, opts),
+      options?.loadStoredTexts === false || !selectionIncludesMainStuff(selection)
+        ? undefined
+        : (result, opts) => this.withStoredTextsLoaded(result, selection, opts.signal),
     );
   }
 
@@ -5368,9 +5381,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * file got a verdict. A linked file carries its `url`, a presigned `GET` valid for fifteen
    * minutes, with its `expires_at`, the `name` the download saves under and its `media_type`, and
    * a `null` `error`. A file that got no link carries `error`, `{ code, detail }`, and `null` link
-   * members: `not_found` for an unknown file id, `conflict` for a file whose upload has not
-   * finished, `invalid_storage_uri` for a malformed address and `forbidden` for another
-   * organization's.
+   * members: the platform's registry codes, `request.invalid` naming `file_id` or `uri` for an
+   * unknown file or one whose upload has not finished, `pipelex.storage.uri_invalid` for a malformed
+   * address and `pipelex.org.mismatch` for another organization's.
    *
    * Each link is signed with a `Content-Disposition` naming the file, so a download saves under
    * the name a person sees rather than the bytes' hash. It opens in place (`inline`) for an image,
@@ -5994,10 +6007,26 @@ export class PipelexApiClient implements HostedProtocolSurface {
       sending,
     );
     const results = resultsFromExecute(response);
+    if (loadStoredTexts === false) return results;
     // The blocking answer carries the working memory and the forms, so nothing is read again.
-    return loadStoredTexts === false
-      ? results
-      : this.withStoredTextsLoaded(results, undefined, signal);
+    try {
+      return await this.withStoredTextsLoaded(results, undefined, signal);
+    } catch (err) {
+      if (!(err instanceof StoredTextLoadError)) throw err;
+      // The answer is the only copy of a completed run, and a bare runner serves no bulk resolve
+      // route: the error carries the result.
+      throw new StoredTextLoadError(
+        err.message,
+        {
+          uri: err.uri,
+          path: err.path,
+          reason: err.reason,
+          status: err.status,
+          wireResults: results,
+        },
+        { cause: err.cause, problem: err.problem },
+      );
+    }
   }
 }
 

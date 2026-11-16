@@ -81,7 +81,7 @@ class ArtifactScope(StrEnum):
 class ArtifactItemError(BaseModel):
     """Why one reference failed — a value, never a raised error.
 
-    `code` is the resolve route's own per-reference code (`invalid_storage_uri`, `forbidden`) or one
+    `code` is the resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`) or one
     of the fetch boundary's (see `ArtifactFetchError`), plus the download's own `resolve_failed`,
     `total_limit_exceeded`, `write_failed` and `aborted`. `detail` is the sentence a person reads.
     """

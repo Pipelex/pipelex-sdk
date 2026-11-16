@@ -80,7 +80,7 @@ if TYPE_CHECKING:
     from mthds.protocol.problem.models import ProblemItem
 
     from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
-    from pipelex_sdk.runs import RunStatus
+    from pipelex_sdk.runs import RunResults, RunStatus
 
 #: The `ApiUnreachableError.network_code` of a request that reached the API and that the client's own time limit
 #: cut off while it was sent or answered — `@pipelex/sdk`'s code for the same case. Every other transport failure
@@ -1249,7 +1249,7 @@ class ArtifactFetchError(ArtifactOperationError):
     """One reference could not be turned into a bounded stream by `fetch_artifact`.
 
     `reason` says why, in a closed vocabulary the download verdict shares for its per-item errors: the resolve
-    route's own per-reference reasons (`invalid_storage_uri`, `forbidden`), then the fetch boundary's —
+    route's own per-reference codes (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`), then the fetch boundary's —
     `unsupported_url`, `plain_http_refused`, `redirect_refused`, `store_refused` (a 401/403 from the object store),
     `not_found` (404/410), `store_error` (any other non-2xx), `too_large`, `timeout`, `network`, and `unknown` for a
     failure the SDK cannot place. `status` is the store's HTTP status when one was received. `download_artifacts`
@@ -1273,14 +1273,21 @@ class StoredTextLoadError(ArtifactOperationError):
 
     `uri` is the stored text's `url`, `path` the `$`-rooted path of the value holding it in `main_stuff` (`$`,
     `$.items[2]`, `$.text_and_images.text`), and `reason` why, in the vocabulary of `ArtifactFetchError` (the resolve
-    route's per-reference code, then the fetch boundary's reasons) plus the loader's own: `not_utf8` for bytes that are
-    no UTF-8 text, and `not_json_object` for a stored JSON value that is no JSON object. `status` is the store's HTTP
-    status when one was received.
+    route's per-reference code, then the fetch boundary's reasons) plus the loader's own: `unsupported_url` for a
+    stored text whose `url` is neither a `pipelex-storage://` reference nor a `data:` URL, which is never fetched;
+    `resolve_failed` when the bulk resolve route failed as a whole, naming the first text it was asked for, the
+    route's error being the cause and its problem kept; `not_utf8` for bytes that are no UTF-8 text; and
+    `not_json_object` for a stored JSON value that is no JSON object. `status` is the HTTP status received, the
+    store's or the resolve route's, when one was.
 
-    Its `problem` is the fetch failure's own when the bytes could not be read (`artifact_fetch_problem`), and
-    `client.response_unreadable` naming the run when they were read but are not the value. A caller who wants the
-    result anyway reads it with the loading turned off (`load_stored_texts=False`) and gets every stored text as its
-    reference. Mirrors `@pipelex/sdk`'s `StoredTextLoadError`.
+    Its `problem` is the fetch failure's own when the bytes could not be read (`artifact_fetch_problem`), the resolve
+    route's own for `resolve_failed`, and `client.response_unreadable` naming the run when the bytes were read but are
+    not the value. A caller who wants the result anyway reads it again with the loading turned off
+    (`load_stored_texts=False`) and gets every stored text as its reference.
+
+    `wire_results` is that result, as it was answered, every stored text still its reference, when nothing else holds
+    it: it is set only by `start_and_wait`'s blocking fallback, a bare runner's `POST /v1/execute`, where there is no
+    run to read again. It is `None` everywhere else. Mirrors `@pipelex/sdk`'s `StoredTextLoadError`.
     """
 
     def __init__(
@@ -1292,12 +1299,14 @@ class StoredTextLoadError(ArtifactOperationError):
         reason: str,
         status: int | None = None,
         problem: Problem | None = None,
+        wire_results: RunResults | None = None,
     ) -> None:
         super().__init__(message, problem=problem or artifact_fetch_problem(reason=reason, uri=uri, status=status))
         self.uri = uri
         self.path = path
         self.reason = reason
         self.status = status
+        self.wire_results = wire_results
 
 
 def artifact_fetch_problem(*, reason: str, uri: str, status: int | None = None) -> Problem:
@@ -1309,7 +1318,8 @@ def artifact_fetch_problem(*, reason: str, uri: str, status: int | None = None) 
         status: The store's HTTP status, when one was received.
 
     Returns:
-        `input.reference_not_found` naming the reference for `invalid_storage_uri`, `forbidden` and `not_found`;
+        `input.reference_not_found` naming the reference for the resolve route's `pipelex.storage.uri_invalid` and
+        `pipelex.org.mismatch` and for `not_found`;
         `client.link_refused` for `unsupported_url`, `plain_http_refused` and `redirect_refused`; for `store_error`
         and `store_refused`, the object store failing or refusing a link the platform has just signed,
         `storage_status_problem`'s reading of the store's status (`runtime.unavailable` for a `408`, a `429` or a
@@ -1319,7 +1329,7 @@ def artifact_fetch_problem(*, reason: str, uri: str, status: int | None = None) 
         this version does not know included.
     """
     match reason:
-        case "invalid_storage_uri" | "forbidden" | "not_found":
+        case "pipelex.storage.uri_invalid" | "pipelex.org.mismatch" | "not_found":
             return make_client_problem(CoreCode.INPUT_REFERENCE_NOT_FOUND, params={"input": uri})
         case "unsupported_url":
             return make_client_problem(CoreCode.CLIENT_LINK_REFUSED, params={"reason": "unsupported_scheme"})

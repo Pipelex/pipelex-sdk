@@ -69,6 +69,7 @@ from pipelex_sdk.artifact_models import (
 )
 from pipelex_sdk.errors import (
     ApiResponseError,
+    ApiUnreachableError,
     ArtifactAuthenticationError,
     ArtifactFetchError,
     ArtifactOperationError,
@@ -224,6 +225,31 @@ def is_storage_reference(value: str) -> bool:
     return value.startswith(PIPELEX_STORAGE_SCHEME) and len(value) > len(PIPELEX_STORAGE_SCHEME)
 
 
+def is_loadable_stored_text_url(url: str) -> bool:
+    """A `url` a stored text may be loaded from: a `pipelex-storage://` reference, resolved through the platform's bulk
+    route to a link it signs, or a `data:` URL, decoded where it is. A stored text at any other URL is never fetched, so a
+    method cannot have the SDK read a host the caller did not choose: the loader refuses it as `unsupported_url`.
+
+    The file walks (`locate_stored_references`, `download_artifacts`) report the first kind only, since a `data:` URL
+    holds its value inline and has nothing to resolve or save.
+    """
+    return is_storage_reference(url) or url.startswith("data:")
+
+
+def _stored_text_reference_url(value: Any, kind: StoredTextKind) -> str | None:
+    """The `url` of a stored text's reference, `value` sitting where the concept is a stored text: an object carrying a
+    string `url` and no value field. `None` for anything else, an inline value included. The one recognition the walk
+    and the loader share, each then applying its own rule to the URL.
+    """
+    if not isinstance(value, dict):
+        return None
+    reference = cast("dict[str, Any]", value)
+    url = reference.get("url")
+    if not isinstance(url, str) or reference.get(kind.value_field) is not None:
+        return None
+    return url
+
+
 def locate_artifacts(value: Any, node: InputFormItem | None = None) -> list[ArtifactLocation]:
     """Every `pipelex-storage://` reference inside a JSON-shaped value, each with every path at which
     it occurs.
@@ -316,11 +342,9 @@ def _walk_references(
         # never counts as a file.
         kind = stored_text_kind_of_node(described)
         if kind is not None:
-            if include_texts and isinstance(current, dict):
-                reference = cast("dict[str, Any]", current)
-                url = reference.get("url")
-                if isinstance(url, str) and is_storage_reference(url) and reference.get(kind.value_field) is None:
-                    record(url, (*trail, "url"), kind, reference)
+            url = _stored_text_reference_url(current, kind) if include_texts else None
+            if url is not None and is_storage_reference(url):
+                record(url, (*trail, "url"), kind, cast("dict[str, Any]", current))
             return
         if isinstance(current, str):
             if is_storage_reference(current):
@@ -917,16 +941,17 @@ async def load_stored_texts(
     from the run's working memory and output form (`pipelex_sdk.stored_texts.main_stuff_node`), so the results must
     carry them; a result that carries neither is returned as it is. A `pipelex-storage://` reference is resolved
     through the platform's bulk route, at most `BULK_RESOLVE_MAX_URIS` per request, and its signed link fetched under
-    the same bounds as `fetch_artifact`; an `https:` URL is fetched as it is, and a `data:` URL decoded. The bytes are
-    UTF-8 by the standard's rule, and a JSON value is the object they serialize.
+    the same bounds as `fetch_artifact`, and a `data:` URL is decoded. A stored text under any other URL
+    (`is_loadable_stored_text_url`) is refused before anything is sent, since fetching it would read a host the method
+    chose rather than the caller; a result read with `load_stored_texts=False` keeps it as written. The bytes are UTF-8
+    by the standard's rule, and a JSON value is the object they serialize.
 
     The result passed in is never changed: a new one is returned, or the same one when there is nothing to load.
 
     Raises:
-        StoredTextLoadError: Naming the text that could not be loaded, where it sits and why.
+        StoredTextLoadError: Naming the text that could not be loaded, where it sits and why, a whole-request failure of
+            the resolve route included (`resolve_failed`, the route's error as its cause).
         ArtifactOperationError: For nonsense bounds.
-        ApiResponseError: For the resolve route's whole-request refusals.
-        ApiUnreachableError: When the resolve route cannot be reached.
     """
     if results.main_stuff is None:
         return results
@@ -940,9 +965,11 @@ async def load_stored_texts(
 
 
 def may_hold_stored_texts(value: Any) -> bool:
-    """Whether a value holds anything that may be a stored text's reference: an object carrying a string `url` and no
-    inline value field. An image holds one too, so `True` says only that the concepts are worth reading; `False` says
-    no stored text can be there.
+    """Whether a value holds anything shaped like a stored text's reference, which is what makes a read that left the
+    concepts out read them again: an object carrying a string `url`, no inline value field, and a `size` or a
+    `preview`, which the runtime sets on every reference it stores and an image or a document content never carries.
+    So an output of images and documents alone answers `False`. `True` says only that the concepts are worth reading,
+    the concept at each path still deciding; `False` says no stored text the runtime made can be there.
     """
     if isinstance(value, BaseModel):
         return may_hold_stored_texts(value.model_dump())
@@ -951,9 +978,20 @@ def may_hold_stored_texts(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
     fields = cast("dict[str, Any]", value)
-    if isinstance(fields.get("url"), str) and all(fields.get(field_name) is None for field_name in STORED_TEXT_VALUE_FIELDS):
+    if (
+        isinstance(fields.get("url"), str)
+        and all(fields.get(field_name) is None for field_name in STORED_TEXT_VALUE_FIELDS)
+        and ("size" in fields or "preview" in fields)
+    ):
         return True
     return any(may_hold_stored_texts(entry) for entry in fields.values())
+
+
+def carries_concept_artifacts(selection: Sequence[RunArtifact] | None) -> bool:
+    """Whether a results read narrowed to `selection` carried every artifact the concept at each path is read from:
+    the working memory and both forms. `None`, a read of every artifact, does.
+    """
+    return selection is None or all(artifact in selection for artifact in _CONCEPT_ARTIFACTS)
 
 
 async def with_concept_artifacts(
@@ -1004,7 +1042,7 @@ async def _load_stored_text_values(
         first_site.setdefault(site.url, site)
     urls = list(first_site)
     references = [url for url in urls if is_storage_reference(url)]
-    resolved = dict(zip(references, await resolve_artifacts(client, references), strict=True))
+    resolved = dict(zip(references, await _resolve_for_texts(client, references, first_site), strict=True))
 
     texts: dict[str, Any] = {}
     semaphore = asyncio.Semaphore(options.concurrency)
@@ -1027,8 +1065,24 @@ async def _load_stored_text_values(
     return loaded
 
 
+async def _resolve_for_texts(client: BulkResolveClient, references: list[str], first_site: dict[str, _StoredTextSite]) -> list[ResolvedArtifact]:
+    """The bulk resolve of the stored texts' references, a whole-request failure being the first text's load error."""
+    try:
+        return await resolve_artifacts(client, references)
+    except (ApiResponseError, ApiUnreachableError, ArtifactOperationError) as exc:
+        site = first_site[references[0]]
+        status = exc.status if isinstance(exc, ApiResponseError) else None
+        msg = f"The stored text at {site.path} could not be loaded: the platform's bulk resolve route failed: {exc}"
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="resolve_failed", status=status, problem=exc.problem) from exc
+
+
 def _find_stored_texts(value: Any, node: InputFormItem) -> list[_StoredTextSite]:
-    """Every stored text's reference in `value`, in walk order, the concept at each path read off `node`."""
+    """Every stored text's reference in `value`, in walk order, the concept at each path read off `node`.
+
+    Raises:
+        StoredTextLoadError: `unsupported_url` for a stored text whose `url` the loader never reads
+            (`is_loadable_stored_text_url`), before anything is sent.
+    """
     sites: list[_StoredTextSite] = []
     trail: list[_PathSegment] = []
 
@@ -1037,11 +1091,17 @@ def _find_stored_texts(value: Any, node: InputFormItem) -> list[_StoredTextSite]
             current = current.model_dump()
         kind = stored_text_kind_of_node(described)
         if kind is not None:
-            if isinstance(current, dict):
-                reference = cast("dict[str, Any]", current)
-                url = reference.get("url")
-                if isinstance(url, str) and reference.get(kind.value_field) is None:
-                    sites.append(_StoredTextSite(segments=tuple(trail), kind=kind, url=url, reference=reference))
+            url = _stored_text_reference_url(current, kind)
+            if url is None:
+                return
+            site = _StoredTextSite(segments=tuple(trail), kind=kind, url=url, reference=cast("dict[str, Any]", current))
+            if not is_loadable_stored_text_url(url):
+                msg = (
+                    f"The stored text at {site.path} could not be loaded: its url is neither a pipelex-storage:// reference "
+                    "nor a data: URL, so it is not fetched; read the result with load_stored_texts=False to see it as written."
+                )
+                raise StoredTextLoadError(msg, uri=url, path=site.path, reason="unsupported_url")
+            sites.append(site)
             return
         if isinstance(current, (list, tuple)):
             sequence = cast("list[Any]", current)
@@ -1067,7 +1127,7 @@ async def _read_stored_bytes(
     resolved: ResolvedArtifact | None,
     bounds: _FetchBounds,
 ) -> bytes:
-    """The bytes of one stored text: a reference's signed link fetched, an `https:` URL fetched, a `data:` URL decoded."""
+    """The bytes of one stored text: a reference's signed link fetched, or a `data:` URL decoded. Nothing else is read."""
     if site.url.startswith("data:"):
         decoded = _decode_data_url(site.url)
         if decoded is None:
@@ -1078,17 +1138,18 @@ async def _read_stored_bytes(
             msg = f"The stored text at {site.path} could not be loaded: it is {size}, over the {_format_mib(bounds.max_bytes)} cap."
             raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="too_large", problem=_over_the_cap(bounds.max_bytes))
         return decoded
-    link = site.url
-    if resolved is not None:
-        if resolved.error is not None:
-            msg = f"The stored text at {site.path} could not be loaded: {resolved.error.detail}"
-            raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=resolved.error.code)
-        if resolved.url is None:
-            msg = "The bulk resolve route answered an item with neither a link nor an error."
-            raise ArtifactOperationError(msg, problem=response_unreadable_problem(status=200))
-        link = resolved.url
+    if resolved is None:
+        # Unreachable: the walk admits only a reference or a data: URL, and every reference is resolved first.
+        msg = f"The stored text at {site.path} could not be loaded: its url was not resolved by the platform."
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="unsupported_url")
+    if resolved.error is not None:
+        msg = f"The stored text at {site.path} could not be loaded: {resolved.error.detail}"
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=resolved.error.code)
+    if resolved.url is None:
+        msg = f"The stored text at {site.path} could not be loaded: the bulk resolve route answered its item with neither a link nor an error."
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="resolve_failed", problem=response_unreadable_problem(status=200))
     try:
-        async with _stream_resolved_url(storage_client, site.url, link, bounds) as stream:
+        async with _stream_resolved_url(storage_client, site.url, resolved.url, bounds) as stream:
             return await stream.read()
     except ArtifactFetchError as exc:
         msg = f"The stored text at {site.path} could not be loaded: {exc}"

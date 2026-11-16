@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -21,7 +22,7 @@ from pipelex_sdk.artifacts import (
     locate_stored_references,
 )
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.errors import StoredTextLoadError
+from pipelex_sdk.errors import RunTimeoutError, StoredTextLoadError
 from pipelex_sdk.runs import RunArtifact, RunResultCompleted, RunResults, WaitForResultOptions
 from pipelex_sdk.stored_texts import (
     STORED_TEXT_CONCEPT_REFS,
@@ -217,6 +218,69 @@ class TestStoredTexts:
         assert loaded.main_stuff == {"text": "Waited."}
         assert wire.main_stuff == _reference(uri)
 
+    def test_wait_for_result_deadline_covers_stored_text_load(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("w1")
+        _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE), objects={uri: b"never read"})
+
+        async def _stall(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(30)
+            return httpx.Response(200, content=b"too late", request=request)
+
+        def _stalling_store(timeout_seconds: float) -> httpx.AsyncClient:
+            return httpx.AsyncClient(transport=httpx.MockTransport(_stall), timeout=httpx.Timeout(timeout_seconds))
+
+        mocker.patch("pipelex_sdk.artifacts._new_storage_client", _stalling_store)
+        started = time.monotonic()
+
+        with pytest.raises(RunTimeoutError) as exc_info:
+            asyncio.run(client.wait_for_result(_RUN_ID, WaitForResultOptions(timeout_seconds=0.2)))
+
+        assert time.monotonic() - started < 2
+        assert exc_info.value.run_id == _RUN_ID
+        assert exc_info.value.timeout_seconds == 0.2
+        assert f"Run {_RUN_ID} completed, but its stored texts did not load within 0.2s" in str(exc_info.value)
+
+    def test_blocking_fallback_keeps_wire_results_when_load_fails(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("b1")
+        reference = _reference(uri)
+        execute_body = {
+            "pipeline_run_id": _RUN_ID,
+            "main_stuff_name": "summary",
+            "pipe_output": {
+                "working_memory": {"root": {"summary": {"concept": "native.Text", "content": reference}}, "aliases": {"main_stuff": "summary"}},
+                "pipeline_run_id": _RUN_ID,
+            },
+        }
+        paths: list[str] = []
+
+        async def _bare_runner(method: str, url: str, **_kwargs: Any) -> httpx.Response:
+            path = urlsplit(url).path
+            paths.append(path)
+            request = httpx.Request(method, url)
+            if path == "/v1/version":
+                return httpx.Response(200, json={"protocol_version": "0.6.0", "runner_version": "9.9.9"}, request=request)
+            if path == "/v1/start":
+                return httpx.Response(404, json={"detail": "Not Found"}, request=request)
+            if path == "/v1/execute":
+                return httpx.Response(200, json=execute_body, request=request)
+            if path == "/v1/resolve-storage-url/bulk":
+                return httpx.Response(404, json={"detail": "Not Found"}, request=request)
+            msg = f"unexpected request {method} {url}"
+            raise AssertionError(msg)
+
+        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=_bare_runner))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.start_and_wait(pipe_code="p", files={"main.mthds": "x"}))
+
+        assert paths == ["/v1/version", "/v1/start", "/v1/execute", "/v1/resolve-storage-url/bulk"]
+        assert exc_info.value.reason == "resolve_failed"
+        assert exc_info.value.wire_results is not None
+        assert exc_info.value.wire_results.main_stuff == reference
+        assert exc_info.value.wire_results.pipeline_run_id == _RUN_ID
+
     def test_keeps_an_html_css_class_and_parses_a_json_object(self, mocker: MockerFixture) -> None:
         client = _client()
         html_uri = _stored_uri("h", "html")
@@ -281,6 +345,19 @@ class TestStoredTexts:
         assert result.main_stuff == {"text": "Narrow."}
         assert result.carries(RunArtifact.WORKING_MEMORY) is False
 
+    def test_narrowed_read_of_an_image_output_reads_once(self, mocker: MockerFixture) -> None:
+        client = _client()
+        picture = f"{_SCOPE}/0f0f.png"
+        image = {"url": picture, "mime_type": "image/png", "public_url": "https://cdn.example/0f0f.png"}
+        image_node = {"kind": "image", "concept_ref": "native.Image", "required": True}
+        boundary = _Boundary(mocker, client, body=_results("native.Image", image, image_node))
+
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID, artifacts=[RunArtifact.MAIN_STUFF])))
+
+        assert boundary.reads == ["main_stuff"]
+        assert boundary.resolved == []
+        assert result.main_stuff == image
+
     def test_a_narrowed_read_with_nothing_to_load_reads_nothing_more(self, mocker: MockerFixture) -> None:
         client = _client()
         boundary = _Boundary(mocker, client, body=_results("native.Text", {"text": "Inline."}, _TEXT_NODE))
@@ -314,7 +391,7 @@ class TestStoredTexts:
             "url": None,
             "expires_at": None,
             "content_type": None,
-            "error": {"code": "forbidden", "detail": "another organization"},
+            "error": {"code": "pipelex.org.mismatch", "detail": "another organization", "params": {"reference": "storage_uri"}},
         }
         _Boundary(
             mocker,
@@ -327,8 +404,63 @@ class TestStoredTexts:
         with pytest.raises(StoredTextLoadError) as exc_info:
             asyncio.run(client.get_run_result(_RUN_ID))
 
-        assert exc_info.value.reason == "forbidden"
+        assert exc_info.value.reason == "pipelex.org.mismatch"
         assert exc_info.value.path == "$.items[1]"
+
+    @pytest.mark.parametrize("code", ["pipelex.org.mismatch", "pipelex.storage.uri_invalid"])
+    def test_cross_org_stored_text_reads_as_reference_not_found(self, mocker: MockerFixture, code: str) -> None:
+        client = _client()
+        uri = _stored_uri("x1")
+        refusal = {"uri": uri, "url": None, "expires_at": None, "content_type": None, "error": {"code": code, "detail": "refused"}}
+        _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE), refusals={uri: refusal})
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID))
+
+        assert exc_info.value.reason == code
+        assert exc_info.value.problem.code == "input.reference_not_found"
+        assert exc_info.value.wire_results is None
+
+    def test_stored_text_at_a_foreign_url_is_refused_without_a_request(self, mocker: MockerFixture) -> None:
+        client = _client()
+        foreign = "https://10.0.0.5/admin"
+        boundary = _Boundary(mocker, client, body=_results("native.Text", {"url": foreign}, _TEXT_NODE))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID))
+
+        assert exc_info.value.reason == "unsupported_url"
+        assert exc_info.value.path == "$"
+        assert exc_info.value.uri == foreign
+        assert exc_info.value.problem.code == "client.link_refused"
+        assert boundary.reads == [None]
+        assert boundary.resolved == []
+        assert boundary.fetched == []
+        # Turned off, the reader hands the reference back as written, still without reading it.
+        wire = _completed(asyncio.run(client.get_run_result(_RUN_ID, load_stored_texts=False)))
+        assert wire.main_stuff == {"url": foreign}
+        assert boundary.fetched == []
+
+    def test_a_resolve_route_failing_as_a_whole_names_the_first_text(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("x2")
+        boundary = _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE))
+        send = boundary._send
+
+        async def _bulk_missing(method: str, url: str, **kwargs: Any) -> httpx.Response:
+            if urlsplit(url).path == "/v1/resolve-storage-url/bulk":
+                return httpx.Response(404, json={"detail": "Not Found"}, request=httpx.Request(method, url))
+            return await send(method, url, **kwargs)
+
+        mocker.patch.object(client, "_send", mocker.AsyncMock(side_effect=_bulk_missing))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID))
+
+        assert exc_info.value.reason == "resolve_failed"
+        assert exc_info.value.status == 404
+        assert exc_info.value.path == "$"
+        assert exc_info.value.uri == uri
 
     def test_a_missing_object_is_not_found(self, mocker: MockerFixture) -> None:
         client = _client()
@@ -414,3 +546,22 @@ class TestStoredTexts:
         ]
         assert verdict.saved_paths == [str(tmp_path / "summary.md"), str(tmp_path / "notes.txt")]
         assert (tmp_path / "summary.md").read_bytes() == b"# Title\n"
+
+    def test_download_by_run_id_reads_the_concepts_only_beside_a_stored_text(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        client = _client()
+        text_uri = _stored_uri("z", "md")
+        notes_uri = f"{_SCOPE}/notes.txt"
+        main_stuff = {
+            "summary": {"url": text_uri, "size": 8, "mime_type": "text/markdown", "preview": "# Title"},
+            "notes": {"url": notes_uri, "mime_type": "text/plain", "filename": "notes.txt"},
+        }
+        body = _results("my_domain.Dossier", main_stuff, _DOSSIER_NODE)
+        boundary = _Boundary(mocker, client, body=body, objects={text_uri: b"# Title\n", notes_uri: b"plain notes"})
+
+        verdict = asyncio.run(download_artifacts(client, dir_path=tmp_path, run_id=_RUN_ID))
+
+        assert boundary.reads == ["main_stuff", "input_form,output_form,working_memory"]
+        assert [(artifact.kind, artifact.found_at) for artifact in verdict.artifacts] == [
+            (DownloadedKind.TEXT, ["$.summary.url"]),
+            (DownloadedKind.FILE, ["$.notes.url"]),
+        ]

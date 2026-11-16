@@ -39,7 +39,7 @@ import {
   StoredTextLoadError,
 } from "./errors.js";
 import { argumentInvalidProblem, responseUnreadableProblem } from "./errors.js";
-import { buildProblem } from "mthds/protocol";
+import { ProblemError, buildProblem } from "mthds/protocol";
 import type { Problem } from "mthds/protocol";
 import type { GetRunResultOptions, RunResultArtifact, RunResults, RunResultState } from "./runs.js";
 import { absenceCause, loadNodeHost } from "./node-host.js";
@@ -153,7 +153,7 @@ const TEXT_EXTENSION_BY_KIND: Record<StoredTextKind, string> = {
 
 /**
  * Why one reference failed — a value, never a thrown error. `code` is the
- * resolve route's own per-reference code (`invalid_storage_uri`, `forbidden`)
+ * resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`)
  * or one of the fetch boundary's (see `ArtifactFetchError`), plus the download's
  * own `resolve_failed`, `total_limit_exceeded`, `write_failed` and `aborted`.
  * `detail` is the sentence a person reads.
@@ -474,15 +474,9 @@ function walkReferences(
     // asked for, and never counts as a file.
     const kind = storedTextKindOfNode(nodeDescriptor);
     if (kind !== null) {
-      if (!includeTexts || typeof node !== "object" || node === null || Array.isArray(node)) return;
-      const reference = node as Record<string, unknown>;
-      const url = reference["url"];
-      if (
-        typeof url === "string" &&
-        isStorageReference(url) &&
-        reference[STORED_TEXT_VALUE_FIELD[kind]] == null
-      ) {
-        record(url, [...trail, "url"], { kind, reference });
+      const url = includeTexts ? storedTextReferenceUrl(node, kind) : null;
+      if (url !== null && isStorageReference(url)) {
+        record(url, [...trail, "url"], { kind, reference: node as Record<string, unknown> });
       }
       return;
     }
@@ -577,6 +571,33 @@ function parsePath(path: string): PathSegment[] | undefined {
 /** A string that is a storage reference: the scheme, then at least one character. */
 export function isStorageReference(value: string): boolean {
   return value.startsWith(PIPELEX_STORAGE_SCHEME) && value.length > PIPELEX_STORAGE_SCHEME.length;
+}
+
+/**
+ * A `url` a stored text may be loaded from: a `pipelex-storage://` reference, resolved through the
+ * platform's bulk route to a link it signs, or a `data:` URL, decoded where it is. A stored text at
+ * any other URL is never fetched, so a method cannot have the SDK read a host the caller did not
+ * choose: the loader refuses it as `unsupported_url`.
+ *
+ * The file walks ({@link locateStoredReferences}, `downloadArtifacts`) report the first kind
+ * only, since a `data:` URL holds its value inline and has nothing to resolve or save.
+ */
+export function isLoadableStoredTextUrl(url: string): boolean {
+  return isStorageReference(url) || url.startsWith("data:");
+}
+
+/**
+ * The `url` of a stored text's reference, `value` sitting where the concept is a stored text: an
+ * object carrying a string `url` and no value field. `null` for anything else, an inline value
+ * included. The one recognition the walk and the loader share, each then applying its own rule to
+ * the URL.
+ */
+function storedTextReferenceUrl(value: unknown, kind: StoredTextKind): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const reference = value as Record<string, unknown>;
+  const url = reference["url"];
+  if (typeof url !== "string" || reference[STORED_TEXT_VALUE_FIELD[kind]] != null) return null;
+  return url;
 }
 
 // ── artifactFilename ─────────────────────────────────────────────────
@@ -1227,13 +1248,16 @@ interface StoredTextSite {
  * results must carry them; a result that carries neither is returned as it is. A
  * `pipelex-storage://` reference is resolved through the platform's bulk route, at most
  * {@link BULK_RESOLVE_MAX_URIS} per request, and its signed link fetched under the same bounds as
- * `fetchArtifact`; an `https:` URL is fetched as it is, and a `data:` URL decoded. The bytes are
- * UTF-8 by the standard's rule, and a JSON value is the object they serialize.
+ * `fetchArtifact`, and a `data:` URL is decoded. A stored text under any other URL
+ * ({@link isLoadableStoredTextUrl}) is refused before anything is sent, since fetching it would
+ * read a host the method chose rather than the caller; a result read with
+ * `loadStoredTexts: false` keeps it as written. The bytes are UTF-8 by the standard's rule, and a
+ * JSON value is the object they serialize.
  *
  * The result passed in is never changed: a new one is returned, or the same one when there is
- * nothing to load. Throws `StoredTextLoadError` naming the text that could not be loaded, and lets
- * the resolve route's whole-request failures (`ApiResponseError`, `ApiUnreachableError`) and the
- * caller's abort through.
+ * nothing to load. Throws `StoredTextLoadError` naming the text that could not be loaded, where it
+ * sits and why, a whole-request failure of the resolve route included (`resolve_failed`, the
+ * route's error as its `cause`), and lets the caller's abort through.
  */
 export async function loadStoredTexts(
   client: Pick<ArtifactCapableClient, "resolveStorageUrls">,
@@ -1285,9 +1309,12 @@ export async function withConceptArtifacts(
 }
 
 /**
- * Whether a value holds anything that may be a stored text's reference: an object carrying a
- * string `url` and no inline value field. An image holds one too, so a `true` says only that the
- * concepts are worth reading; a `false` says no stored text can be there.
+ * Whether a value holds anything shaped like a stored text's reference, which is what makes a read
+ * that left the concepts out read them again: an object carrying a string `url`, no inline value
+ * field, and a `size` or a `preview`, which the runtime sets on every reference it stores and an
+ * image or a document content never carries. So an output of images and documents alone answers
+ * `false`. A `true` says only that the concepts are worth reading, the concept at each path still
+ * deciding; a `false` says no stored text the runtime made can be there.
  */
 export function mayHoldStoredTexts(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(mayHoldStoredTexts);
@@ -1295,11 +1322,24 @@ export function mayHoldStoredTexts(value: unknown): boolean {
   const fields = value as Record<string, unknown>;
   if (
     typeof fields["url"] === "string" &&
-    Object.values(STORED_TEXT_VALUE_FIELD).every((field) => fields[field] == null)
+    Object.values(STORED_TEXT_VALUE_FIELD).every((field) => fields[field] == null) &&
+    ("size" in fields || "preview" in fields)
   ) {
     return true;
   }
   return Object.values(fields).some(mayHoldStoredTexts);
+}
+
+/**
+ * Whether a results read narrowed to `selection` carried every artifact the concept at each path
+ * is read from: the working memory and both forms. `undefined`, a read of every artifact, does.
+ */
+export function carriesConceptArtifacts(
+  selection: readonly RunResultArtifact[] | undefined,
+): boolean {
+  return (
+    selection === undefined || CONCEPT_ARTIFACTS.every((artifact) => selection.includes(artifact))
+  );
 }
 
 /** `value` with its stored texts loaded, walked with `node`; `value` itself when it holds none. */
@@ -1332,7 +1372,26 @@ async function loadStoredTextValues(
   const urls = [...firstSite.keys()];
   const references = urls.filter(isStorageReference);
   const resolved = new Map<string, ResolvedArtifact>();
-  const items = await resolveArtifacts(client, references, { signal: options.signal });
+  let items: ResolvedArtifact[];
+  try {
+    items = await resolveArtifacts(client, references, { signal: options.signal });
+  } catch (err) {
+    if (options.signal?.aborted === true) throw options.signal.reason;
+    // A whole-request failure of the route, a bare runner's 404 among them, is the first text's.
+    const site = firstSite.get(references[0]!)!;
+    const path = renderPath(site.segments);
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new StoredTextLoadError(
+      `The stored text at ${path} could not be loaded: the platform's bulk resolve route failed: ${detail}`,
+      {
+        uri: site.url,
+        path,
+        reason: "resolve_failed",
+        status: err instanceof ApiResponseError ? err.status : undefined,
+      },
+      { cause: err, problem: err instanceof ProblemError ? err.problem : undefined },
+    );
+  }
   references.forEach((uri, index) => resolved.set(uri, items[index]!));
 
   const texts = new Map<string, unknown>();
@@ -1362,19 +1421,34 @@ async function loadStoredTextValues(
   return loaded;
 }
 
-/** Every stored text's reference in `value`, in walk order, the concept at each path read off `node`. */
+/**
+ * Every stored text's reference in `value`, in walk order, the concept at each path read off
+ * `node`. Throws `StoredTextLoadError` (`unsupported_url`) for a stored text whose `url` the
+ * loader never reads ({@link isLoadableStoredTextUrl}), before anything is sent.
+ */
 function findStoredTexts(value: unknown, node: InputFormItem): StoredTextSite[] {
   const sites: StoredTextSite[] = [];
   const trail: PathSegment[] = [];
   const visit = (current: unknown, described: InputFormItem | undefined): void => {
     const kind = storedTextKindOfNode(described);
     if (kind !== null) {
-      if (typeof current !== "object" || current === null || Array.isArray(current)) return;
-      const reference = current as Record<string, unknown>;
-      const url = reference["url"];
-      if (typeof url === "string" && reference[STORED_TEXT_VALUE_FIELD[kind]] == null) {
-        sites.push({ segments: [...trail], kind, url, reference });
+      const url = storedTextReferenceUrl(current, kind);
+      if (url === null) return;
+      if (!isLoadableStoredTextUrl(url)) {
+        const path = renderPath(trail);
+        throw new StoredTextLoadError(
+          `The stored text at ${path} could not be loaded: its url is neither a pipelex-storage:// ` +
+            "reference nor a data: URL, so it is not fetched; read the result with " +
+            "loadStoredTexts: false to see it as written.",
+          { uri: url, path, reason: "unsupported_url" },
+        );
       }
+      sites.push({
+        segments: [...trail],
+        kind,
+        url,
+        reference: current as Record<string, unknown>,
+      });
       return;
     }
     if (Array.isArray(current)) {
@@ -1397,7 +1471,7 @@ function findStoredTexts(value: unknown, node: InputFormItem): StoredTextSite[] 
   return sites;
 }
 
-/** The bytes of one stored text: a reference's signed link fetched, an `https:` URL fetched, a `data:` URL decoded. */
+/** The bytes of one stored text: a reference's signed link fetched, or a `data:` URL decoded. Nothing else is read. */
 async function readStoredBytes(
   site: StoredTextSite,
   resolved: ResolvedArtifact | undefined,
@@ -1430,13 +1504,12 @@ async function readStoredBytes(
     }
     return bytes;
   }
-  let link: string;
-  if (resolved !== undefined) {
-    if (resolved.error !== null) return fail(resolved.error.code, resolved.error.detail);
-    link = resolved.url;
-  } else {
-    link = site.url;
+  // Unreachable: the walk admits only a reference or a data: URL, and every reference is resolved first.
+  if (resolved === undefined) {
+    return fail("unsupported_url", "its url was not resolved by the platform.");
   }
+  if (resolved.error !== null) return fail(resolved.error.code, resolved.error.detail);
+  const link = resolved.url;
   try {
     const response = await fetchResolvedUrl(site.url, link, bounds, dispatcher, () => undefined);
     return new Uint8Array(await response.arrayBuffer());

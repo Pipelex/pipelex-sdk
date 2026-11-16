@@ -23,7 +23,7 @@ import {
   locateStoredReferences,
 } from "../src/artifacts.js";
 import type { ResolvedArtifact } from "../src/artifacts.js";
-import { StoredTextLoadError } from "../src/errors.js";
+import { RunTimeoutError, StoredTextLoadError } from "../src/errors.js";
 import {
   STORED_TEXT_CONCEPT_REFS,
   isStoredTextConcept,
@@ -91,13 +91,14 @@ interface Boundary {
  * Mock the fetch boundary: the results route answers `body` (or `conceptsBody` for a read that
  * names no `main_stuff`), the bulk route resolves each reference to a store link (or the item
  * `refusals` names), and the store answers each link with the bytes `objects` holds for its
- * reference.
+ * reference — or, with `stallStore`, never answers until the request is aborted.
  */
 function mockBoundary(options: {
   body: Record<string, unknown>;
   conceptsBody?: Record<string, unknown>;
   objects?: Record<string, string | Uint8Array>;
   refusals?: Record<string, ResolvedArtifact>;
+  stallStore?: boolean;
 }): Boundary {
   const boundary: Boundary = { resolved: [], reads: [], fetched: [] };
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -130,6 +131,12 @@ function mockBoundary(options: {
     }
     if (url.origin === STORE) {
       boundary.fetched.push(url.href);
+      if (options.stallStore === true) {
+        const signal = init?.signal;
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason as Error), { once: true });
+        });
+      }
       const uri = decodeURIComponent(url.pathname.slice(1));
       const object = options.objects?.[uri];
       if (object === undefined) return new Response(null, { status: 404 });
@@ -271,6 +278,73 @@ describe("the result readers load stored texts", () => {
     expect(boundary.resolved).toEqual([[uri]]);
   });
 
+  it("waitForResult's deadline covers the stored-text load", async () => {
+    const uri = storedUri("w1");
+    const boundary = mockBoundary({
+      body: results("native.Text", reference(uri), TEXT_NODE),
+      stallStore: true,
+    });
+    const startedAt = Date.now();
+
+    const failure = await makeClient()
+      .waitForResult(RUN_ID, { timeoutMs: 200 })
+      .catch((err: unknown) => err);
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(failure).toBeInstanceOf(RunTimeoutError);
+    expect(failure).toMatchObject({ runId: RUN_ID, timeoutMs: 200 });
+    expect((failure as RunTimeoutError).message).toContain(
+      `Run ${RUN_ID} completed, but its stored texts did not load within 200ms`,
+    );
+    expect(boundary.fetched).toHaveLength(1);
+  });
+
+  it("startAndWaitForResult's blocking fallback keeps the wire result when a load fails", async () => {
+    const uri = storedUri("b1");
+    const stored = reference(uri);
+    const paths: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      paths.push(url.pathname);
+      switch (url.pathname) {
+        case "/v1/version":
+          return jsonResponse(200, { protocol_version: "0.6.0", runner_version: "9.9.9" });
+        case "/v1/start":
+        case "/v1/resolve-storage-url/bulk":
+          return jsonResponse(404, { detail: "Not Found" });
+        case "/v1/execute":
+          return jsonResponse(200, {
+            pipeline_run_id: RUN_ID,
+            created_at: "t0",
+            state: "COMPLETED",
+            main_stuff_name: "summary",
+            pipe_output: {
+              working_memory: memory("native.Text", stored),
+              pipeline_run_id: RUN_ID,
+            },
+          });
+        default:
+          throw new Error(`unexpected fetch ${url.href}`);
+      }
+    });
+
+    const failure = await makeClient()
+      .startAndWaitForResult({ pipe_code: "p", files: { "main.mthds": "x" } })
+      .catch((err: unknown) => err);
+
+    expect(paths).toEqual([
+      "/v1/version",
+      "/v1/start",
+      "/v1/execute",
+      "/v1/resolve-storage-url/bulk",
+    ]);
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    expect(failure).toMatchObject({ reason: "resolve_failed", path: "$", uri });
+    const { wireResults } = failure as StoredTextLoadError;
+    expect(wireResults?.pipeline_run_id).toBe(RUN_ID);
+    expect(wireResults?.main_stuff).toEqual(stored);
+  });
+
   it("passes the opt-out through waitForResult", async () => {
     const uri = storedUri("a");
     const boundary = mockBoundary({ body: results("native.Text", reference(uri), TEXT_NODE) });
@@ -385,6 +459,32 @@ describe("the result readers load stored texts", () => {
     expect(boundary.reads).toEqual(["main_stuff", "working_memory,output_form,input_form"]);
   });
 
+  it("a narrowed read of an image output makes no concept re-read", async () => {
+    const picture = "pipelex-storage://org/method/run-stored/generated/0f0f.png";
+    const image = {
+      url: picture,
+      mime_type: "image/png",
+      public_url: "https://cdn.example/0f0f.png",
+    };
+    const body = results("native.Image", image, {
+      kind: "image",
+      concept_ref: "native.Image",
+      required: true,
+    });
+    const boundary = mockBoundary({
+      body: { pipeline_run_id: RUN_ID, main_stuff: image },
+      conceptsBody: body,
+    });
+
+    const result = await completedResult(
+      makeClient().getRunResult(RUN_ID, { artifacts: ["main_stuff"] }),
+    );
+
+    expect(result.main_stuff).toEqual(image);
+    expect(boundary.reads).toEqual(["main_stuff"]);
+    expect(boundary.resolved).toEqual([]);
+  });
+
   it("reads nothing more for a narrowed read whose output holds no reference", async () => {
     const boundary = mockBoundary({
       body: { pipeline_run_id: RUN_ID, main_stuff: { text: "Inline." } },
@@ -424,7 +524,7 @@ describe("the result readers load stored texts", () => {
           url: null,
           expires_at: null,
           content_type: null,
-          error: { code: "forbidden", detail: "Another organization's reference." },
+          error: { code: "pipelex.org.mismatch", detail: "Another organization's reference." },
         },
       },
     });
@@ -437,8 +537,76 @@ describe("the result readers load stored texts", () => {
       name: "StoredTextLoadError",
       uri,
       path: "$.items[1]",
-      reason: "forbidden",
+      reason: "pipelex.org.mismatch",
     });
+  });
+
+  it.each(["pipelex.org.mismatch", "pipelex.storage.uri_invalid"])(
+    "reads the platform's %s as input.reference_not_found",
+    async (code) => {
+      const uri = storedUri("x1");
+      mockBoundary({
+        body: results("native.Text", reference(uri), TEXT_NODE),
+        refusals: {
+          [uri]: {
+            uri,
+            url: null,
+            expires_at: null,
+            content_type: null,
+            error: { code, detail: "Refused." },
+          },
+        },
+      });
+
+      const failure = await makeClient()
+        .getRunResult(RUN_ID)
+        .catch((err: unknown) => err);
+
+      expect(failure).toBeInstanceOf(StoredTextLoadError);
+      expect(failure).toMatchObject({ reason: code, wireResults: undefined });
+      expect((failure as StoredTextLoadError).problem.code).toBe("input.reference_not_found");
+    },
+  );
+
+  it("refuses a stored text at a foreign URL without fetching it", async () => {
+    const foreign = "https://10.0.0.5/admin";
+    const boundary = mockBoundary({ body: results("native.Text", { url: foreign }, TEXT_NODE) });
+    const client = makeClient();
+
+    const failure = await client.getRunResult(RUN_ID).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    expect(failure).toMatchObject({ uri: foreign, path: "$", reason: "unsupported_url" });
+    expect((failure as StoredTextLoadError).problem.code).toBe("client.link_refused");
+    expect(boundary.reads).toEqual([null]);
+    expect(boundary.resolved).toEqual([]);
+    expect(boundary.fetched).toEqual([]);
+    const calls = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input));
+    expect(calls.some((called) => called.includes("10.0.0.5"))).toBe(false);
+    // Turned off, the reader hands the reference back as written, still without reading it.
+    const wire = await completedResult(client.getRunResult(RUN_ID, { loadStoredTexts: false }));
+    expect(wire.main_stuff).toEqual({ url: foreign });
+    expect(boundary.fetched).toEqual([]);
+  });
+
+  it("names the first text when the resolve route fails as a whole", async () => {
+    const uri = storedUri("x2");
+    mockBoundary({ body: results("native.Text", reference(uri), TEXT_NODE) });
+    const boundaryFetch = vi.mocked(globalThis.fetch).getMockImplementation()!;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/v1/resolve-storage-url/bulk") {
+        return jsonResponse(404, { detail: "Not Found" });
+      }
+      return boundaryFetch(input, init);
+    });
+
+    const failure = await makeClient()
+      .getRunResult(RUN_ID)
+      .catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    expect(failure).toMatchObject({ uri, path: "$", reason: "resolve_failed", status: 404 });
   });
 
   it("refuses a stored text the store no longer holds", async () => {
@@ -637,6 +805,32 @@ describe("the walkers tell stored texts from files by concept", () => {
         },
       ]);
       expect(await readFile(join(dir, "summary.md"), "utf8")).toBe("# Title\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("downloadArtifacts by run id reads the concepts only beside a stored text", async () => {
+    const markdownUri = storedUri("o", "md");
+    const mainStuff = {
+      summary: { url: markdownUri, size: 8, mime_type: "text/markdown", preview: "# Title" },
+      notes: { url: pdfUri, mime_type: "text/plain", filename: "notes.txt" },
+    };
+    const body = results("my_domain.Dossier", mainStuff, node);
+    const boundary = mockBoundary({
+      body: { pipeline_run_id: RUN_ID, main_stuff: mainStuff },
+      conceptsBody: body,
+      objects: { [markdownUri]: "# Title\n", [pdfUri]: "plain notes" },
+    });
+    const dir = await mkdtemp(join(tmpdir(), "stored-texts-"));
+    try {
+      const verdict = await downloadArtifacts(makeClient(), { run_id: RUN_ID, dir });
+
+      expect(boundary.reads).toEqual(["main_stuff", "working_memory,output_form,input_form"]);
+      expect(verdict.artifacts.map((item) => [item.kind, item.found_at])).toEqual([
+        ["text", ["$.summary.url"]],
+        ["file", ["$.notes.url"]],
+      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

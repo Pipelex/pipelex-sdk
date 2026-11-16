@@ -1654,10 +1654,11 @@ export interface FileRenameInput {
 export type FileLinkTarget = { file_id: string; uri?: never } | { uri: string; file_id?: never };
 
 /**
- * Why one file got no link — a value, never a thrown error. `code` is `not_found` (an unknown file,
- * or one deleted meanwhile), `conflict` (a file whose upload has not finished), `invalid_storage_uri`
- * (a malformed address) or `forbidden` (another organization's address); `detail` is the sentence
- * a person reads.
+ * Why one file got no link — a value, never a thrown error. `code` is the platform's registry code:
+ * `request.invalid` naming `file_id` or `uri` (an unknown file, one deleted meanwhile, or one whose
+ * upload has not finished), `pipelex.storage.uri_invalid` (a malformed address) or
+ * `pipelex.org.mismatch` (another organization's address); `detail` is the sentence a person
+ * reads.
  */
 export interface FileLinkError {
   code: string;

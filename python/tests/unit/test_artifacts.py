@@ -121,7 +121,7 @@ def _resolved(
     )
 
 
-def _refused(uri: str, *, code: str = "forbidden", detail: str = "Another organization owns this reference.") -> ResolvedArtifact:
+def _refused(uri: str, *, code: str = "pipelex.org.mismatch", detail: str = "Another organization owns this reference.") -> ResolvedArtifact:
     """One refused item — the three link fields null, the verdict on `error`."""
     return ResolvedArtifact(uri=uri, url=None, expires_at=None, content_type=None, error=ArtifactItemError(code=code, detail=detail))
 
@@ -451,7 +451,7 @@ class TestArtifacts:
         assert [item.uri for item in items] == [_URI_PNG, _URI_PDF, _URI_PNG]
         assert items[0].error is None
         assert items[1].error is not None
-        assert items[1].error.code == "forbidden"
+        assert items[1].error.code == "pipelex.org.mismatch"
         assert items[1].url is None
 
     def test_chunks_a_longer_list_at_the_routes_bound(self) -> None:
@@ -504,8 +504,9 @@ class TestArtifacts:
         # The link came from the route, never from the content's embedded `public_url`.
         assert "sig=fresh" in str(seen[0].url)
 
-    def test_raises_the_routes_per_reference_refusal_as_a_typed_fetch_error(self, mocker: MockerFixture) -> None:
-        client = _FakeClient(resolve=_resolver(_refused(_URI_PDF, code="invalid_storage_uri", detail="Not a reference.")))
+    @pytest.mark.parametrize("code", ["pipelex.storage.uri_invalid", "pipelex.org.mismatch"])
+    def test_raises_the_routes_per_reference_refusal_as_a_typed_fetch_error(self, mocker: MockerFixture, code: str) -> None:
+        client = _FakeClient(resolve=_resolver(_refused(_URI_PDF, code=code, detail="Refused.")))
         _patch_storage(mocker, _serving(_PDF_BYTES))
 
         async def _read() -> None:
@@ -514,8 +515,10 @@ class TestArtifacts:
 
         with pytest.raises(ArtifactFetchError) as caught:
             asyncio.run(_read())
-        assert caught.value.reason == "invalid_storage_uri"
+        assert caught.value.reason == code
         assert caught.value.uri == _URI_PDF
+        # The platform's codes for a malformed reference and another organization's both read as a missing reference.
+        assert caught.value.problem.code == "input.reference_not_found"
 
     def test_refuses_a_plain_http_link_by_default_and_accepts_it_on_request(self, mocker: MockerFixture) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url="http://localhost:9000/report.pdf")))
@@ -789,13 +792,11 @@ class TestArtifacts:
         target = tmp_path / "out"
         verdict = asyncio.run(download_artifacts(client, dir_path=target, run_id=_RUN_ID))
 
-        # The scope first, with its stored texts left as references; then the concepts that tell them from files.
-        assert client.run_result_calls == [_RUN_ID, _RUN_ID]
-        assert client.run_result_selections == [
-            [RunArtifact.MAIN_STUFF],
-            [RunArtifact.WORKING_MEMORY, RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM],
-        ]
-        assert client.load_stored_texts_flags == [False, False]
+        # The scope alone, its stored texts left as references: files hold nothing shaped like a stored text, so the
+        # concepts that tell one from a file are never read.
+        assert client.run_result_calls == [_RUN_ID]
+        assert client.run_result_selections == [[RunArtifact.MAIN_STUFF]]
+        assert client.load_stored_texts_flags == [False]
         assert client.resolve_calls == [[_URI_PNG, _URI_PDF]]
         assert verdict.all_saved is True
         assert [artifact.uri for artifact in verdict.artifacts] == [_URI_PNG, _URI_PDF]
@@ -818,7 +819,7 @@ class TestArtifacts:
         options = DownloadArtifactsOptions(scope=ArtifactScope.WORKING_MEMORY)
         verdict = asyncio.run(download_artifacts(client, dir_path=tmp_path / "out", run_id=_RUN_ID, options=options))
 
-        assert client.run_result_selections == [[RunArtifact.WORKING_MEMORY], [RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM]]
+        assert client.run_result_selections == [[RunArtifact.WORKING_MEMORY]]
         assert verdict.scope == ArtifactScope.WORKING_MEMORY
         assert verdict.all_saved is True
         assert [artifact.uri for artifact in verdict.artifacts] == [_URI_PDF]
@@ -970,7 +971,7 @@ class TestArtifacts:
         assert verdict.all_saved is False
         first = verdict.artifacts[0]
         assert first.error is not None
-        assert first.error.code == "forbidden"
+        assert first.error.code == "pipelex.org.mismatch"
         assert first.path is None
         assert first.found_at == ["$.items[0].url"]
         assert verdict.artifacts[1].error is None

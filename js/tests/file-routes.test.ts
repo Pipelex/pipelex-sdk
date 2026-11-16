@@ -442,7 +442,7 @@ describe("linkFiles", () => {
     media_type: null,
     url: null,
     expires_at: null,
-    error: { code: "forbidden", detail: "Not your organization's." },
+    error: { code: "pipelex.org.mismatch", detail: "Not your organization's." },
   };
 
   it("POSTs each file as { file_id } or { uri } and returns one item per file, in order", async () => {
