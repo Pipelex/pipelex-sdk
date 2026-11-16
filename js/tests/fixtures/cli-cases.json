@@ -3000,6 +3000,68 @@
       }
     },
     {
+      "name": "run/bare-runner-stored-text-unloadable",
+      "summary": "On a bare runner a stored text in the output cannot be loaded: the output is printed as the run answered it, each stored text still its reference, the command says the run completed, and it exits 1 without saying the run may still be going.",
+      "argv": ["run", "--method", "github.com/acme/methods/receipt-review@v1.0.0"],
+      "routes": {
+        "GET /v1/version": [
+          {
+            "answer": "version/bare-runner"
+          }
+        ],
+        "POST /v1/execute": [
+          {
+            "request_body": {
+              "method_ref": "github.com/acme/methods/receipt-review@v1.0.0"
+            },
+            "status": 200,
+            "body": {
+              "pipeline_run_id": "run-b",
+              "created_at": "2026-10-08T10:00:00Z",
+              "state": "COMPLETED",
+              "main_stuff_name": "review",
+              "pipe_output": {
+                "working_memory": {
+                  "root": {
+                    "review": {
+                      "concept": "native.Markdown",
+                      "content": {
+                        "url": "pipelex-storage://acme/runs/run-b/generated/3f9a/value.md",
+                        "size": 48210,
+                        "mime_type": "text/markdown",
+                        "preview": "# Receipt review"
+                      }
+                    }
+                  },
+                  "aliases": {
+                    "main_stuff": "review"
+                  }
+                },
+                "pipeline_run_id": "run-b"
+              }
+            }
+          }
+        ],
+        "POST /v1/resolve-storage-url/bulk": [
+          {
+            "status": 404,
+            "body": {
+              "detail": "Not Found"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "exit_code": 1,
+        "stdout": "{\n  \"url\": \"pipelex-storage://acme/runs/run-b/generated/3f9a/value.md\",\n  \"size\": 48210,\n  \"mime_type\": \"text/markdown\",\n  \"preview\": \"# Receipt review\"\n}\n",
+        "stderr": [
+          "Error: the run completed, but the stored text at $ in its output could not be loaded (resolve_failed).\n",
+          "The output above is the run's answer, each stored text still its reference.\n"
+        ],
+        "stderr_excludes": ["may still be going", "unexpected failure", "Run started"]
+      }
+    },
+    {
       "name": "run/version-answer-bad-gzip",
       "summary": "A version check answered with a body that does not decode is an answer, so the API is taken for the hosted one and the run starts.",
       "argv": ["run", "--method", "mt_receipts01"],

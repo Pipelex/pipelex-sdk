@@ -283,7 +283,13 @@ def _native_node_data(concept_ref: str) -> dict[str, Any]:
 
 
 def _dump(node: InputFormItem) -> dict[str, Any]:
-    """A node as its unnamed wire mapping, ready to be placed anywhere in a node being built."""
+    """A node as its unnamed wire mapping without the slot facts only a top-level input field states (`presence`,
+    `gating`), ready to be placed anywhere in a node being built.
+
+    A node built here is always nested, under a stuff's `content` or a list's `item`, and the standard refuses those
+    slot facts on any nested node, so a concept's node taken from a top-level input field must shed them.
+    """
     data = node.model_dump()
-    data.pop("name", None)
+    for slot in ("name", "presence", "gating"):
+        data.pop(slot, None)
     return data

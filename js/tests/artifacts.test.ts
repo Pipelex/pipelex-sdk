@@ -1073,6 +1073,46 @@ describe("downloadArtifacts", () => {
     expect(new Uint8Array(await readFile(join(dir, "root-brief-content.pdf")))).toEqual(PDF_BYTES);
   });
 
+  it("walks a stored text in working_memory as a text, named by its MIME type", async () => {
+    const textUri = "pipelex-storage://org/runs/01JRUN/generated/3f9a/value.bin";
+    const client = makeClient();
+    mockFetch((url) =>
+      streamed([
+        url.pathname.includes("brief") ? PDF_BYTES : new TextEncoder().encode("# Title\n"),
+      ]),
+    );
+    const dir = await makeTempDir();
+
+    const verdict = await downloadArtifacts(client, {
+      results: {
+        pipeline_run_id: RUN_ID,
+        main_stuff: null,
+        working_memory: {
+          root: {
+            brief: { concept: "native.Document", content: { url: INPUT_URI } },
+            summary: {
+              concept: "native.Markdown",
+              content: { url: textUri, size: 8, mime_type: "text/markdown", preview: "# Title" },
+            },
+          },
+          aliases: { main_stuff: "summary" },
+        },
+        output_form: {},
+        input_form: {},
+      } as unknown as RunResults,
+      dir,
+      scope: "working_memory",
+    });
+
+    expect(
+      verdict.artifacts.map((artifact) => [artifact.uri, artifact.kind, artifact.path]),
+    ).toEqual([
+      [INPUT_URI, "file", join(dir, "root-brief-content.pdf")],
+      [textUri, "text", join(dir, "root-summary-content.md")],
+    ]);
+    expect(await readFile(join(dir, "root-summary-content.md"), "utf8")).toBe("# Title\n");
+  });
+
   it("never overwrites: a name already on disk gets a numeric suffix", async () => {
     const client = makeClient();
     mockFetch(() => streamed([PNG_BYTES]));

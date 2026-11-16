@@ -24,6 +24,7 @@ import {
   PipelineRequestError,
   RejectedAssetError,
   RunFailedError,
+  StoredTextLoadError,
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,
   UploadTransportError,
@@ -52,6 +53,9 @@ export function presentError(error: unknown): PresentedError {
     lines.push(`Reason: ${reasonOf(runError ?? error.problem)}`);
     if (runError !== undefined) lines.push(...nextStepLines(runError));
     return { lines, exitCode: EXIT_FAILED };
+  }
+  if (error instanceof StoredTextLoadError) {
+    return presentStoredTextFailure(error);
   }
   if (error instanceof InvalidLocalSourceError) {
     // A file the inputs name that cannot be read is the inputs' fault, as an unreadable inputs
@@ -114,6 +118,26 @@ export function presentError(error: unknown): PresentedError {
   }
   const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   return { lines: [`Error: unexpected failure, ${detail}`], exitCode: EXIT_FAILED };
+}
+
+/** The line under a stored text that did not load, when the run's answer was printed in its place. */
+export const WIRE_OUTPUT_LINE =
+  "The output above is the run's answer, each stored text still its reference.";
+
+/**
+ * A run that completed with a stored text in its output the command could not load: where the
+ * text sits in the output and why, its problem's reason and next step, and, when the error carried
+ * the run's answer, a line saying the output printed above is that answer. The run is over, so
+ * nothing says it may still be going.
+ */
+function presentStoredTextFailure(error: StoredTextLoadError): PresentedError {
+  const lines = [
+    `Error: the run completed, but the stored text at ${error.path} in its output could not be loaded (${error.reason}).`,
+    `Reason: ${reasonOf(error.problem)}`,
+    ...nextStepLines(error.problem),
+  ];
+  if (error.wireResults !== undefined) lines.push(WIRE_OUTPUT_LINE);
+  return { lines, exitCode: EXIT_FAILED };
 }
 
 /**

@@ -8,11 +8,11 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import httpx
 import pytest
-from mthds.protocol.input_form import InputFormItem
+from mthds.protocol.input_form import InputFormItem, ListItem
 from pydantic import TypeAdapter
 from pytest_mock import MockerFixture
 
-from pipelex_sdk.artifact_models import BULK_RESOLVE_MAX_URIS, ArtifactScope, DownloadedKind, StoredTextLocation
+from pipelex_sdk.artifact_models import BULK_RESOLVE_MAX_URIS, ArtifactScope, DownloadArtifactsOptions, DownloadedKind, StoredTextLocation
 from pipelex_sdk.artifacts import (
     artifact_filename,
     collect_artifacts,
@@ -31,6 +31,7 @@ from pipelex_sdk.stored_texts import (
     main_stuff_node,
     stored_text_kind_of,
     stored_text_kind_of_node,
+    working_memory_node,
 )
 
 _BASE_URL = "http://localhost:8081"
@@ -69,6 +70,32 @@ def _results(concept: str, main_stuff: Any, output_field: dict[str, Any] | None 
         "output_form": output_form,
         "input_form": {},
     }
+
+
+_DOCUMENT_URI = "pipelex-storage://org/assets/brief.pdf"
+
+#: A top-level input-form field, which states the slot facts (`presence`, `gating`) no nested node may carry.
+_DOCUMENT_INPUT_FIELD: dict[str, Any] = {
+    "kind": "document",
+    "name": "doc",
+    "concept_ref": "native.Document",
+    "required": True,
+    "presence": "plain",
+    "gating": True,
+}
+
+
+def _results_with_document_input(main_stuff: Any) -> dict[str, Any]:
+    """A results body whose main output is a `native.Text` no output form describes, beside an echoed document input
+    that the input form describes as a top-level field.
+    """
+    body = _results("native.Text", main_stuff)
+    body["working_memory"]["root"]["doc"] = {
+        "concept": "native.Document",
+        "content": {"url": _DOCUMENT_URI, "mime_type": "application/pdf", "filename": "brief.pdf"},
+    }
+    body["input_form"] = {"my_domain.summarize": {"fields": [_DOCUMENT_INPUT_FIELD]}}
+    return body
 
 
 class _Boundary:
@@ -181,6 +208,60 @@ class TestStoredTexts:
         assert node is not None
         assert node.concept_ref == "my_domain.Dossier"
         assert main_stuff_node(RunResults.model_validate({"pipeline_run_id": _RUN_ID, "main_stuff": {}})) is None
+
+    def test_describes_each_stuff_of_the_working_memory_beside_a_top_level_input_field(self) -> None:
+        text_uri = _stored_uri("wm")
+        results = RunResults.model_validate(_results_with_document_input(_reference(text_uri)))
+
+        node = working_memory_node(results)
+
+        assert node is not None
+        assert results.working_memory is not None
+        references = locate_stored_references(results.working_memory.model_dump(), node)
+        assert references.texts == [
+            StoredTextLocation(
+                uri=text_uri,
+                found_at=["$.root.summary.content.url"],
+                kind=StoredTextKind.TEXT,
+                size=4096,
+                mime_type="text/plain",
+                preview="The start…",
+            )
+        ]
+        assert [(location.uri, location.found_at) for location in references.files] == [(_DOCUMENT_URI, ["$.root.doc.content.url"])]
+
+    def test_wraps_a_plural_output_whose_concept_only_a_top_level_input_field_names(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("pl")
+        prose_input = {"kind": "prose", "name": "brief", "concept_ref": "native.Text", "required": True, "presence": "plain", "gating": True}
+        body = _results("native.Text", {"items": [_reference(uri)]})
+        body["input_form"] = {"my_domain.summarize": {"fields": [prose_input]}}
+        results = RunResults.model_validate(body)
+
+        node = main_stuff_node(results)
+
+        assert isinstance(node, ListItem)
+        _Boundary(mocker, client, body={}, objects={uri: b"One of many."})
+        loaded = asyncio.run(load_stored_texts(client, results))
+        assert loaded.main_stuff == {"items": [{"text": "One of many."}]}
+
+    def test_download_artifacts_walks_the_working_memory_beside_a_top_level_input_field(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        client = _client()
+        text_uri = _stored_uri("dl")
+        boundary = _Boundary(mocker, client, body={}, objects={text_uri: b"Summary.", _DOCUMENT_URI: b"%PDF-1.4"})
+        results = RunResults.model_validate(_results_with_document_input(_reference(text_uri)))
+
+        verdict = asyncio.run(
+            download_artifacts(client, dir_path=tmp_path, results=results, options=DownloadArtifactsOptions(scope=ArtifactScope.WORKING_MEMORY))
+        )
+
+        assert boundary.resolved == [[text_uri, _DOCUMENT_URI]]
+        assert verdict.all_saved is True
+        assert [(artifact.uri, artifact.kind, artifact.found_at) for artifact in verdict.artifacts] == [
+            (text_uri, DownloadedKind.TEXT, ["$.root.summary.content.url"]),
+            (_DOCUMENT_URI, DownloadedKind.FILE, ["$.root.doc.content.url"]),
+        ]
+        assert verdict.saved_paths == [str(tmp_path / "root-summary-content.txt"), str(tmp_path / "root-doc-content.pdf")]
 
     # ── the result readers load by default ───────────────────────────
 

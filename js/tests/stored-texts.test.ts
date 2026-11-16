@@ -11,7 +11,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { InputFormItem, OutputForm } from "mthds/protocol";
+import type { InputFormItem, InputFormTopLevelField, OutputForm } from "mthds/protocol";
 import { PipelexApiClient } from "../src/client.js";
 import {
   BULK_RESOLVE_MAX_URIS,
@@ -202,6 +202,50 @@ describe("stored-text concepts", () => {
       results("native.Text", { items: [reference(storedUri("a"))] }) as unknown as RunResults,
     );
     expect(node).toMatchObject({ kind: "list", item: { concept_ref: "native.Text" } });
+  });
+
+  it("describes each stuff of the working memory beside a top-level input field", () => {
+    const textUri = storedUri("wm");
+    const documentUri = "pipelex-storage://org/assets/brief.pdf";
+    const wm = {
+      root: {
+        summary: { concept: "native.Text", content: reference(textUri) },
+        doc: {
+          concept: "native.Document",
+          content: { url: documentUri, mime_type: "application/pdf", filename: "brief.pdf" },
+        },
+      },
+      aliases: { main_stuff: "summary" },
+    };
+    // A top-level input field states the slot facts no nested node may carry.
+    const documentInput: InputFormTopLevelField = {
+      kind: "document",
+      name: "doc",
+      concept_ref: "native.Document",
+      required: true,
+      presence: "plain",
+      gating: true,
+    };
+    const node = workingMemoryNode({
+      working_memory: wm,
+      output_form: {},
+      input_form: { "my_domain.summarize": { fields: [documentInput] } },
+    });
+
+    expect(node).not.toBeNull();
+    expect(locateStoredReferences(wm, node ?? undefined)).toEqual({
+      files: [{ uri: documentUri, found_at: ["$.root.doc.content.url"] }],
+      texts: [
+        {
+          uri: textUri,
+          found_at: ["$.root.summary.content.url"],
+          kind: "text",
+          size: 4096,
+          mime_type: "text/plain",
+          preview: "The start…",
+        },
+      ],
+    });
   });
 
   it("knows nothing without a working memory", () => {

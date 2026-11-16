@@ -178,9 +178,7 @@ export function workingMemoryNode(results: ConceptSource): InputFormItem | null 
     const conceptRef = conceptRefOf((stuff as { concept?: unknown }).concept);
     if (conceptRef === null) continue;
     const content = contentNode(conceptRef, (stuff as { content?: unknown }).content, results);
-    stuffFields.push(
-      objectNode(null, [named(name, objectNode(null, [named("content", content)]))]),
-    );
+    stuffFields.push(named(name, objectNode(null, [named("content", content)])));
   }
   return objectNode(null, [named("root", objectNode(null, stuffFields))]);
 }
