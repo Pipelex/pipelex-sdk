@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The tests read the next SDK's download verdicts**: the tests build a download verdict's entries with `kind`, which `pipelex-sdk` requires from the release that saves stored texts as text files, so they pass on the SDK the starter pins and on the next one, and the verdict fixtures name a refused reference by the platform's code, `pipelex.org.mismatch`.
+
 ## [v0.61.0] - 2026-11-07
 
 ### Fixed

@@ -41,6 +41,26 @@ def _render(downloaded: DownloadArtifactsResult | None) -> str:
     return buffer.getvalue()
 
 
+def _downloaded_artifact(
+    *,
+    uri: str,
+    found_at: list[str],
+    path: str | None = None,
+    content_type: str | None = None,
+    size: int | None = None,
+    error: ArtifactItemError | None = None,
+    kind: str = "file",
+) -> DownloadedArtifact:
+    """One outcome of a download verdict, a stored file unless `kind` says `text`.
+
+    It is validated from a mapping rather than constructed, because `kind` is required from the SDK
+    release that saves stored texts as text files and unknown before it, which ignores the key: so
+    the same test reads the verdict of either.
+    """
+    fields = {"uri": uri, "found_at": found_at, "path": path, "content_type": content_type, "size": size, "error": error, "kind": kind}
+    return DownloadedArtifact.model_validate(fields)
+
+
 def _verdict(*artifacts: DownloadedArtifact) -> DownloadArtifactsResult:
     saved = [artifact.path for artifact in artifacts if artifact.path is not None]
     return DownloadArtifactsResult(
@@ -61,7 +81,7 @@ class TestDownloadProducedFiles:
         client.assert_not_called()
 
     async def test_an_output_referencing_a_file_goes_through_the_client(self, mocker: MockerFixture, tmp_path: Path):
-        artifact = DownloadedArtifact(
+        artifact = _downloaded_artifact(
             uri="pipelex-storage://run-1/cat.png", found_at=["$.url"], path=str(tmp_path / "cat.png"), content_type="image/png", size=3
         )
         fake_client = mocker.AsyncMock()
@@ -86,23 +106,23 @@ class TestPrintDownloads:
         assert _render(None) == ""
 
     def test_names_each_saved_file(self):
-        rendered = _render(_verdict(DownloadedArtifact(uri="pipelex-storage://run-1/cat.png", found_at=["$.url"], path="/tmp/out/cat.png", size=3)))
+        rendered = _render(_verdict(_downloaded_artifact(uri="pipelex-storage://run-1/cat.png", found_at=["$.url"], path="/tmp/out/cat.png", size=3)))
         assert "/tmp/out/cat.png" in rendered
 
     def test_names_a_reference_that_did_not_come_down(self):
-        failed = DownloadedArtifact(
-            uri="pipelex-storage://run-1/cat.png", found_at=["$.url"], error=ArtifactItemError(code="forbidden", detail="Not your run.")
+        failed = _downloaded_artifact(
+            uri="pipelex-storage://run-1/cat.png", found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run.")
         )
         rendered = _render(_verdict(failed))
         # The reference, the machine code and the sentence a person reads — a failed reference is
         # reported rather than raised, so the message is the only place it surfaces.
         assert "pipelex-storage://run-1/cat.png" in rendered
-        assert "forbidden" in rendered
+        assert "pipelex.org.mismatch" in rendered
         assert "Not your run." in rendered
 
     def test_reports_both_arms_of_a_partial_download(self):
-        saved = DownloadedArtifact(uri="pipelex-storage://run-1/ok.png", found_at=["$[0].url"], path="/tmp/out/ok.png", size=3)
-        failed = DownloadedArtifact(
+        saved = _downloaded_artifact(uri="pipelex-storage://run-1/ok.png", found_at=["$[0].url"], path="/tmp/out/ok.png", size=3)
+        failed = _downloaded_artifact(
             uri="pipelex-storage://run-1/bad.png", found_at=["$[1].url"], error=ArtifactItemError(code="write_failed", detail="Disk full.")
         )
         rendered = _render(_verdict(saved, failed))
