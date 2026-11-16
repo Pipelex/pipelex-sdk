@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import typer
 from mthds.protocol.problem.models import Problem
-from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult, DownloadedArtifact
+from pipelex_sdk.artifact_models import ArtifactItemError, DownloadArtifactsResult
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -51,6 +51,7 @@ from tests.support import (
     FakeClient,
     Greeting,
     download_verdict,
+    downloaded_artifact,
     execute_result,
     greet_contracts,
     invoke,
@@ -565,7 +566,7 @@ class TestDownloads:
 
     def test_produced_files_go_under_outputs_by_run_id(self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
-        saved = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=f"outputs/{RUN_ID}/main_stuff.png", size=3)
+        saved = downloaded_artifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=f"outputs/{RUN_ID}/main_stuff.png", size=3)
         fake_client.wait_answer = run_results(IMAGE_OUTPUT)
         fake_client.download_answer = download_verdict(saved)
         result = invoke(make_binding(), [])
@@ -587,7 +588,9 @@ class TestDownloads:
         assert fake_client.downloaded_to == []
 
     def test_a_file_that_did_not_come_down_fails_the_command_after_the_result(self, fake_client: FakeClient, tmp_path: Path):
-        failed = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="forbidden", detail="Not your run."))
+        failed = downloaded_artifact(
+            uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run.")
+        )
         fake_client.wait_answer = run_results(IMAGE_OUTPUT)
         fake_client.download_answer = download_verdict(failed)
         result = invoke(make_binding(), ["--out", str(tmp_path)])
@@ -599,7 +602,9 @@ class TestDownloads:
         assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
 
     def test_a_refused_result_with_a_file_that_did_not_come_down_is_never_called_complete(self, fake_client: FakeClient, tmp_path: Path):
-        failed = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="forbidden", detail="Not your run."))
+        failed = downloaded_artifact(
+            uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run.")
+        )
         fake_client.wait_answer = run_results(IMAGE_OUTPUT)
         fake_client.download_answer = download_verdict(failed)
         result = invoke(make_binding(output_model=Greeting), ["--out", str(tmp_path)])
@@ -610,7 +615,9 @@ class TestDownloads:
         assert f"{COMMAND_NAME} --resume {RUN_ID} --out DIR" in result.stderr
 
     def test_a_blocking_run_never_offers_to_resume(self, fake_client: FakeClient, tmp_path: Path):
-        failed = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="forbidden", detail="Not your run."))
+        failed = downloaded_artifact(
+            uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run.")
+        )
         fake_client.execute_answer = execute_result(IMAGE_OUTPUT)
         fake_client.download_answer = download_verdict(failed)
         result = invoke(make_binding(), ["--blocking", "--out", str(tmp_path)])
@@ -707,7 +714,7 @@ class TestDownloads:
 
     def test_a_second_resume_leaves_the_earlier_download_alone(self, fake_client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
-        saved = DownloadedArtifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=f"outputs/{RUN_ID}/main_stuff.png", size=3)
+        saved = downloaded_artifact(uri=IMAGE_OUTPUT["url"], found_at=["$.url"], path=f"outputs/{RUN_ID}/main_stuff.png", size=3)
         fake_client.wait_answer = run_results(IMAGE_OUTPUT)
         fake_client.download_answer = download_verdict(saved)
         first = invoke(make_binding(), ["--resume", RUN_ID])

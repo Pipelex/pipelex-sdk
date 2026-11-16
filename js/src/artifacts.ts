@@ -36,13 +36,25 @@ import {
   RunFailedError,
   RunStillRunningError,
   ScopeUnavailableError,
+  StoredTextLoadError,
 } from "./errors.js";
 import { argumentInvalidProblem, responseUnreadableProblem } from "./errors.js";
-import { buildProblem } from "mthds/protocol";
+import { ProblemError, buildProblem } from "mthds/protocol";
 import type { Problem } from "mthds/protocol";
-import type { GetRunResultOptions, RunResults, RunResultState } from "./runs.js";
+import type { GetRunResultOptions, RunResultArtifact, RunResults, RunResultState } from "./runs.js";
 import { absenceCause, loadNodeHost } from "./node-host.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
+import type { InputFormItem } from "mthds/protocol";
+import {
+  STORED_TEXT_REFERENCE_FIELDS,
+  STORED_TEXT_VALUE_FIELD,
+  childNode,
+  mainStuffNode,
+  storedTextKindOfNode,
+  workingMemoryNode,
+} from "./stored-texts.js";
+import type { ConceptSource, StoredTextKind } from "./stored-texts.js";
+import { parseExactJson } from "./exact-json.js";
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -119,11 +131,29 @@ const EXTENSION_BY_CONTENT_TYPE: Record<string, string> = {
   "application/json": ".json",
 };
 
+/**
+ * The extension a saved stored text takes from the MIME type its reference states, the text types
+ * the runtime stores as. A stored text is named by its MIME type, never by its storage key.
+ */
+const TEXT_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "text/plain": ".txt",
+  "text/markdown": ".md",
+  "text/html": ".html",
+  "application/json": ".json",
+};
+
+/** The extension a saved stored text takes when its reference states no MIME type the SDK names. */
+const TEXT_EXTENSION_BY_KIND: Record<StoredTextKind, string> = {
+  text: ".txt",
+  html: ".html",
+  json: ".json",
+};
+
 // ── Types ────────────────────────────────────────────────────────────
 
 /**
  * Why one reference failed — a value, never a thrown error. `code` is the
- * resolve route's own per-reference code (`invalid_storage_uri`, `forbidden`)
+ * resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`)
  * or one of the fetch boundary's (see `ArtifactFetchError`), plus the download's
  * own `resolve_failed`, `total_limit_exceeded`, `write_failed` and `aborted`.
  * `detail` is the sentence a person reads.
@@ -239,6 +269,35 @@ export interface ArtifactLocation {
 }
 
 /**
+ * Where one stored text sits in a walked value — a value the runtime holds by its
+ * `pipelex-storage://` reference, `{ url, size, mime_type, preview }`, in place of its value field.
+ * `found_at` is the path of the reference's `url`, in the notation of {@link ArtifactLocation}, and
+ * the other fields are what the reference states, `null` when it states none.
+ */
+export interface StoredTextLocation extends ArtifactLocation {
+  /** What the text holds once loaded: a text, an HTML fragment or a JSON object. */
+  kind: StoredTextKind;
+  /** The stored value's length in bytes. */
+  size: number | null;
+  /** The stored value's MIME type, which names its file when it is saved. */
+  mime_type: string | null;
+  /** The value's first characters. */
+  preview: string | null;
+}
+
+/**
+ * The storage references of a walked value, told apart by concept: the stored files, which
+ * {@link locateArtifacts} answers, and the stored texts.
+ */
+export interface StoredReferences {
+  files: ArtifactLocation[];
+  texts: StoredTextLocation[];
+}
+
+/** What a reference of a download names: a stored file, or a stored text saved as a text file. */
+export type DownloadedKind = "file" | "text";
+
+/**
  * One reference's outcome in a download verdict — one shape with nullable fields,
  * like {@link ResolvedArtifact}: either `path` and `size` are set and `error` is
  * null, or `error` is set and both are null. `found_at` says where the reference
@@ -249,6 +308,8 @@ export interface ArtifactLocation {
 export type DownloadedArtifact =
   | {
       uri: string;
+      /** A stored file, or a stored text saved as a text file. */
+      kind: DownloadedKind;
       /** Every `$`-rooted path in the walked scope where the reference sits; the first one named the file. */
       found_at: string[];
       /** Absolute path of the written file. */
@@ -260,6 +321,8 @@ export type DownloadedArtifact =
     }
   | {
       uri: string;
+      /** A stored file, or a stored text that would have been saved as a text file. */
+      kind: DownloadedKind;
       /** Every `$`-rooted path in the walked scope where the reference sits. */
       found_at: string[];
       path: null;
@@ -311,6 +374,8 @@ type PathSegment = string | number;
 interface LocatedReference {
   uri: string;
   paths: PathSegment[][];
+  /** Set for a stored text's reference, found only when the walk was asked for texts. */
+  text?: { kind: StoredTextKind; reference: Record<string, unknown> };
 }
 
 /** An object key rendered as `.key` in a path; any other key is rendered as `["…"]`. */
@@ -329,9 +394,16 @@ const IDENTIFIER_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * produced image or document as content carrying its reference in `url`, so a
  * typical path ends there: `$.rooms[3].staged_photo.url`, `$.items[0].url`, or
  * `$.url` for an output that is one image. Pure — no network, no key.
+ *
+ * `node` is the descriptor node of the walked value, the standard's output-form node for a run's
+ * output ({@link mainStuffNode} finds it in the run's results). Given, the walk follows the
+ * concept at each path and skips a stored text — a `Text`, `Markdown`, `Html` or `JSON` value, or
+ * one refining them, which the runtime may hold by a `pipelex-storage://` reference too — since
+ * a stored text is a value of the run, never a file. Without it, nothing says what a value is, so
+ * every reference counts. A result read with its stored texts loaded, the default, holds none.
  */
-export function locateArtifacts(value: unknown): ArtifactLocation[] {
-  return walkReferences(value).map(renderLocation);
+export function locateArtifacts(value: unknown, node?: InputFormItem | null): ArtifactLocation[] {
+  return walkReferences(value, true, node ?? undefined).map(renderLocation);
 }
 
 /**
@@ -343,10 +415,33 @@ export function locateArtifacts(value: unknown): ArtifactLocation[] {
  * heuristic: the runtime serializes a produced image or document as content
  * carrying its reference in `url`, beside an expiring `public_url` this walk
  * ignores. Pure — no network, no key — so a consumer can count or list a run's
- * produced files without resolving any of them.
+ * produced files without resolving any of them. `node` skips the stored texts by concept, as on
+ * {@link locateArtifacts}.
  */
-export function collectArtifacts(value: unknown): string[] {
-  return walkReferences(value, false).map((located) => located.uri);
+export function collectArtifacts(value: unknown, node?: InputFormItem | null): string[] {
+  return walkReferences(value, false, node ?? undefined).map((located) => located.uri);
+}
+
+/**
+ * Every `pipelex-storage://` reference inside a JSON-shaped value, told apart by concept: the
+ * stored files, exactly as {@link locateArtifacts} answers them, and the stored texts, each with
+ * what its reference states. Each list is deduplicated and in discovery order. A stored text is
+ * found where `node` describes a stored-text concept ({@link storedTextKindOfNode}) and the value
+ * there is its reference, a `pipelex-storage://` `url` with no value field. Without `node` nothing
+ * says what a value is, so every reference is a file: a file count one too high, never a file
+ * hidden. For a run's output, `node` is {@link mainStuffNode} of its results. Pure — no network.
+ */
+export function locateStoredReferences(
+  value: unknown,
+  node?: InputFormItem | null,
+): StoredReferences {
+  const files: ArtifactLocation[] = [];
+  const texts: StoredTextLocation[] = [];
+  for (const located of walkReferences(value, true, node ?? undefined, true)) {
+    if (located.text === undefined) files.push(renderLocation(located));
+    else texts.push(renderTextLocation(located, located.text));
+  }
+  return { files, texts };
 }
 
 /**
@@ -356,27 +451,43 @@ export function collectArtifacts(value: unknown): string[] {
  * occurrence costs memory in proportion to occurrences times depth, where the
  * deduplicated list needs only one entry per unique reference.
  */
-function walkReferences(value: unknown, withPaths = true): LocatedReference[] {
+function walkReferences(
+  value: unknown,
+  withPaths = true,
+  described?: InputFormItem,
+  includeTexts = false,
+): LocatedReference[] {
   // A Map keeps insertion order, which is the order of first sighting.
   const byUri = new Map<string, LocatedReference>();
   const trail: PathSegment[] = [];
-  const visit = (node: unknown): void => {
-    if (typeof node === "string") {
-      if (!isStorageReference(node)) return;
-      const known = byUri.get(node);
-      if (!withPaths) {
-        if (known === undefined) byUri.set(node, { uri: node, paths: [] });
-        return;
+  const record = (uri: string, path: PathSegment[], text?: LocatedReference["text"]): void => {
+    const known = byUri.get(uri);
+    if (!withPaths) {
+      if (known === undefined) byUri.set(uri, { uri, paths: [], ...(text ? { text } : {}) });
+      return;
+    }
+    if (known === undefined) byUri.set(uri, { uri, paths: [path], ...(text ? { text } : {}) });
+    else known.paths.push(path);
+  };
+  const visit = (node: unknown, nodeDescriptor: InputFormItem | undefined): void => {
+    // A stored text is a value of the run, never a file: its reference is recorded as a text when
+    // asked for, and never counts as a file.
+    const kind = storedTextKindOfNode(nodeDescriptor);
+    if (kind !== null) {
+      const url = includeTexts ? storedTextReferenceUrl(node, kind) : null;
+      if (url !== null && isStorageReference(url)) {
+        record(url, [...trail, "url"], { kind, reference: node as Record<string, unknown> });
       }
-      const path = [...trail];
-      if (known === undefined) byUri.set(node, { uri: node, paths: [path] });
-      else known.paths.push(path);
+      return;
+    }
+    if (typeof node === "string") {
+      if (isStorageReference(node)) record(node, [...trail]);
       return;
     }
     if (Array.isArray(node)) {
       for (let index = 0; index < node.length; index += 1) {
         trail.push(index);
-        visit(node[index]);
+        visit(node[index], childNode(nodeDescriptor, node, index));
         trail.pop();
       }
       return;
@@ -384,17 +495,31 @@ function walkReferences(value: unknown, withPaths = true): LocatedReference[] {
     if (typeof node === "object" && node !== null) {
       for (const [key, entry] of Object.entries(node)) {
         trail.push(key);
-        visit(entry);
+        visit(entry, childNode(nodeDescriptor, node, key));
         trail.pop();
       }
     }
   };
-  visit(value);
+  visit(value, described);
   return [...byUri.values()];
 }
 
 function renderLocation(located: LocatedReference): ArtifactLocation {
   return { uri: located.uri, found_at: located.paths.map(renderPath) };
+}
+
+function renderTextLocation(
+  located: LocatedReference,
+  text: NonNullable<LocatedReference["text"]>,
+): StoredTextLocation {
+  const { size, mime_type: mimeType, preview } = text.reference;
+  return {
+    ...renderLocation(located),
+    kind: text.kind,
+    size: typeof size === "number" ? size : null,
+    mime_type: typeof mimeType === "string" ? mimeType : null,
+    preview: typeof preview === "string" ? preview : null,
+  };
 }
 
 /** Segments to the `$`-rooted notation `found_at` carries. */
@@ -448,6 +573,33 @@ export function isStorageReference(value: string): boolean {
   return value.startsWith(PIPELEX_STORAGE_SCHEME) && value.length > PIPELEX_STORAGE_SCHEME.length;
 }
 
+/**
+ * A `url` a stored text may be loaded from: a `pipelex-storage://` reference, resolved through the
+ * platform's bulk route to a link it signs, or a `data:` URL, decoded where it is. A stored text at
+ * any other URL is never fetched, so a method cannot have the SDK read a host the caller did not
+ * choose: the loader refuses it as `unsupported_url`.
+ *
+ * The file walks ({@link locateStoredReferences}, `downloadArtifacts`) report the first kind
+ * only, since a `data:` URL holds its value inline and has nothing to resolve or save.
+ */
+export function isLoadableStoredTextUrl(url: string): boolean {
+  return isStorageReference(url) || url.startsWith("data:");
+}
+
+/**
+ * The `url` of a stored text's reference, `value` sitting where the concept is a stored text: an
+ * object carrying a string `url` and no value field. `null` for anything else, an inline value
+ * included. The one recognition the walk and the loader share, each then applying its own rule to
+ * the URL.
+ */
+function storedTextReferenceUrl(value: unknown, kind: StoredTextKind): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const reference = value as Record<string, unknown>;
+  const url = reference["url"];
+  if (typeof url !== "string" || reference[STORED_TEXT_VALUE_FIELD[kind]] != null) return null;
+  return url;
+}
+
 // ── artifactFilename ─────────────────────────────────────────────────
 
 /**
@@ -483,7 +635,7 @@ export function isStorageReference(value: string): boolean {
  * in the notation {@link locateArtifacts} writes, or for an unknown scope.
  */
 export function artifactFilename(
-  location: ArtifactLocation,
+  location: ArtifactLocation | StoredTextLocation,
   contentType: string | null | undefined,
   scope: ArtifactScope,
 ): string {
@@ -509,14 +661,18 @@ export function artifactFilename(
       { problem: argumentInvalidProblem("location", "not_a_path") },
     );
   }
-  return filenameFor(segments, uri, contentType, scope);
+  const text = location as Partial<StoredTextLocation>;
+  const extension =
+    typeof text.kind === "string" && text.kind in TEXT_EXTENSION_BY_KIND
+      ? textExtensionFor(text.kind, text.mime_type ?? contentType)
+      : extensionFor(uri, contentType);
+  return filenameFor(segments, extension, scope);
 }
 
 /** The naming rule of {@link artifactFilename}, over the walk's own segments. */
 function filenameFor(
   segments: readonly PathSegment[],
-  uri: string,
-  contentType: string | null | undefined,
+  extension: string,
   scope: ArtifactScope,
 ): string {
   const named = segments.at(-1) === "url" ? segments.slice(0, -1) : segments;
@@ -526,7 +682,6 @@ function filenameFor(
     )
     // Only the empty key reduces to nothing, and it says nothing about the field.
     .filter((word) => word !== "");
-  const extension = extensionFor(uri, contentType);
   const stem = fitStem(words.length > 0 ? words : [scope], MAX_FILENAME_LENGTH - extension.length);
   // A device stem is at most four characters, so the `_` cannot overrun the cap.
   return (WINDOWS_DEVICE_STEM.test(stem) ? `${stem}_` : stem) + extension;
@@ -550,6 +705,15 @@ function extensionFor(uri: string, contentType: string | null | undefined): stri
   if (fromKey !== "") return `.${fromKey}`;
   if (contentType == null) return "";
   return EXTENSION_BY_CONTENT_TYPE[contentType.split(";")[0]!.trim().toLowerCase()] ?? "";
+}
+
+/** `.ext` for a saved stored text — its MIME type's, else its kind's — never its storage key's. */
+function textExtensionFor(kind: StoredTextKind, mimeType: string | null | undefined): string {
+  const named =
+    mimeType == null
+      ? undefined
+      : TEXT_EXTENSION_BY_MIME_TYPE[mimeType.split(";")[0]!.trim().toLowerCase()];
+  return named ?? TEXT_EXTENSION_BY_KIND[kind];
 }
 
 /**
@@ -1039,6 +1203,401 @@ function formatMiB(bytes: number): string {
   return `${Number.isInteger(mib) ? mib : mib.toFixed(1)} MiB`;
 }
 
+// ── loadStoredTexts ──────────────────────────────────────────────────
+
+/**
+ * The cap on one stored text's bytes: the runtime's own cap on what it reads from storage, so a
+ * text the runtime could read is never one the SDK refuses.
+ */
+export const DEFAULT_STORED_TEXT_MAX_BYTES = 100 * 1024 * 1024;
+
+/** How many stored texts one load reads at once. */
+export const DEFAULT_STORED_TEXT_CONCURRENCY = 8;
+
+/** The bounds `loadStoredTexts` applies. Every one has a safe default. */
+export interface LoadStoredTextsOptions {
+  /** Refuse a stored text over this many bytes, before and while reading it. Default 100 MiB. */
+  maxBytes?: number;
+  /** Budget for each text's exchange — connect, headers and body. Default 120 s. */
+  timeoutMs?: number;
+  /** Accept a plain `http:` link, as the local stack's object store hands out. Off by default. */
+  allowHttp?: boolean;
+  /** How many texts are read at once. Default 8. */
+  concurrency?: number;
+  /** Cancels the load; its reason is thrown as is. */
+  signal?: AbortSignal;
+}
+
+/** One stored text the walk found: where it sits, what it holds, and its reference. */
+interface StoredTextSite {
+  segments: PathSegment[];
+  kind: StoredTextKind;
+  url: string;
+  reference: Record<string, unknown>;
+}
+
+/**
+ * A run's result with every stored text in `main_stuff` loaded: each value the runtime holds by
+ * reference, `{ url, size, mime_type, preview }`, replaced by its inline form, `{ text }`,
+ * `{ inner_html }` (its `css_class` kept) or `{ json_obj }`, which is the shape the generated
+ * types parse. The result readers (`getRunResult`, `waitForResult`, `startAndWaitForResult`) call
+ * it by default; a caller holding a result read with `loadStoredTexts: false` calls it later.
+ *
+ * Which values are stored texts is decided by concept, never by URL or MIME type: the concept at
+ * each path comes from the run's working memory and output form ({@link mainStuffNode}), so the
+ * results must carry them; a result that carries neither is returned as it is. A
+ * `pipelex-storage://` reference is resolved through the platform's bulk route, at most
+ * {@link BULK_RESOLVE_MAX_URIS} per request, and its signed link fetched under the same bounds as
+ * `fetchArtifact`, and a `data:` URL is decoded. A stored text under any other URL
+ * ({@link isLoadableStoredTextUrl}) is refused before anything is sent, since fetching it would
+ * read a host the method chose rather than the caller; a result read with
+ * `loadStoredTexts: false` keeps it as written. The bytes are UTF-8 by the standard's rule, and a
+ * JSON value is the object they serialize.
+ *
+ * The result passed in is never changed: a new one is returned, or the same one when there is
+ * nothing to load. Throws `StoredTextLoadError` naming the text that could not be loaded, where it
+ * sits and why, a whole-request failure of the resolve route included (`resolve_failed`, the
+ * route's error as its `cause`), and lets the caller's abort through.
+ */
+export async function loadStoredTexts(
+  client: Pick<ArtifactCapableClient, "resolveStorageUrls">,
+  results: RunResults,
+  options: LoadStoredTextsOptions = {},
+): Promise<RunResults> {
+  if (results.main_stuff == null) return results;
+  const node = mainStuffNode(results);
+  if (node === null) return results;
+  const loaded = await loadStoredTextValues(
+    client,
+    results.main_stuff,
+    node,
+    options,
+    results.pipeline_run_id,
+  );
+  return loaded === results.main_stuff ? results : { ...results, main_stuff: loaded };
+}
+
+/** The result artifacts the concept at each path is read from. */
+const CONCEPT_ARTIFACTS = ["working_memory", "output_form", "input_form"] as const;
+
+/**
+ * The concept facts of a run's results: the results themselves when their read carried the
+ * working memory and the forms (`selection` undefined reads every artifact), else those three
+ * read again by the run's id, beside the results. Nothing is read when nothing is missing, and a
+ * second read that finds no completed run leaves the results as they are.
+ */
+export async function withConceptArtifacts(
+  client: Pick<ArtifactCapableClient, "getRunResult">,
+  results: RunResults,
+  selection: readonly RunResultArtifact[] | undefined,
+  signal?: AbortSignal,
+): Promise<ConceptSource & { main_stuff?: unknown }> {
+  if (selection === undefined) return results;
+  const missing = CONCEPT_ARTIFACTS.filter((artifact) => !selection.includes(artifact));
+  if (missing.length === 0) return results;
+  const state = await client.getRunResult(results.pipeline_run_id, {
+    signal,
+    artifacts: missing,
+    loadStoredTexts: false,
+  });
+  if (state.state !== "completed") return results;
+  const concepts: ConceptSource = {};
+  for (const artifact of missing) {
+    (concepts as Record<string, unknown>)[artifact] = state.result[artifact];
+  }
+  return { ...results, ...concepts };
+}
+
+/**
+ * Whether a value holds anything shaped like a stored text's reference, which is what makes a read
+ * that left the concepts out read them again: an object carrying a string `url`, no inline value
+ * field, and a `size` or a `preview`, which the runtime sets on every reference it stores and an
+ * image or a document content never carries. So an output of images and documents alone answers
+ * `false`. A `true` says only that the concepts are worth reading, the concept at each path still
+ * deciding; a `false` says no stored text the runtime made can be there.
+ */
+export function mayHoldStoredTexts(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(mayHoldStoredTexts);
+  if (typeof value !== "object" || value === null) return false;
+  const fields = value as Record<string, unknown>;
+  if (
+    typeof fields["url"] === "string" &&
+    Object.values(STORED_TEXT_VALUE_FIELD).every((field) => fields[field] == null) &&
+    ("size" in fields || "preview" in fields)
+  ) {
+    return true;
+  }
+  return Object.values(fields).some(mayHoldStoredTexts);
+}
+
+/**
+ * Whether a results read narrowed to `selection` carried every artifact the concept at each path
+ * is read from: the working memory and both forms. `undefined`, a read of every artifact, does.
+ */
+export function carriesConceptArtifacts(
+  selection: readonly RunResultArtifact[] | undefined,
+): boolean {
+  return (
+    selection === undefined || CONCEPT_ARTIFACTS.every((artifact) => selection.includes(artifact))
+  );
+}
+
+/** `value` with its stored texts loaded, walked with `node`; `value` itself when it holds none. */
+async function loadStoredTextValues(
+  client: Pick<ArtifactCapableClient, "resolveStorageUrls">,
+  value: unknown,
+  node: InputFormItem,
+  options: LoadStoredTextsOptions,
+  runId: string | undefined,
+): Promise<unknown> {
+  const sites = findStoredTexts(value, node);
+  if (sites.length === 0) return value;
+  const concurrency = options.concurrency ?? DEFAULT_STORED_TEXT_CONCURRENCY;
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new ArtifactOperationError(
+      `"concurrency" must be a positive integer, got ${String(concurrency)}.`,
+      { problem: argumentInvalidProblem("concurrency", "not_positive") },
+    );
+  }
+  const bounds = fetchBounds({
+    maxBytes: options.maxBytes ?? DEFAULT_STORED_TEXT_MAX_BYTES,
+    timeoutMs: options.timeoutMs,
+    allowHttp: options.allowHttp,
+    signal: options.signal,
+  });
+
+  // One read per distinct URL, named by the first place it was found.
+  const firstSite = new Map<string, StoredTextSite>();
+  for (const site of sites) if (!firstSite.has(site.url)) firstSite.set(site.url, site);
+  const urls = [...firstSite.keys()];
+  const references = urls.filter(isStorageReference);
+  const resolved = new Map<string, ResolvedArtifact>();
+  let items: ResolvedArtifact[];
+  try {
+    items = await resolveArtifacts(client, references, { signal: options.signal });
+  } catch (err) {
+    if (options.signal?.aborted === true) throw options.signal.reason;
+    // A whole-request failure of the route, a bare runner's 404 among them, is the first text's.
+    const site = firstSite.get(references[0]!)!;
+    const path = renderPath(site.segments);
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new StoredTextLoadError(
+      `The stored text at ${path} could not be loaded: the platform's bulk resolve route failed: ${detail}`,
+      {
+        uri: site.url,
+        path,
+        reason: "resolve_failed",
+        status: err instanceof ApiResponseError ? err.status : undefined,
+      },
+      { cause: err, problem: err instanceof ProblemError ? err.problem : undefined },
+    );
+  }
+  references.forEach((uri, index) => resolved.set(uri, items[index]!));
+
+  const texts = new Map<string, unknown>();
+  const dispatcher = await dispatcherFor(bounds.timeoutMs);
+  try {
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = next;
+        next += 1;
+        if (index >= urls.length) return;
+        const url = urls[index]!;
+        const site = firstSite.get(url)!;
+        const bytes = await readStoredBytes(site, resolved.get(url), bounds, dispatcher);
+        texts.set(url, decodeStoredValue(site, bytes, runId));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, urls.length) }, worker));
+  } finally {
+    void dispatcher?.close().catch(() => undefined);
+  }
+
+  let loaded: unknown = structuredClone(value);
+  for (const site of sites) {
+    loaded = replaceAt(loaded, site.segments, loadedForm(site, texts.get(site.url)));
+  }
+  return loaded;
+}
+
+/**
+ * Every stored text's reference in `value`, in walk order, the concept at each path read off
+ * `node`. Throws `StoredTextLoadError` (`unsupported_url`) for a stored text whose `url` the
+ * loader never reads ({@link isLoadableStoredTextUrl}), before anything is sent.
+ */
+function findStoredTexts(value: unknown, node: InputFormItem): StoredTextSite[] {
+  const sites: StoredTextSite[] = [];
+  const trail: PathSegment[] = [];
+  const visit = (current: unknown, described: InputFormItem | undefined): void => {
+    const kind = storedTextKindOfNode(described);
+    if (kind !== null) {
+      const url = storedTextReferenceUrl(current, kind);
+      if (url === null) return;
+      if (!isLoadableStoredTextUrl(url)) {
+        const path = renderPath(trail);
+        throw new StoredTextLoadError(
+          `The stored text at ${path} could not be loaded: its url is neither a pipelex-storage:// ` +
+            "reference nor a data: URL, so it is not fetched; read the result with " +
+            "loadStoredTexts: false to see it as written.",
+          { uri: url, path, reason: "unsupported_url" },
+        );
+      }
+      sites.push({
+        segments: [...trail],
+        kind,
+        url,
+        reference: current as Record<string, unknown>,
+      });
+      return;
+    }
+    if (Array.isArray(current)) {
+      current.forEach((entry, index) => {
+        trail.push(index);
+        visit(entry, childNode(described, current, index));
+        trail.pop();
+      });
+      return;
+    }
+    if (typeof current === "object" && current !== null) {
+      for (const [key, entry] of Object.entries(current)) {
+        trail.push(key);
+        visit(entry, childNode(described, current, key));
+        trail.pop();
+      }
+    }
+  };
+  visit(value, node);
+  return sites;
+}
+
+/** The bytes of one stored text: a reference's signed link fetched, or a `data:` URL decoded. Nothing else is read. */
+async function readStoredBytes(
+  site: StoredTextSite,
+  resolved: ResolvedArtifact | undefined,
+  bounds: FetchBounds,
+  dispatcher: Dispatcher | null,
+): Promise<Uint8Array> {
+  const path = renderPath(site.segments);
+  const fail = (
+    reason: string,
+    detail: string,
+    extra?: { cause?: unknown; problem?: Problem; status?: number },
+  ): never => {
+    throw new StoredTextLoadError(
+      `The stored text at ${path} could not be loaded: ${detail}`,
+      { uri: site.url, path, reason, status: extra?.status },
+      { cause: extra?.cause, problem: extra?.problem },
+    );
+  };
+  if (site.url.startsWith("data:")) {
+    const bytes = decodeDataUrl(site.url);
+    if (bytes === null) return fail("unsupported_url", "its data URL does not decode.");
+    if (bytes.byteLength > bounds.maxBytes) {
+      return fail(
+        "too_large",
+        `it is ${formatMiB(bytes.byteLength)}, over the ${formatMiB(bounds.maxBytes)} cap.`,
+        {
+          problem: downloadLimitProblem(bounds.maxBytes),
+        },
+      );
+    }
+    return bytes;
+  }
+  // Unreachable: the walk admits only a reference or a data: URL, and every reference is resolved first.
+  if (resolved === undefined) {
+    return fail("unsupported_url", "its url was not resolved by the platform.");
+  }
+  if (resolved.error !== null) return fail(resolved.error.code, resolved.error.detail);
+  const link = resolved.url;
+  try {
+    const response = await fetchResolvedUrl(site.url, link, bounds, dispatcher, () => undefined);
+    return new Uint8Array(await response.arrayBuffer());
+  } catch (err) {
+    if (bounds.signal?.aborted === true) throw bounds.signal.reason;
+    if (err instanceof ArtifactFetchError) {
+      return fail(err.reason, err.message, {
+        cause: err,
+        problem: err.problem,
+        status: err.status,
+      });
+    }
+    return fail("unknown", err instanceof Error ? err.message : String(err), { cause: err });
+  }
+}
+
+/** A `data:` URL's bytes, base64 or percent-encoded, or `null` when it is no data URL. */
+function decodeDataUrl(url: string): Uint8Array | null {
+  const comma = url.indexOf(",");
+  if (comma < 0) return null;
+  const header = url.slice("data:".length, comma);
+  const payload = url.slice(comma + 1);
+  try {
+    if (/;base64$/i.test(header)) {
+      const binary = atob(payload);
+      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    }
+    return new TextEncoder().encode(decodeURIComponent(payload));
+  } catch {
+    return null;
+  }
+}
+
+/** The value one stored text holds: its UTF-8 text, or for a JSON value the object that text serializes. */
+function decodeStoredValue(
+  site: StoredTextSite,
+  bytes: Uint8Array,
+  runId: string | undefined,
+): unknown {
+  const path = renderPath(site.segments);
+  const unreadable = (reason: string, detail: string, cause?: unknown): never => {
+    throw new StoredTextLoadError(
+      `The stored text at ${path} could not be loaded: ${detail}`,
+      { uri: site.url, path, reason },
+      { cause, problem: responseUnreadableProblem(200, runId) },
+    );
+  };
+  let text: string;
+  try {
+    // The bytes as stored, a byte-order mark included: the value is exactly what was stored.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch (err) {
+    return unreadable("not_utf8", "its bytes are not UTF-8 text.", err);
+  }
+  if (site.kind !== "json") return text;
+  let parsed: unknown;
+  try {
+    parsed = parseExactJson(text);
+  } catch (err) {
+    return unreadable("not_json_object", "its bytes are not JSON.", err);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return unreadable("not_json_object", "its JSON is not an object.");
+  }
+  return parsed;
+}
+
+/** The inline form of a loaded stored text: its value field first, its other inline fields kept. */
+function loadedForm(site: StoredTextSite, value: unknown): Record<string, unknown> {
+  const loaded: Record<string, unknown> = { [STORED_TEXT_VALUE_FIELD[site.kind]]: value };
+  const dropped: readonly string[] = STORED_TEXT_REFERENCE_FIELDS;
+  for (const [key, entry] of Object.entries(site.reference)) {
+    if (!dropped.includes(key)) loaded[key] = entry;
+  }
+  return loaded;
+}
+
+/** `root` with the value at `segments` replaced, in place below the root; the new value itself at `$`. */
+function replaceAt(root: unknown, segments: readonly PathSegment[], value: unknown): unknown {
+  if (segments.length === 0) return value;
+  let parent = root as Record<string | number, unknown>;
+  for (const segment of segments.slice(0, -1)) {
+    parent = parent[segment] as Record<string | number, unknown>;
+  }
+  parent[segments.at(-1)!] = value;
+  return root;
+}
+
 // ── downloadArtifacts ────────────────────────────────────────────────
 
 /** The write side of a streamed download: what {@link writeFully} needs of a `FileHandle`. */
@@ -1124,14 +1683,18 @@ const SKIPPED_CREDENTIAL =
 const SKIPPED_TOTAL =
   "Skipped: the download's total byte limit was reached by an earlier artifact.";
 
+/** A reference of a download: where it sits, and whether it is a stored file or a stored text. */
+type DownloadLocation = ArtifactLocation & { kind: DownloadedKind };
+
 function itemError(
-  location: ArtifactLocation,
+  location: DownloadLocation,
   contentType: string | null,
   code: string,
   detail: string,
 ): DownloadedArtifact {
   return {
     uri: location.uri,
+    kind: location.kind,
     found_at: location.found_at,
     path: null,
     content_type: contentType,
@@ -1160,7 +1723,12 @@ async function readCompletedResults(
   scope: ArtifactScope,
   signal: AbortSignal | undefined,
 ): Promise<RunResults> {
-  const state = await client.getRunResult(runId, { signal, artifacts: [scope] });
+  // Files only: the stored texts are values, which the walk skips by concept rather than loads.
+  const state = await client.getRunResult(runId, {
+    signal,
+    artifacts: [scope],
+    loadStoredTexts: false,
+  });
   if (state.state === "running") {
     throw new RunStillRunningError(
       `Run ${runId} is still running, so it has no artifacts to download yet` +
@@ -1252,13 +1820,41 @@ export async function downloadArtifacts(
     throw new ScopeUnavailableError(scope, runId);
   }
 
-  // The walk's own record names the files; `locations` is what the verdict reports.
-  const located = walkReferences(walked);
+  // The concept at each path tells a stored text, a value of the run, from a file. A run read by
+  // id asked for its scope alone, so its concepts are read beside it when the walk may need them.
+  const source: ConceptSource & { main_stuff?: unknown } =
+    !hasResults && mayHoldStoredTexts(walked)
+      ? await withConceptArtifacts(client, results, [scope], request.signal)
+      : results;
+  const node =
+    scope === "main_stuff"
+      ? mainStuffNode({ ...source, main_stuff: walked })
+      : workingMemoryNode(source);
+
+  // The walk's own record names the files; `locations` is what the verdict reports. A stored text
+  // is saved too, as a text file named by its MIME type.
+  const located = walkReferences(walked, true, node ?? undefined, true);
   if (located.length === 0) {
     return { scope, artifacts: [], saved_paths: [], all_saved: true };
   }
-  const locations = located.map(renderLocation);
+  const locations: DownloadLocation[] = located.map((reference) => ({
+    ...renderLocation(reference),
+    kind: reference.text === undefined ? "file" : "text",
+  }));
   const uris = located.map((reference) => reference.uri);
+  // A stored text's MIME type is its reference's, the platform's guess from the key otherwise.
+  const contentTypeOf = (index: number, resolvedType: string | null): string | null => {
+    const stated = located[index]!.text?.reference["mime_type"];
+    return typeof stated === "string" ? stated : resolvedType;
+  };
+  const filenameOf = (index: number, contentType: string | null): string => {
+    const reference = located[index]!;
+    const extension =
+      reference.text === undefined
+        ? extensionFor(reference.uri, contentType)
+        : textExtensionFor(reference.text.kind, contentType);
+    return filenameFor(reference.paths[0]!, extension, scope);
+  };
 
   const fs = host.fs as unknown as NodeFs;
   const path: NodePath = host.path;
@@ -1362,7 +1958,7 @@ export async function downloadArtifacts(
 
     let target: { handle: NodeFileHandle; path: string };
     try {
-      const filename = filenameFor(located[index]!.paths[0]!, uri, contentType, scope);
+      const filename = filenameOf(index, contentType);
       target = await openUniqueFile(fs, path, dir, filename);
     } catch (err) {
       committedBytes -= share();
@@ -1396,6 +1992,7 @@ export async function downloadArtifacts(
       committedBytes -= share();
       return {
         uri,
+        kind: location.kind,
         found_at: location.found_at,
         path: target.path,
         content_type: contentType,
@@ -1459,6 +2056,7 @@ export async function downloadArtifacts(
     savedBytes += written;
     return {
       uri,
+      kind: location.kind,
       found_at: location.found_at,
       path: target.path,
       content_type: contentType,
@@ -1477,7 +2075,7 @@ export async function downloadArtifacts(
       if (credentialFailure !== undefined || aborted()) {
         outcomes[index] = itemError(
           location,
-          entry.content_type,
+          contentTypeOf(index, entry.content_type),
           "aborted",
           credentialFailure ? SKIPPED_CREDENTIAL : SKIPPED_ABORTED,
         );
@@ -1486,7 +2084,7 @@ export async function downloadArtifacts(
       if (limitReached) {
         outcomes[index] = itemError(
           location,
-          entry.content_type,
+          contentTypeOf(index, entry.content_type),
           "total_limit_exceeded",
           SKIPPED_TOTAL,
         );
@@ -1501,19 +2099,24 @@ export async function downloadArtifacts(
             credentialFailure = err;
             outcomes[index] = itemError(
               location,
-              entry.content_type,
+              contentTypeOf(index, entry.content_type),
               "aborted",
               SKIPPED_CREDENTIAL,
             );
             continue;
           }
           if (aborted()) {
-            outcomes[index] = itemError(location, entry.content_type, "aborted", SKIPPED_ABORTED);
+            outcomes[index] = itemError(
+              location,
+              contentTypeOf(index, entry.content_type),
+              "aborted",
+              SKIPPED_ABORTED,
+            );
             continue;
           }
           outcomes[index] = itemError(
             location,
-            entry.content_type,
+            contentTypeOf(index, entry.content_type),
             "resolve_failed",
             `The expired link could not be re-resolved: ${err instanceof Error ? err.message : String(err)}.`,
           );
@@ -1521,10 +2124,15 @@ export async function downloadArtifacts(
         }
       }
       if (entry.error !== null) {
-        outcomes[index] = itemError(location, null, entry.error.code, entry.error.detail);
+        outcomes[index] = itemError(
+          location,
+          contentTypeOf(index, null),
+          entry.error.code,
+          entry.error.detail,
+        );
         continue;
       }
-      outcomes[index] = await saveOne(index, entry.url, entry.content_type);
+      outcomes[index] = await saveOne(index, entry.url, contentTypeOf(index, entry.content_type));
     }
   };
 

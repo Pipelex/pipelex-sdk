@@ -13,6 +13,7 @@ import {
   MissingMainStuffError,
   ProblemError,
   RunFailedError,
+  StoredTextLoadError,
   renderInputsTemplate,
 } from "../index.js";
 import type { PipelexApiClient, RunResults } from "../index.js";
@@ -118,6 +119,12 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
     return EXIT_OK;
   } catch (error) {
     if (!(error instanceof Interrupted)) {
+      if (error instanceof StoredTextLoadError && error.wireResults !== undefined) {
+        // The run completed, and the error carries its answer, a bare runner's blocking run of
+        // which nothing else keeps a copy: the output is printed as answered, each stored text
+        // still its reference, before the failure is.
+        printResult(error.wireResults.main_stuff, io);
+      }
       const runId = waitedOnRun(stage, error);
       const warning =
         runId !== undefined
@@ -141,12 +148,18 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
 
 /**
  * The run a failure leaves going on the server: the run that exists when the failure is not its
- * own outcome, a failed run or a completed one without its output, but an unreachable API or a
- * refused poll.
+ * own outcome, a failed run or a completed one without its output or with a stored text the
+ * command could not load, but an unreachable API or a refused poll.
  */
 function waitedOnRun(stage: Stage, error: unknown): string | undefined {
   if (stage.kind !== "started") return undefined;
-  if (error instanceof RunFailedError || error instanceof MissingMainStuffError) return undefined;
+  if (
+    error instanceof RunFailedError ||
+    error instanceof MissingMainStuffError ||
+    error instanceof StoredTextLoadError
+  ) {
+    return undefined;
+  }
   return stage.runId;
 }
 

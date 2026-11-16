@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.69.0] - 2026-11-16
+
+### Fixed
+
+- **The templates' tests read the next SDK's verdicts and branding**: the CLI template's tests build a download verdict's entries with `kind`, which `pipelex-sdk` requires from the release that saves stored texts as text files, and the web app template's branding fixture carries the `style`, `typeface` and `white_label` keys `GET /v1/branding` answers, while its assets route test raises a missing reference the way the SDK does, with the problem `input.reference_not_found`, so a project's tests pass on the SDK it pins and on the next one. The verdict fixtures name a refused reference by the platform's code, `pipelex.org.mismatch`.
+
 ## [v0.61.0] - 2026-11-07
 
 ### Fixed

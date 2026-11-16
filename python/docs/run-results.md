@@ -255,9 +255,29 @@ match state:
             print(f"{state.error.code}: {state.error.next_step.detail}")
 ```
 
-`get_run_result` is the single-shot lookup and returns that discriminated state. `wait_for_result(run_id)` drives the same lookup in a loop, honouring the server's `Retry-After`, and returns the `RunResults` directly — raising `RunFailedError` on a terminal non-completed status and `RunTimeoutError` when the budget runs out.
+`get_run_result` is the single-shot lookup and returns that discriminated state. `wait_for_result(run_id)` drives the same lookup in a loop, honouring the server's `Retry-After`, and returns the `RunResults` directly — raising `RunFailedError` on a terminal non-completed status and `RunTimeoutError` when the budget runs out. `timeout_seconds` is one deadline for the whole wait: it bounds each status read, each progress read and the load of the completed result's stored texts ([below](#stored-texts--loaded-by-default)).
 
 The `failed` arm and `RunFailedError` carry the same facts: the run's `status`, the `message` naming the reason, `problem`, the platform's `run.failed` document, and the run's own problem, which `run.failed` nests as `run_error`: the arm's `error`, `None` when the run ended without one, and the error's `run_error`. A run the platform ends or settles itself, such as one whose workflow task kept failing or one past its time limit (`run.timed_out`), carries a problem the platform wrote. [`errors.md`](errors.md#a-failed-run--runfailederror) describes both.
+
+## Stored texts — loaded by default
+
+The runtime keeps a large text out of a run's results. A `native.Text`, `native.Markdown`, `native.Html` or `native.JSON` value past its inline threshold, or a value of a concept that refines one of them or is description-only, is stored under the run's scope and travels as its reference, in place of its value field:
+
+```json
+{"url": "pipelex-storage://org/…/generated/3f9c…/value.md", "size": 182344, "mime_type": "text/markdown", "preview": "# Quarterly review…"}
+```
+
+An inline value arrives as `{"text": "…"}`, `{"inner_html": "…"}` (its `css_class` beside it) or `{"json_obj": {…}}`. **The result readers load every stored text of `main_stuff` before they return**, so it reaches the generated parser in the shape the method's concepts describe, the value field required: `get_run_result`, `wait_for_result` and `start_and_wait` resolve the references through the platform's bulk route, at most `BULK_RESOLVE_MAX_URIS` per request, fetch each signed link under the bounds `fetch_artifact` applies (100 MiB per text by default, `LoadStoredTextsOptions`), and decode the bytes as UTF-8, a JSON value being the object they serialize. A text that cannot be loaded raises `StoredTextLoadError`, naming its `uri`, its `path` in `main_stuff` and a `reason` (`not_found`, `pipelex.org.mismatch`, `resolve_failed`, `unsupported_url`, `too_large`, `not_utf8`, `not_json_object`, …).
+
+**Only the platform's references and `data:` URLs are loaded.** A `pipelex-storage://` reference is fetched through the link the platform signs for it, and a `data:` URL is decoded where it is. A stored text under any other URL, which a method's own code can put there, is refused as `unsupported_url` before anything is sent, so a method never has the SDK read a host the caller did not choose; `load_stored_texts=False` hands it back as written.
+
+**`wait_for_result`'s `timeout_seconds` bounds the load.** The wait reads the run's status without loading, then loads the completed result under the time it has left. A deadline that passes during the load raises `RunTimeoutError` saying the run completed and its stored texts did not load in time; `get_run_result` reads it again, and with `load_stored_texts=False` it answers at once.
+
+**The blocking fallback never loses a completed result.** `start_and_wait` on a bare runner, or falling back to one, holds the run's only copy in the `POST /v1/execute` answer, and a bare runner serves no bulk resolve route. A load that fails there raises `StoredTextLoadError` with that result, every stored text still its reference, on its `wire_results`; on every other path `wire_results` is `None`, since the run can be read again.
+
+**`load_stored_texts=False` hands the wire shape back**, the references untouched, on all three readers. The generated `<Name>Wire` types describe that shape, the value field optional beside the reference's fields. `pipelex_sdk.artifacts.load_stored_texts(client, results, options)` loads such a result later, and returns a new one, never changing the one it is given.
+
+**Which values are stored texts is decided by concept, never by URL or MIME type**, as the standard rules: a `Document` may be `text/plain` too. The concept at each path comes from the run's own artifacts: the main stuff's concept from `working_memory`, and its structure from the `output_form` node naming that concept (`pipelex_sdk.stored_texts.main_stuff_node(results)` gives that node). A read whose `artifacts` selection left out `working_memory`, `output_form` or `input_form` reads those three again by the run's id only when `main_stuff` holds a value shaped like a stored text's reference, a `url` with no value field beside a `size` or a `preview`, which the runtime sets on every reference it stores; the result returned holds only what was asked for. An image or a document carries neither, so a narrowed read of an output made of them stays one request. A result that carries no working memory is returned as it is.
 
 ## `working_memory` — every named stuff of the run
 

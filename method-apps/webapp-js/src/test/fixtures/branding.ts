@@ -33,15 +33,27 @@ export const SQUARE_LOGO: LogoDescriptor = {
   height: 256,
 };
 
-/** A team that set nothing: every colour and logo `null`. */
-export const UNBRANDED: OrganizationBranding = {
+/**
+ * The answer of a team that set nothing, every key the platform sends
+ * included: its app style, typeface and white-label entitlement are typed
+ * from the SDK release that reads them, and an earlier release's type
+ * leaves them out. Held apart from `UNBRANDED` so the annotation below
+ * checks it against either without refusing the keys an earlier type lacks.
+ */
+const UNBRANDED_ANSWER = {
   org_id: "org_acme",
   org_name: "Acme Corporation",
   colors: { action: null, accent: null, header: null },
   dark_colors: { action: null, accent: null, header: null },
   square_logo: null,
   wide_logo: null,
+  style: null,
+  typeface: null,
+  white_label: false,
 };
+
+/** A team that set nothing: every colour and logo `null`. */
+export const UNBRANDED: OrganizationBranding = UNBRANDED_ANSWER;
 
 /** A team that set both logos and a full light set (navy button and band, amber accent). */
 export const BRANDED: OrganizationBranding = {

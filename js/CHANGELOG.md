@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.69.0] - 2026-11-16
+
+### Added
+
+- **Stored texts loaded by default**: `getRunResult`, `waitForResult` and `startAndWaitForResult` load every stored text of `main_stuff`, a `Text`, `Markdown`, `Html` or `JSON` value the runtime holds as its reference `{ url, size, mime_type, preview }`, into its inline form (`{ text }`, `{ inner_html }`, `{ json_obj }`) through the bulk resolve route and a bounded fetch of each signed link, or by decoding a `data:` URL, refusing a stored text under any other URL as `unsupported_url` without fetching it, so the generated parser reads the loaded shape; `loadStoredTexts: false` returns the wire shape, `loadStoredTexts(client, results)` loads one later, `waitForResult`'s `timeoutMs` bounds the load and says when a completed run's texts did not load in time, and a text that cannot be loaded throws `StoredTextLoadError` naming its `uri`, `path` and `reason`, carrying the completed result as `wireResults` on the blocking fallback, where there is no run to read again (`docs/run-results.md`). `pipelex-sdk run` says such a run completed, never that it may still be going, and prints the run's answer first when the error carries it (`docs/cli.md`).
+- **Stored texts told from files by concept**: `locateArtifacts` and `collectArtifacts` take the walked value's descriptor node (`mainStuffNode(results)`) and then skip stored texts, `locateStoredReferences` answers both kinds with each text's `kind`, `size`, `mime_type` and `preview`, and `storedTextKindOf`, `storedTextKindOfNode`, `isStoredTextConcept`, `mainStuffNode` and `workingMemoryNode` are exported (`docs/artifact-download.md`).
+
+### Changed
+
+- **`downloadArtifacts` saves stored texts as text files (Breaking)**: each verdict entry carries `kind`, `"file"` or `"text"`, a stored text, in either scope, is saved under a name whose extension comes from the MIME type its reference states, never its storage key, and a download by `run_id` reads the run's `working_memory`, `output_form` and `input_form` beside its scope when the scope may hold one.
+- **A result read by default holds no stored-text reference (Breaking)**: code that read a stored text's `url` or `preview` off `main_stuff` now passes `loadStoredTexts: false`, and a narrowed `artifacts` read whose output holds a stored text's reference makes a second read for the run's concepts, never one for images or documents alone.
+
+### Fixed
+
+- **The bulk resolve route's refusals read as a missing reference**: a reference the platform refuses as `pipelex.storage.uri_invalid` or `pipelex.org.mismatch`, the codes it actually sends, now gives `ArtifactFetchError` the problem `input.reference_not_found` instead of `runtime.unexpected`, and the documented codes of the bulk route and of `linkFiles` are the platform's registry codes.
+
 ## [v0.67.1] - 2026-11-10
 
 ### Added

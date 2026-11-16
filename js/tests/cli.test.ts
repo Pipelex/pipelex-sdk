@@ -622,6 +622,88 @@ describe("an interrupt that lands before any request", () => {
   });
 });
 
+/**
+ * A hosted run that completed with a stored text the command could not load. The table cannot hold
+ * it: the concept re-read names its artifacts in each SDK's own order, so its route differs. Its
+ * twin is `test_a_completed_run_whose_stored_text_does_not_load_is_not_said_to_be_going` in the
+ * Python suite.
+ */
+describe("a completed hosted run whose stored text does not load", () => {
+  const STORED = "pipelex-storage://acme/runs/run-7/generated/3f9a/value.txt";
+  const REFERENCE = { url: STORED, size: 48210, mime_type: "text/plain", preview: "All good" };
+
+  it("says the run completed, and never that it may still be going", async () => {
+    const testCase: Case = {
+      name: "hosted/stored-text-unloadable",
+      summary: "",
+      argv: ["run", "--method", "mt_receipts01"],
+      routes: {
+        "GET /v1/version": [{ answer: "version/hosted" }],
+        "POST /v1/start": [
+          {
+            status: 202,
+            body: {
+              pipeline_run_id: "run-7",
+              state: "STARTED",
+              created_at: "2026-10-08T10:00:00Z",
+            },
+          },
+        ],
+        "GET /v1/runs/run-7/results?artifacts=main_stuff": [
+          { status: 200, body: { pipeline_run_id: "run-7", main_stuff: REFERENCE } },
+        ],
+        "GET /v1/runs/run-7/results?artifacts=working_memory,output_form,input_form": [
+          {
+            status: 200,
+            body: {
+              pipeline_run_id: "run-7",
+              working_memory: {
+                root: { review: { concept: "native.Text", content: REFERENCE } },
+                aliases: { main_stuff: "review" },
+              },
+              output_form: {},
+              input_form: {},
+            },
+          },
+        ],
+        "POST /v1/resolve-storage-url/bulk": [
+          {
+            status: 200,
+            body: {
+              items: [
+                {
+                  uri: STORED,
+                  url: null,
+                  expires_at: null,
+                  content_type: null,
+                  error: { code: "pipelex.org.mismatch", detail: "another organization" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+      expect: {
+        exit_code: 1,
+        stdout: "",
+        stderr: [
+          "Run started: run-7\n",
+          "Error: the run completed, but the stored text at $ in its output could not be loaded (pipelex.org.mismatch).\n",
+          "Reason: The input 'pipelex-storage://acme/runs/run-7/generated/3f9a/value.txt' refers to something that does not exist.\n",
+        ],
+        stderr_excludes: ["may still be going", "unexpected failure", "The output above"],
+      },
+    };
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pipelex-sdk-cli-")));
+    try {
+      const { outcome, api } = await runCase(testCase, root);
+      check(testCase, outcome, api);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the command's packaging", () => {
   it("is the package's one bin, an executable Node script", () => {
     const manifest = JSON.parse(

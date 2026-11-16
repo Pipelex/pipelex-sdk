@@ -70,9 +70,10 @@ from pipelex_sdk.artifact_models import (
     FetchArtifactOptions,
     ResolvedArtifact,
 )
-from pipelex_sdk.artifacts import ArtifactStream
+from pipelex_sdk.artifacts import ArtifactStream, carries_concept_artifacts, may_hold_stored_texts, with_concept_artifacts
 from pipelex_sdk.artifacts import download_artifacts as _download_artifacts_impl
 from pipelex_sdk.artifacts import fetch_artifact as _fetch_artifact_impl
+from pipelex_sdk.artifacts import load_stored_texts as _load_stored_texts_impl
 from pipelex_sdk.artifacts import resolve_artifacts as _resolve_artifacts_impl
 from pipelex_sdk.crate_models import (
     CodegenRequest,
@@ -102,6 +103,7 @@ from pipelex_sdk.errors import (
     RunLifecycleUnavailableError,
     RunStillRunningError,
     RunTimeoutError,
+    StoredTextLoadError,
     argument_invalid_problem,
     method_file_transfer_reason_of_status,
     nested_run_error,
@@ -1637,7 +1639,13 @@ class PipelexAPIClient(MthdsAPIClient):
             self._raise_v1_refusal(method="GET", endpoint=endpoint, response=response)
         return self._read_v1_answer(RunProgress.model_validate, method="GET", endpoint=endpoint, response=response)
 
-    async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None) -> RunResultState:
+    async def get_run_result(
+        self,
+        run_id: str,
+        *,
+        artifacts: Sequence[RunArtifact] | None = None,
+        load_stored_texts: bool = True,
+    ) -> RunResultState:
         """Single-shot result lookup — `GET /v1/runs/{run_id}/results`.
 
         Maps the platform's poll semantics to a discriminated union:
@@ -1657,11 +1665,23 @@ class PipelexAPIClient(MthdsAPIClient):
                 `None`. A history row that shows a run's output asks for `[RunArtifact.MAIN_STUFF]`
                 alone instead of paying for the graph and the forms. The main-stuff check below
                 applies only when `main_stuff` was asked for.
+            load_stored_texts: Whether a completed run's stored texts are loaded, `True` by default. A
+                `Text`, `Markdown`, `Html` or `JSON` value past the runtime's inline threshold travels as its
+                reference, `{url, size, mime_type, preview}`; loaded, `main_stuff` holds its inline form
+                (`{text}`, `{inner_html}`, `{json_obj}`), the shape the generated types parse. Which values are
+                stored texts is read off the run's concepts, so a selection that left out `working_memory`,
+                `output_form` or `input_form` reads those three again when `main_stuff` holds a value shaped like
+                a stored text's reference (a `url` beside a `size` or a `preview`; an image or a document never
+                makes it read again). Only a `pipelex-storage://` reference, through a link the platform signs,
+                and a `data:` URL are loaded; a stored text under any other URL raises `StoredTextLoadError`
+                (`unsupported_url`) without being fetched. `False` returns the wire shape, which
+                `pipelex_sdk.artifacts.load_stored_texts` loads later (`docs/run-results.md`, "Stored texts").
 
         Raises:
             RequestArgumentError: If `artifacts` is an empty selection, which names nothing to read,
                 or names an artifact that is no `RunArtifact`.
             MissingMainStuffError: If a completed run asked for its main stuff delivers none.
+            StoredTextLoadError: If a stored text of the run could not be loaded.
             RunLifecycleUnavailableError: If the lifecycle routes are absent (a bare runner).
             ApiUnreachableError: If the host cannot be reached (DNS / connect / TLS / timeout).
             ApiResponseError: For a genuine run-not-found 404 or any other non-2xx response, or a
@@ -1704,7 +1724,27 @@ class PipelexAPIClient(MthdsAPIClient):
             return RunResults.model_validate(payload)
 
         result = self._read_v1_answer(read_results, method="GET", endpoint=endpoint, response=response)
+        if load_stored_texts and wants_main_stuff:
+            result = await self._with_stored_texts_loaded(result, selection=selection)
         return RunResultCompleted(pipeline_run_id=run_id, result=result)
+
+    async def _with_stored_texts_loaded(self, result: RunResults, *, selection: Sequence[RunArtifact] | None) -> RunResults:
+        """`result` with the stored texts of its `main_stuff` loaded, the concepts read beside it when its read left
+        them out; only `main_stuff` changes.
+
+        A read that carried the concepts is walked by them at once, which costs no request when nothing is stored. A
+        read that left them out reads them again only when `main_stuff` holds a value shaped like a stored text's
+        reference (`may_hold_stored_texts`), so a narrowed read of images and documents stays one request.
+        """
+        if result.main_stuff is None:
+            return result
+        if not carries_concept_artifacts(selection) and not may_hold_stored_texts(result.main_stuff):
+            return result
+        source = await with_concept_artifacts(self, result, selection=selection)
+        loaded = await _load_stored_texts_impl(self, source)
+        if loaded is source:
+            return result
+        return result.model_copy(update={"main_stuff": loaded.main_stuff})
 
     async def wait_for_result(
         self,
@@ -1712,6 +1752,7 @@ class PipelexAPIClient(MthdsAPIClient):
         options: WaitForResultOptions | None = None,
         *,
         artifacts: Sequence[RunArtifact] | None = None,
+        load_stored_texts: bool = True,
     ) -> RunResults:
         """Poll a run to a terminal state and return its result.
 
@@ -1722,7 +1763,11 @@ class PipelexAPIClient(MthdsAPIClient):
         raises `ApiUnreachableError` at once, the loop not retrying it. Async-native: cancelling the
         awaiting task raises `asyncio.CancelledError` out of this loop, leaving the run resumable,
         on every supported Python version, even when the cancellation lands in the step a poll answers.
-        `artifacts` narrows every results read of the loop, exactly as on `get_run_result`.
+        `artifacts` narrows every results read of the loop, and `load_stored_texts` (on by default) loads the
+        result's stored texts, exactly as on `get_run_result`. `timeout_seconds` bounds the whole wait, the load of the
+        stored texts included: a run that completed but whose texts did not load in the time left raises
+        `RunTimeoutError` saying so, and `get_run_result` reads it again, `load_stored_texts=False` returning the wire
+        shape at once.
 
         With `options.on_progress`, each poll that finds the run still running also reads
         `get_run_progress` and hands the callback every snapshot fresher than the last it delivered
@@ -1749,14 +1794,18 @@ class PipelexAPIClient(MthdsAPIClient):
 
             # `asyncio.timeout`, never `asyncio.wait_for`: on Python 3.11, `wait_for` returns a poll that
             # finished in the same loop step as a cancellation of the awaiting task, swallowing it.
+            # The status read never loads: the load runs below under what the wait has left, so a timeout says
+            # truthfully whether the run had completed.
             try:
                 async with asyncio.timeout(remaining):
-                    state = await self.get_run_result(run_id, artifacts=artifacts)
+                    state = await self.get_run_result(run_id, artifacts=artifacts, load_stored_texts=False)
             except TimeoutError as exc:
                 raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds) from exc
 
             if isinstance(state, RunResultCompleted):
-                return state.result
+                if not load_stored_texts:
+                    return state.result
+                return await self._load_within_wait(state.result, artifacts=artifacts, opts=opts, started_at=started_at)
             if isinstance(state, RunResultFailed):
                 msg = state.message
                 raise RunFailedError(msg, run_id=run_id, status=state.status, problem=state.problem)
@@ -1792,6 +1841,27 @@ class PipelexAPIClient(MthdsAPIClient):
             retry_seconds = state.retry_after_seconds if state.retry_after_seconds is not None else 0
             wait_seconds = min(max(opts.interval_seconds, retry_seconds), opts.timeout_seconds - elapsed)
             await asyncio.sleep(wait_seconds)
+
+    async def _load_within_wait(
+        self,
+        result: RunResults,
+        *,
+        artifacts: Sequence[RunArtifact] | None,
+        opts: WaitForResultOptions,
+        started_at: float,
+    ) -> RunResults:
+        """A completed result of `wait_for_result` with its stored texts loaded within the time the wait has left.
+
+        A result with nothing to load returns without waiting on anything, so even a wait whose time is spent hands
+        it back; one whose load outlasts the wait raises `RunTimeoutError` saying the run completed.
+        """
+        remaining = max(opts.timeout_seconds - (monotonic() - started_at), 0)
+        try:
+            async with asyncio.timeout(remaining):
+                return await self._with_stored_texts_loaded(result, selection=artifacts)
+        except TimeoutError as exc:
+            msg = _loading_timeout_message(result.pipeline_run_id, opts.timeout_seconds)
+            raise RunTimeoutError(msg, run_id=result.pipeline_run_id, timeout_seconds=opts.timeout_seconds) from exc
 
     async def _read_progress_while_waiting(self, run_id: str, *, time_left_seconds: float) -> RunProgress | None:
         """One progress read of `wait_for_result`'s loop, best effort: the snapshot, or `None` when the read failed.
@@ -1905,6 +1975,7 @@ class PipelexAPIClient(MthdsAPIClient):
         method_id: str | None = None,
         callback_urls: Sequence[str] | None = None,
         artifacts: Sequence[RunArtifact] | None = None,
+        load_stored_texts: bool = True,
         on_started: Callable[[PipelexRunResultStart], None] | None = None,
         on_starting: Callable[[], None] | None = None,
         idempotency_key: str | None = None,
@@ -1938,7 +2009,9 @@ class PipelexAPIClient(MthdsAPIClient):
         ignores it: the execute response already holds every artifact, so there is nothing to save
         by narrowing it, and the result it returns answers for every field. `wait_options` tunes the
         hosted wait, its `on_progress` included, which the blocking path, having no run to read,
-        never calls.
+        never calls. `load_stored_texts` (on by default) loads the result's stored texts on both paths, as on
+        `get_run_result`; `False` returns the wire shape. On the blocking path a text that cannot be loaded raises
+        `StoredTextLoadError` carrying the completed result as its `wire_results`, since there is no run to read again.
 
         `on_started` is called once with the start acknowledgement as soon as the durable run
         exists and before the first poll, so a caller that waits through this method holds the
@@ -2037,10 +2110,11 @@ class PipelexAPIClient(MthdsAPIClient):
                     method_ref=method_ref,
                     method_id=method_id,
                     callback_urls=callback_urls,
+                    load_stored_texts=load_stored_texts,
                 )
             if on_started is not None:
                 on_started(started)
-            return await self.wait_for_result(started.pipeline_run_id, options=wait_options, artifacts=artifacts)
+            return await self.wait_for_result(started.pipeline_run_id, options=wait_options, artifacts=artifacts, load_stored_texts=load_stored_texts)
 
         await asyncio.sleep(0)
         if on_starting is not None:
@@ -2056,6 +2130,7 @@ class PipelexAPIClient(MthdsAPIClient):
             method_ref=method_ref,
             method_id=method_id,
             callback_urls=callback_urls,
+            load_stored_texts=load_stored_texts,
         )
 
     async def _execute_blocking(
@@ -2071,6 +2146,7 @@ class PipelexAPIClient(MthdsAPIClient):
         method_ref: str | None = None,
         method_id: str | None = None,
         callback_urls: Sequence[str] | None = None,
+        load_stored_texts: bool = True,
     ) -> RunResults:
         """Blocking `POST /v1/execute` adapted onto `RunResults` — the bare-runner path.
 
@@ -2083,7 +2159,10 @@ class PipelexAPIClient(MthdsAPIClient):
 
         The lift onto `RunResults` parses the run's artifacts strictly, so an answer `execute` took
         can still be one this path cannot read; it raises the same `ApiResponseError` as an answer
-        `execute` itself cannot read (`_reading_inherited_answer`).
+        `execute` itself cannot read (`_reading_inherited_answer`). Its stored texts are loaded unless
+        `load_stored_texts` is `False`, the answer carrying every artifact the concepts are read from. A load that
+        fails raises `StoredTextLoadError` with the completed result on `wire_results`: a bare runner keeps no run to
+        read again, and it serves no bulk resolve route, so any stored reference fails to load there.
         """
         with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
             result = await self.execute(
@@ -2098,7 +2177,15 @@ class PipelexAPIClient(MthdsAPIClient):
                 method_id=method_id,
                 callback_urls=callback_urls,
             )
-            return results_from_execute(result)
+            lifted = results_from_execute(result)
+        if not load_stored_texts:
+            return lifted
+        try:
+            return await self._with_stored_texts_loaded(lifted, selection=None)
+        except StoredTextLoadError as exc:
+            # The answer is the only copy of a completed run: the error carries it.
+            exc.wire_results = lifted
+            raise
 
     # ── Pipelex product surface (hosted management routes) ─────────────────
     #
@@ -4121,9 +4208,9 @@ class PipelexAPIClient(MthdsAPIClient):
         **Branch on each item's class, never on the status**: the request is a `200` whenever every file got a
         verdict. A `FileLinked` carries its `url`, a presigned `GET` valid for fifteen minutes, with its
         `expires_at`, the `name` the download saves under and its `media_type`. A `FileLinkRefused` carries its
-        `error`, a `FileLinkError` whose `code` is `not_found` for an unknown file id, `conflict` for a file whose
-        upload has not finished, `invalid_storage_uri` for a malformed address and `forbidden` for another
-        organization's.
+        `error`, a `FileLinkError` whose `code` is the platform's registry code: `request.invalid` naming `file_id`
+        or `uri` for an unknown file or one whose upload has not finished, `pipelex.storage.uri_invalid` for a
+        malformed address and `pipelex.org.mismatch` for another organization's.
 
         Each link is signed with a `Content-Disposition` naming the file, so a download saves under the name a
         person sees rather than the bytes' hash. It opens in place for an image, a PDF or plain text and downloads
@@ -5216,6 +5303,14 @@ def _with_validate_markdown_render(render: list[str] | None) -> list[str]:
 def _timeout_message(run_id: str, timeout_seconds: float) -> str:
     """The shared `RunTimeoutError` message — the run survives and is resumable by id."""
     return f"Run {run_id} did not reach a terminal state within {timeout_seconds}s; it is still executing server-side and can be resumed by id."
+
+
+def _loading_timeout_message(run_id: str, timeout_seconds: float) -> str:
+    """The `RunTimeoutError` message of a run that completed but whose stored texts did not load within the wait."""
+    return (
+        f"Run {run_id} completed, but its stored texts did not load within {timeout_seconds}s; "
+        "read it again with get_run_result, or with load_stored_texts=False for the wire shape."
+    )
 
 
 def _product_query(params: dict[str, str | int | Sequence[str] | None]) -> str:

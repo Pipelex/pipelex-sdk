@@ -857,7 +857,7 @@ describe("storage", () => {
         url: null,
         expires_at: null,
         content_type: null,
-        error: { code: "forbidden", detail: "another org" },
+        error: { code: "pipelex.org.mismatch", detail: "another org" },
       },
     ];
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, { items }));

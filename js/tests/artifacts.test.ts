@@ -496,7 +496,7 @@ describe("artifactFilename", () => {
 describe("resolveArtifacts", () => {
   it("makes one bulk call for a list within the bound and answers in request order", async () => {
     const client = makeClient({
-      answers: { [REPORT_URI]: refusedItem(REPORT_URI, "forbidden", "another org") },
+      answers: { [REPORT_URI]: refusedItem(REPORT_URI, "pipelex.org.mismatch", "another org") },
     });
     const signal = new AbortController().signal;
 
@@ -509,7 +509,7 @@ describe("resolveArtifacts", () => {
     expect(client.resolveCalls[0]!.signal).toBe(signal);
     expect(items.map((item) => item.uri)).toEqual([PICTURE_URI, REPORT_URI, PICTURE_URI]);
     expect(items[0]!.error).toBeNull();
-    expect(items[1]!.error).toEqual({ code: "forbidden", detail: "another org" });
+    expect(items[1]!.error).toEqual({ code: "pipelex.org.mismatch", detail: "another org" });
     expect(items[1]!.url).toBeNull();
   });
 
@@ -582,22 +582,27 @@ describe("fetchArtifact", () => {
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG_BYTES);
   });
 
-  it("throws the route's per-reference refusal as a typed fetch error", async () => {
-    const client = makeClient({
-      answers: { [REPORT_URI]: refusedItem(REPORT_URI, "invalid_storage_uri", "malformed") },
-    });
-    const spy = mockFetch(() => streamed([]));
+  // The platform's codes for a malformed reference and another organization's both read as a
+  // missing reference.
+  it.each(["pipelex.storage.uri_invalid", "pipelex.org.mismatch"])(
+    "throws the route's per-reference refusal %s as a typed fetch error",
+    async (code) => {
+      const client = makeClient({
+        answers: { [REPORT_URI]: refusedItem(REPORT_URI, code, "refused") },
+      });
+      const spy = mockFetch(() => streamed([]));
 
-    const failure = fetchArtifact(client, REPORT_URI);
+      const failure = fetchArtifact(client, REPORT_URI);
 
-    await expect(failure).rejects.toBeInstanceOf(ArtifactFetchError);
-    await expect(failure).rejects.toMatchObject({
-      reason: "invalid_storage_uri",
-      uri: REPORT_URI,
-      code: "input.reference_not_found",
-    });
-    expect(spy).not.toHaveBeenCalled();
-  });
+      await expect(failure).rejects.toBeInstanceOf(ArtifactFetchError);
+      await expect(failure).rejects.toMatchObject({
+        reason: code,
+        uri: REPORT_URI,
+        code: "input.reference_not_found",
+      });
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
 
   it("refuses a plain http link by default and accepts it with allowHttp", async () => {
     const client = makeClient({
@@ -979,9 +984,13 @@ describe("downloadArtifacts", () => {
 
     const verdict = await downloadArtifacts(client, { run_id: RUN_ID, dir });
 
+    // The walked scope's artifact alone, its stored texts left as references: files hold nothing
+    // shaped like a stored text, so the concepts that tell one from a file are never read.
     expect(client.resultCalls).toEqual([RUN_ID]);
-    // Only the walked scope's artifact is read: the platform re-signs nothing else.
-    expect(client.resultOptions[0]!.artifacts).toEqual(["main_stuff"]);
+    expect(client.resultOptions[0]).toMatchObject({
+      artifacts: ["main_stuff"],
+      loadStoredTexts: false,
+    });
     expect(client.resolveCalls).toHaveLength(1);
     expect(client.resolveCalls[0]!.input).toEqual({ uris: [PICTURE_URI, REPORT_URI] });
     // The embedded public_url is never fetched: every link comes from the resolve.
@@ -994,6 +1003,7 @@ describe("downloadArtifacts", () => {
     expect(verdict.artifacts).toEqual([
       {
         uri: PICTURE_URI,
+        kind: "file",
         found_at: ["$.picture.url"],
         path: join(dir, "picture.png"),
         content_type: "image/png",
@@ -1002,6 +1012,7 @@ describe("downloadArtifacts", () => {
       },
       {
         uri: REPORT_URI,
+        kind: "file",
         found_at: ["$.report.url"],
         path: join(dir, "report"),
         content_type: null,
@@ -1062,6 +1073,46 @@ describe("downloadArtifacts", () => {
     expect(new Uint8Array(await readFile(join(dir, "root-brief-content.pdf")))).toEqual(PDF_BYTES);
   });
 
+  it("walks a stored text in working_memory as a text, named by its MIME type", async () => {
+    const textUri = "pipelex-storage://org/runs/01JRUN/generated/3f9a/value.bin";
+    const client = makeClient();
+    mockFetch((url) =>
+      streamed([
+        url.pathname.includes("brief") ? PDF_BYTES : new TextEncoder().encode("# Title\n"),
+      ]),
+    );
+    const dir = await makeTempDir();
+
+    const verdict = await downloadArtifacts(client, {
+      results: {
+        pipeline_run_id: RUN_ID,
+        main_stuff: null,
+        working_memory: {
+          root: {
+            brief: { concept: "native.Document", content: { url: INPUT_URI } },
+            summary: {
+              concept: "native.Markdown",
+              content: { url: textUri, size: 8, mime_type: "text/markdown", preview: "# Title" },
+            },
+          },
+          aliases: { main_stuff: "summary" },
+        },
+        output_form: {},
+        input_form: {},
+      } as unknown as RunResults,
+      dir,
+      scope: "working_memory",
+    });
+
+    expect(
+      verdict.artifacts.map((artifact) => [artifact.uri, artifact.kind, artifact.path]),
+    ).toEqual([
+      [INPUT_URI, "file", join(dir, "root-brief-content.pdf")],
+      [textUri, "text", join(dir, "root-summary-content.md")],
+    ]);
+    expect(await readFile(join(dir, "root-summary-content.md"), "utf8")).toBe("# Title\n");
+  });
+
   it("never overwrites: a name already on disk gets a numeric suffix", async () => {
     const client = makeClient();
     mockFetch(() => streamed([PNG_BYTES]));
@@ -1081,7 +1132,9 @@ describe("downloadArtifacts", () => {
 
   it("names a file after the field it fills and reports every path, on the saved and error arms", async () => {
     const client = makeClient({
-      answers: { [REPORT_URI]: refusedItem(REPORT_URI, "forbidden", "another organization") },
+      answers: {
+        [REPORT_URI]: refusedItem(REPORT_URI, "pipelex.org.mismatch", "another organization"),
+      },
     });
     mockFetch(() => streamed([PNG_BYTES]));
     const dir = await makeTempDir();
@@ -1179,7 +1232,9 @@ describe("downloadArtifacts", () => {
 
   it("keeps a per-reference resolve refusal as that item's error beside the saved ones", async () => {
     const client = makeClient({
-      answers: { [REPORT_URI]: refusedItem(REPORT_URI, "forbidden", "another organization") },
+      answers: {
+        [REPORT_URI]: refusedItem(REPORT_URI, "pipelex.org.mismatch", "another organization"),
+      },
     });
     mockFetch(() => streamed([PNG_BYTES]));
     const dir = await makeTempDir();
@@ -1192,11 +1247,12 @@ describe("downloadArtifacts", () => {
     expect(verdict.all_saved).toBe(false);
     expect(verdict.artifacts[1]).toEqual({
       uri: REPORT_URI,
+      kind: "file",
       found_at: ["$[1].url"],
       path: null,
       content_type: null,
       size: null,
-      error: { code: "forbidden", detail: "another organization" },
+      error: { code: "pipelex.org.mismatch", detail: "another organization" },
     });
     expect(verdict.saved_paths).toEqual([join(dir, "0.png")]);
   });
@@ -1258,7 +1314,7 @@ describe("downloadArtifacts", () => {
     const client = makeClient({
       sequence: [
         { [PICTURE_URI]: resolvedItem(PICTURE_URI, { expires_at: PAST }) },
-        { [PICTURE_URI]: refusedItem(PICTURE_URI, "invalid_storage_uri", "gone bad") },
+        { [PICTURE_URI]: refusedItem(PICTURE_URI, "pipelex.storage.uri_invalid", "gone bad") },
       ],
     });
     const spy = mockFetch(() => streamed([PNG_BYTES]));
@@ -1270,7 +1326,7 @@ describe("downloadArtifacts", () => {
 
     expect(spy).not.toHaveBeenCalled();
     expect(verdict.artifacts[0]!.error).toEqual({
-      code: "invalid_storage_uri",
+      code: "pipelex.storage.uri_invalid",
       detail: "gone bad",
     });
   });

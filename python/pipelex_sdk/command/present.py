@@ -31,6 +31,7 @@ from pipelex_sdk.errors import (
     MethodLoadError,
     RejectedAssetError,
     RunFailedError,
+    StoredTextLoadError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
     UploadTransportError,
@@ -46,6 +47,9 @@ METHOD_DOES_NOT_LOAD_SENTENCE = "the method does not load."
 
 #: What a file input takes, the hint under a value it cannot take.
 _FILE_INPUT_FORMS = 'A file input takes a local path, an http(s) or pipelex-storage:// URL, a data: URL, or an object whose "url" is one of these.'
+
+#: The line under a stored text that did not load, when the run's answer was printed in its place.
+WIRE_OUTPUT_LINE = "The output above is the run's answer, each stored text still its reference."
 
 #: The keys of the runtime's absence document, and no other.
 _ABSENCE_KEYS = frozenset({"absent", "variable_name", "kind", "reason", "producing_pipe", "upstream"})
@@ -71,6 +75,8 @@ def present_error(exc: Exception) -> PresentedError:
         if run_error is not None:
             lines.extend(_next_step_lines(run_error))
         return PresentedError(lines=lines, exit_code=EXIT_FAILED)
+    if isinstance(exc, StoredTextLoadError):
+        return _present_stored_text_failure(exc)
     if isinstance(exc, InvalidLocalSourceError):
         # A file the inputs name that cannot be read is the inputs' fault, as an unreadable inputs
         # file is, so it is a usage error.
@@ -106,6 +112,21 @@ def present_error(exc: Exception) -> PresentedError:
     if isinstance(exc, PipelineRequestError):
         return PresentedError(lines=[f"Error: {exc}"], exit_code=EXIT_FAILED)
     return PresentedError(lines=[f"Error: unexpected failure, {type(exc).__name__}: {exc}"], exit_code=EXIT_FAILED)
+
+
+def _present_stored_text_failure(exc: StoredTextLoadError) -> PresentedError:
+    """A run that completed with a stored text in its output the command could not load: where the text sits in the
+    output and why, its problem's reason and next step, and, when the error carried the run's answer, a line saying the
+    output printed above is that answer. The run is over, so nothing says it may still be going.
+    """
+    lines = [
+        f"Error: the run completed, but the stored text at {exc.path} in its output could not be loaded ({exc.reason}).",
+        f"Reason: {_reason_of(exc.problem)}",
+        *_next_step_lines(exc.problem),
+    ]
+    if exc.wire_results is not None:
+        lines.append(WIRE_OUTPUT_LINE)
+    return PresentedError(lines=lines, exit_code=EXIT_FAILED)
 
 
 def _present_upload_failure(

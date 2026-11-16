@@ -72,6 +72,7 @@ import {
   type GetRunResultOptions,
   type RunProgress,
   type RunRead,
+  type RunResultArtifact,
   type RunResults,
   type RunResultState,
   type RunStatus,
@@ -169,6 +170,7 @@ import {
   RequestArgumentError,
   RunLifecycleUnavailableError,
   RunStillRunningError,
+  StoredTextLoadError,
 } from "./errors.js";
 import { isPlainObject } from "./records.js";
 import { readProblemItems } from "./problem-items.js";
@@ -182,7 +184,6 @@ import {
   announcedTreeLimits,
   contentsTreeSource,
   declaresBlobStore,
-  eitherSignal,
   emptyTreeRefusal,
   fileByBlob,
   forEachConcurrently,
@@ -233,9 +234,13 @@ import type { UploadableAsset, UploadFileOptions, UploadRecord } from "./upload.
 import { prepareInputs as prepareInputsImpl } from "./prepare-inputs.js";
 import type { PrepareInputsRequest, PreparedInputs } from "./prepare-inputs.js";
 import {
+  carriesConceptArtifacts,
   downloadArtifacts as downloadArtifactsImpl,
   fetchArtifact as fetchArtifactImpl,
+  loadStoredTexts as loadStoredTextsImpl,
+  mayHoldStoredTexts,
   resolveArtifacts as resolveArtifactsImpl,
+  withConceptArtifacts,
 } from "./artifacts.js";
 import type {
   BulkResolveStorageUrlsInput,
@@ -247,6 +252,7 @@ import type {
 } from "./artifacts.js";
 import { PipelexExecuteResult, resultsFromExecute } from "./execute-result.js";
 import { ExactJsonUnsupportedError, parseExactJson, stringifyExactJson } from "./exact-json.js";
+import { eitherSignal } from "./signals.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 
 // A pure RUNAWAY guard on the paged-list iterators (`iterateMethods`,
@@ -2837,21 +2843,58 @@ export class PipelexApiClient implements HostedProtocolSurface {
         runId,
       );
     }
-    return { state: "completed", pipeline_run_id: runId, result };
+    if (options.loadStoredTexts === false || !selectionIncludesMainStuff(options.artifacts)) {
+      return { state: "completed", pipeline_run_id: runId, result };
+    }
+    const loaded = await this.withStoredTextsLoaded(result, options.artifacts, options.signal);
+    return { state: "completed", pipeline_run_id: runId, result: loaded };
+  }
+
+  /**
+   * A completed result with the stored texts of its `main_stuff` loaded, as the result readers
+   * hand it back by default (`loadStoredTexts`); only `main_stuff` changes in the result handed
+   * back. A read that carried the concepts is walked by them at once, which costs no request when
+   * nothing is stored. A read whose `selection` left them out reads the working memory and the
+   * forms again by the run's id only when `main_stuff` holds a value shaped like a stored text's
+   * reference ({@link mayHoldStoredTexts}), so a narrowed read of images and documents stays one
+   * request.
+   */
+  private async withStoredTextsLoaded(
+    result: RunResults,
+    selection: readonly RunResultArtifact[] | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<RunResults> {
+    if (result.main_stuff == null) return result;
+    if (!carriesConceptArtifacts(selection) && !mayHoldStoredTexts(result.main_stuff)) {
+      return result;
+    }
+    const source = await withConceptArtifacts(this, result, selection, signal);
+    const loaded = await loadStoredTextsImpl(this, { ...result, ...source } as RunResults, {
+      signal,
+    });
+    return loaded.main_stuff === result.main_stuff
+      ? result
+      : { ...result, main_stuff: loaded.main_stuff };
   }
 
   /**
    * Poll an already-started run (by id) until it reaches a terminal state. With `onProgress`,
    * each poll that finds the run still running also reads `getRunProgress` and hands the callback
    * every snapshot fresher than the last it delivered; a failed progress read never fails the wait
-   * (see `WaitForResultOptions.onProgress`).
+   * (see `WaitForResultOptions.onProgress`). `timeoutMs` bounds the whole wait, the load of the
+   * completed result's stored texts included: a run that completed but whose texts did not load
+   * in the time left throws `RunTimeoutError` saying so.
    */
   async waitForResult(runId: string, options?: WaitForResultOptions): Promise<RunResults> {
+    const selection = options?.artifacts;
     return pollUntilResult(
       (id, opts) => this.getRunResult(id, opts),
       runId,
       options,
       (id, opts) => this.getRunProgress(id, opts),
+      options?.loadStoredTexts === false || !selectionIncludesMainStuff(selection)
+        ? undefined
+        : (result, opts) => this.withStoredTextsLoaded(result, selection, opts.signal),
     );
   }
 
@@ -2968,7 +3011,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
         this.lifecycleAvailable = false;
         throwIfAborted(signal);
         onStarting?.();
-        return this.executeBlocking(options, signal, sending);
+        return this.executeBlocking(options, signal, sending, waitOptions.loadStoredTexts);
       }
       onStarted?.(ack);
       return this.waitForResult(ack.pipeline_run_id, waitOptions);
@@ -2976,7 +3019,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
 
     throwIfAborted(signal);
     onStarting?.();
-    return this.executeBlocking(options, signal, sending);
+    return this.executeBlocking(options, signal, sending, waitOptions.loadStoredTexts);
   }
 
   /**
@@ -5338,9 +5381,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * file got a verdict. A linked file carries its `url`, a presigned `GET` valid for fifteen
    * minutes, with its `expires_at`, the `name` the download saves under and its `media_type`, and
    * a `null` `error`. A file that got no link carries `error`, `{ code, detail }`, and `null` link
-   * members: `not_found` for an unknown file id, `conflict` for a file whose upload has not
-   * finished, `invalid_storage_uri` for a malformed address and `forbidden` for another
-   * organization's.
+   * members: the platform's registry codes, `request.invalid` naming `file_id` or `uri` for an
+   * unknown file or one whose upload has not finished, `pipelex.storage.uri_invalid` for a malformed
+   * address and `pipelex.org.mismatch` for another organization's.
    *
    * Each link is signed with a `Content-Disposition` naming the file, so a download saves under
    * the name a person sees rather than the bytes' hash. It opens in place (`inline`) for an image,
@@ -5938,6 +5981,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
     options: PipelexStartOptions,
     signal: AbortSignal | undefined,
     sending: PreparedRunTree,
+    loadStoredTexts: boolean | undefined,
   ): Promise<RunResults> {
     const response = await this.executeRun(
       {
@@ -5962,7 +6006,27 @@ export class PipelexApiClient implements HostedProtocolSurface {
       signal,
       sending,
     );
-    return resultsFromExecute(response);
+    const results = resultsFromExecute(response);
+    if (loadStoredTexts === false) return results;
+    // The blocking answer carries the working memory and the forms, so nothing is read again.
+    try {
+      return await this.withStoredTextsLoaded(results, undefined, signal);
+    } catch (err) {
+      if (!(err instanceof StoredTextLoadError)) throw err;
+      // The answer is the only copy of a completed run, and a bare runner serves no bulk resolve
+      // route: the error carries the result.
+      throw new StoredTextLoadError(
+        err.message,
+        {
+          uri: err.uri,
+          path: err.path,
+          reason: err.reason,
+          status: err.status,
+          wireResults: results,
+        },
+        { cause: err.cause, problem: err.problem },
+      );
+    }
   }
 }
 

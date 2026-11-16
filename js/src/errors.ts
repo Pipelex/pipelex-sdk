@@ -19,7 +19,7 @@ import type { AnswerHeaders, Problem, ProblemItem } from "mthds/protocol";
 import { outcomeUnknownProblem, readHostedAnswer } from "./answer-reading.js";
 import { requestMayHaveLeft } from "./transport-reading.js";
 import type { ArtifactScope, DownloadArtifactsResult } from "./artifacts.js";
-import type { RunStatus } from "./runs.js";
+import type { RunResults, RunStatus } from "./runs.js";
 
 export { ProblemError };
 
@@ -663,8 +663,8 @@ export class ScopeUnavailableError extends ArtifactOperationError {
 /**
  * One reference could not be turned into a bounded response by `fetchArtifact`.
  * `reason` says why, in a closed vocabulary the download verdict shares for its
- * per-item errors: the resolve route's own per-reference reasons
- * (`invalid_storage_uri`, `forbidden`), then the fetch boundary's —
+ * per-item errors: the resolve route's own per-reference codes
+ * (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`), then the fetch boundary's —
  * `unsupported_url`, `plain_http_refused`, `redirect_refused`, `store_refused`
  * (a 401/403 from the object store), `not_found` (404/410), `store_error`
  * (any other non-2xx), `too_large`, `timeout`, `network`, and `unknown` for a failure the SDK
@@ -700,9 +700,65 @@ export class ArtifactFetchError extends ArtifactOperationError {
 }
 
 /**
+ * A stored text in a run's result could not be loaded, so the result cannot be handed back in
+ * its loaded shape. `uri` is the stored text's `url`, `path` the `$`-rooted path of the value
+ * holding it in `main_stuff` (`$`, `$.items[2]`, `$.text_and_images.text`), and `reason` why, in
+ * the vocabulary of `ArtifactFetchError` (the resolve route's per-reference code, then the fetch
+ * boundary's reasons) plus the loader's own: `unsupported_url` for a stored text whose `url` is
+ * neither a `pipelex-storage://` reference nor a `data:` URL, which is never fetched;
+ * `resolve_failed` when the bulk resolve route failed as a whole, naming the first text it was
+ * asked for, the route's error being the cause and its problem kept; `not_utf8` for bytes that are
+ * no UTF-8 text; and `not_json_object` for a stored JSON value that is no JSON object. `status` is
+ * the HTTP status received, the store's or the resolve route's, when one was.
+ *
+ * Its problem is the fetch failure's own when the bytes could not be read
+ * (`artifactFetchProblem`), the resolve route's own for `resolve_failed`, and
+ * `client.response_unreadable` naming the run when the bytes were read but are not the value. A
+ * caller who wants the result anyway reads it again with the loading turned off
+ * (`loadStoredTexts: false`) and gets every stored text as its reference.
+ *
+ * `wireResults` is that result, as it was answered, every stored text still its reference, when
+ * nothing else holds it: it is set only by `startAndWaitForResult`'s blocking fallback, a bare
+ * runner's `POST /v1/execute`, where there is no run to read again. It is `undefined` everywhere
+ * else.
+ */
+export class StoredTextLoadError extends ArtifactOperationError {
+  public readonly uri: string;
+  public readonly path: string;
+  public readonly reason: string;
+  public readonly status: number | undefined;
+  public readonly wireResults: RunResults | undefined;
+
+  constructor(
+    message: string,
+    details: {
+      uri: string;
+      path: string;
+      reason: string;
+      status?: number | undefined;
+      wireResults?: RunResults | undefined;
+    },
+    options?: { cause?: unknown; problem?: Problem },
+  ) {
+    super(message, {
+      cause: options?.cause,
+      problem:
+        options?.problem ?? artifactFetchProblem(details.reason, details.uri, details.status),
+    });
+    this.name = "StoredTextLoadError";
+    this.uri = details.uri;
+    this.path = details.path;
+    this.reason = details.reason;
+    this.status = details.status;
+    this.wireResults = details.wireResults;
+  }
+}
+
+/**
  * The problem of one reference's fetch failure that its raise site states none for, by its reason
- * and the store's status: `input.reference_not_found` naming the reference for
- * `invalid_storage_uri`, `forbidden` and `not_found`; `client.link_refused` for
+ * and the store's status: `input.reference_not_found` naming the reference for the resolve route's
+ * `pipelex.storage.uri_invalid` and `pipelex.org.mismatch` and for `not_found`;
+ * `client.link_refused` for
  * `unsupported_url`, `plain_http_refused` and `redirect_refused`; for `store_error` and
  * `store_refused`, the object store failing or refusing a link the platform has just signed,
  * `storageStatusProblem`'s reading of the store's status (`runtime.unavailable` for a `408`, a
@@ -714,8 +770,8 @@ export class ArtifactFetchError extends ArtifactOperationError {
  */
 export function artifactFetchProblem(reason: string, uri: string, status?: number): Problem {
   switch (reason) {
-    case "invalid_storage_uri":
-    case "forbidden":
+    case "pipelex.storage.uri_invalid":
+    case "pipelex.org.mismatch":
     case "not_found":
       return buildProblem("input.reference_not_found", { input: uri });
     case "unsupported_url":
