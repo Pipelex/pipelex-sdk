@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.69.2] - 2026-11-17
+
+### Security
+
+- **Next.js 16.4.6**: the web app template requires `next` and `eslint-config-next` at `^16.4.6` and locks 16.4.6, past the two Next.js advisories that covered 16.2.0 to 16.4.4, an information disclosure across root params when a `use cache` function is called through `unstable_cache()` and a cache leak across root param values in nested `use cache` functions. While the template locked an affected version, `next build` could stop with `SecurityFatalError`, so a new project's first `make create` could fail where a rerun passed; a project made from the template now builds on the first try.
+
 ## [v0.69.1] - 2026-11-17
 
 ### Security
