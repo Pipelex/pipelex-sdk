@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The `.mthds` check hook's lint engine moves to `@pipelex/tools-wasm` 0.6.2**: the bundle built by `npm run build:hook` now embeds `@pipelex/tools-wasm` 0.6.2, whose MTHDS schema follows pipelex v0.107.0, so the hook no longer blocks with a schema error a `PipeStructure` that reads an Excel Table through `table` and `row_field`, or a `PipeDocGen` that fills the caller's file through `template_input` with `table_fill`, `match_on`, `match_row` or `cells`. The published package is unchanged, since the engine is a development dependency.
+
 ## [v0.69.0] - 2026-11-16
 
 ### Added
