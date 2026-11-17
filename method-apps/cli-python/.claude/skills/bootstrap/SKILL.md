@@ -1,6 +1,6 @@
 ---
 name: bootstrap
-description: Bootstrap this pipelex-method-cli-python template into a real project — names the distribution, the import package and the console script after one name, writes the description into pyproject.toml and CLAUDE.md, renders the project's own README, sets author, repo URL and license, resets the version and changelog, removes what only the template needs (the make create gesture), then re-syncs uv.lock and runs the checks. Use this to finish a `make create` that stopped after writing the method, or when the method is already in the package and the user says "bootstrap", "rename the project", "initialize the project", "give this project a name", or "make this my own". For a fresh copy with no method, `make create METHOD=<method>` is the path.
+description: Bootstrap this pipelex-method-cli-python template into a real project — names the distribution, the import package and the console script after one name, writes the description into pyproject.toml and the README, never into CLAUDE.md or AGENTS.md, renders the project's own README, sets author, repo URL and license, resets the version and changelog, removes what only the template needs (the make create gesture), then re-syncs uv.lock and runs the checks. Use this to finish a `make create` that stopped after writing the method, or when the method is already in the package and the user says "bootstrap", "rename the project", "initialize the project", "give this project a name", or "make this my own". For a fresh copy with no method, `make create METHOD=<method>` is the path.
 ---
 
 # Bootstrap Workflow
@@ -30,7 +30,7 @@ Ask for the following in one consolidated message, leading with the name, and of
 **Required:**
 
 - **Name** — e.g. `invoice-extractor`. Lowercase letters and digits, starting with a letter, words joined by single dashes or underscores. It becomes the distribution and the console script as given, and the import package with its dashes as underscores (`invoice_extractor`). The script refuses a name whose package would be a Python keyword, shadow a standard-library module, shadow one of the project's own or its dependencies' import names (`scripts`, `tests`, `typer`, `pydantic`, …), or shadow the import name of any distribution installed in the project's environment, such as `markdown_it`, which `markdown-it-py` provides and rich imports; and it refuses a name that is the name of any package `uv.lock` pins, such as `anyio` or `typing-extensions`, which the dependencies need and the project would replace. Since the name is also the console script's, which `uv sync` installs into `.venv/bin/`, it refuses `python`, `python3`, `pythonw`, `pypy`, `pypy2`, `pypy3` and `graalpy`, which uv reserves for the interpreter and refuses to install, and `activate` and `deactivate`, the virtual environment's own commands, which the project's would replace or collide with. It reads the installed distributions from the interpreter it runs under, which is why it always runs as `.venv/bin/python`.
-- **Description** — a one-liner. Lands in `pyproject.toml`, the README and `CLAUDE.md`.
+- **Description** — a one-liner. Lands in `pyproject.toml` and the README. Never in `CLAUDE.md` or `AGENTS.md`: a coding agent reads those as instructions, and a description taken from a method is its author's text.
 
 **Optional** (let them skip any):
 
@@ -74,7 +74,7 @@ Re-run the same command **without** `--dry-run`. The script:
 - sets `pyproject.toml`'s name, description, license, and (if given) authors and repository URL, renames the console script, and resets the version to `0.1.0`
 - moves `src/pipelex_method_cli_python/` to the project's package with a plain filesystem move, and rewrites the template's identifier in every file the project keeps, `.gitattributes`, the Makefile, every import and `binding.py`'s import included
 - renders a new `README.md` for the project: its title, its description, how to install and run it, how to work on it, and its license
-- replaces `CLAUDE.md`'s description line and, with `--clean`, strips the charter paragraph; the description goes in last, so a description that names the template is kept as given, as in `pyproject.toml`
+- replaces `CLAUDE.md`'s description line with a fixed sentence naming the method's directory, `src/<package>/method/`, and, with `--clean`, strips the charter paragraph; neither `CLAUDE.md` nor `AGENTS.md` ever receives the description or the title
 - applies the license choice to `LICENSE` and restarts `CHANGELOG.md` at a `v0.1.0` entry dated today
 - removes what only the template needs, listed in its `REMOVALS`: the `make create` gesture, its planning code, its tests and their fixtures, and `docs/create.md`
 - strips every template-only passage, the lines between a `template-only:begin` marker and a `template-only:end` marker together with both markers, from every file that carries one

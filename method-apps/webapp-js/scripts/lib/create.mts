@@ -194,7 +194,11 @@ export function titleFromName(name: string): string {
     .join(" ");
 }
 
-/** A description on one line: it lands in `package.json`, `CLAUDE.md` and a meta tag. */
+/**
+ * A description on one line: it lands in `package.json`, the README and a meta
+ * tag. Never in `CLAUDE.md` or `AGENTS.md`, which the bootstrap keeps free of
+ * method prose.
+ */
 export function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -496,8 +500,17 @@ export async function assertTemplate(repoRoot: string): Promise<void> {
   }
 }
 
-/** The bootstrap's command line for this identity, without `--dry-run`. */
-export function bootstrapArgs(repoRoot: string, identity: Identity, args: CreateArgs): string[] {
+/**
+ * The bootstrap's command line for this identity, without `--dry-run`.
+ * `methodDir` is the method's directory under `methods/`, the one value from
+ * the method that `CLAUDE.md` names; its description and title stay out of it.
+ */
+export function bootstrapArgs(
+  repoRoot: string,
+  identity: Identity,
+  args: CreateArgs,
+  methodDir: string,
+): string[] {
   const argv = [
     path.join(repoRoot, BOOTSTRAP_SCRIPT),
     "--root",
@@ -508,6 +521,8 @@ export function bootstrapArgs(repoRoot: string, identity: Identity, args: Create
     identity.title,
     "--description",
     identity.description,
+    "--method-dir",
+    methodDir,
     // A created project is not a template, and the template's charter paragraph
     // would steer every later agent session toward maintaining one.
     "--clean",
@@ -626,7 +641,7 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
   );
   const identity = deriveIdentity(plan, args);
   const envPlan = await planEnvFile(repoRoot, deps.shell, deps.addMethod.baseUrl, deps.envFiles);
-  const bootstrap = bootstrapArgs(repoRoot, identity, args);
+  const bootstrap = bootstrapArgs(repoRoot, identity, args, plan.names.slug);
 
   console.log(`create: ${identity.title}`);
   console.log(`  package:     ${identity.name}`);

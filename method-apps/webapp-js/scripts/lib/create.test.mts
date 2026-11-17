@@ -447,6 +447,7 @@ describe("bootstrapArgs", () => {
       "/app",
       { name: "receipt-review", title: "Receipt Review", description: "Read receipts." },
       { method: "x", authorName: "Ada", license: "proprietary", dryRun: false },
+      "receipt-review",
     );
     expect(argv.slice(1)).toEqual([
       "--root",
@@ -457,6 +458,8 @@ describe("bootstrapArgs", () => {
       "Receipt Review",
       "--description",
       "Read receipts.",
+      "--method-dir",
+      "receipt-review",
       "--clean",
       "--author-name",
       "Ada",
@@ -590,6 +593,8 @@ describe("runCreate", () => {
     expect(d.calls[1]!.args).toContain(
       "Read a batch of receipts and list, for each one, who issued it, when, and the total paid.",
     );
+    // CLAUDE.md names the method's directory, never its prose.
+    expect(d.calls[1]!.args).toEqual(expect.arrayContaining(["--method-dir", "receipt-review"]));
 
     const env = await readFile(path.join(root, ENV_FILE), "utf-8");
     expect(env).toContain("PIPELEX_BASE_URL=https://api-dev.pipelex.com\n");

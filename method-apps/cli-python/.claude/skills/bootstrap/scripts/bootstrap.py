@@ -10,7 +10,11 @@ person can concentrate on good inputs and on checking the result:
   (`receipt_review`). The package directory under `src/` is renamed with a plain filesystem move,
   never `git mv`, so it works before `git init`, and the template's identifier is rewritten in every
   file a project keeps, `.gitattributes` and the Makefile included;
-- the description, in `pyproject.toml` and on `CLAUDE.md`'s description line;
+- the description, in `pyproject.toml` and the README, and never in `CLAUDE.md` or `AGENTS.md`: every
+  coding-agent session in the project loads those two as trusted instructions, and `make create`
+  derives the description, and often the title, from the method, whose author may be anyone. So
+  neither file receives any method prose: `CLAUDE.md`'s description line becomes a fixed sentence
+  naming the method's directory, `src/<package>/method/`, and the title goes only into the README;
 - the version, reset to 0.1.0, with `CHANGELOG.md` restarted to match;
 - the license, the author and the repository URL;
 - the README, which is rendered whole rather than renamed: the template's README is about the
@@ -73,7 +77,8 @@ TEMPLATE_URL = "https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/cli
 # A fresh project restarts here: pyproject.toml and CHANGELOG.md must agree.
 RESET_VERSION = "0.1.0"
 
-# CLAUDE.md's one-line description, which the project's own description replaces.
+# CLAUDE.md's one-line description, which `claude_description_line` replaces with a fixed sentence: never
+# with the project's description, which is method prose.
 CLAUDE_DESCRIPTION = (
     "A command-line tool that runs one MTHDS method through the [Pipelex](https://pipelex.com) API with "
     "[`pipelex-sdk`](https://pypi.org/project/pipelex-sdk/), printing the method's result as JSON on stdout."
@@ -646,17 +651,32 @@ def strip_charter(text: str) -> str:
     return text[:start] + text[start + end.end() :]
 
 
-def transform_claude_md(text: str, names: Names, opts: Options) -> str:
-    """`CLAUDE.md`: its template-only passages stripped and the names rewritten, then the charter, then the description.
+def claude_description_line(names: Names) -> str:
+    """`CLAUDE.md`'s description line in a project: a fixed sentence naming the method's directory.
 
-    The description goes in last, as in `pyproject.toml`, so that nothing reads the person's own words
-    again: a description that names the template legitimately is kept as given in both files.
+    Never the project's description: every coding-agent session in the project loads `CLAUDE.md` as
+    instructions, and a description derived from a method is its author's text. The package name is
+    the one value it carries, and `name_reason` has held it to an identifier's shape.
+    """
+    method_dir = f"src/{names.package}/method/"
+    return (
+        f"A command-line tool that runs the MTHDS method in [`{method_dir}`]({method_dir}) through the "
+        "[Pipelex](https://pipelex.com) API with [`pipelex-sdk`](https://pypi.org/project/pipelex-sdk/), "
+        "printing the method's result as JSON on stdout."
+    )
+
+
+def transform_claude_md(text: str, names: Names, opts: Options) -> str:
+    """`CLAUDE.md`: its template-only passages stripped and the names rewritten, then the charter, then the description line.
+
+    The description line is a fixed sentence naming the method's directory, never the project's
+    description or title: see `claude_description_line`.
     """
     text = apply_name_tokens(strip_template_only(text, "CLAUDE.md", required=True), names)
     if opts.clean:
         text = strip_charter(text)
     if CLAUDE_DESCRIPTION in text:
-        text = text.replace(CLAUDE_DESCRIPTION, opts.description, 1)
+        text = text.replace(CLAUDE_DESCRIPTION, claude_description_line(names), 1)
     else:
         warn("CLAUDE.md: template description line not found; left as-is.")
     return text
