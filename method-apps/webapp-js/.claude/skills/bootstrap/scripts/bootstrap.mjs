@@ -104,9 +104,9 @@ export const TEMPLATE_ONLY_END = "template-only:end";
 
 // The method's directory under `methods/`: `add-method`'s slug, the only value
 // derived from a method that `CLAUDE.md` carries, so it is held to the slug's
-// shape — lowercase words joined by single dashes, a letter first.
+// shape — lowercase words joined by single dashes, a letter first — and to
+// nothing stricter, so every slug `add-method` scaffolds is accepted here too.
 const METHOD_DIR_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-const METHOD_DIR_MAX_LENGTH = 64;
 
 // npm package name rules (legacy-strict subset: new packages must be lowercase
 // URL-safe, optionally scoped). Anything else breaks `npm install` later.
@@ -130,10 +130,8 @@ export function validateName(name) {
   }
 }
 
-/** Today's date in the machine's local timezone (toISOString would give UTC,
- * which can lag a day behind for anyone east of Greenwich). */
 export function validateMethodDir(methodDir) {
-  if (!METHOD_DIR_RE.test(methodDir) || methodDir.length > METHOD_DIR_MAX_LENGTH) {
+  if (!METHOD_DIR_RE.test(methodDir)) {
     fail(
       `invalid --method-dir ${JSON.stringify(methodDir)}: the method's directory under methods/,` +
         ` lowercase words joined by dashes (e.g. 'invoice-extractor').`,
@@ -141,6 +139,8 @@ export function validateMethodDir(methodDir) {
   }
 }
 
+/** Today's date in the machine's local timezone (toISOString would give UTC,
+ * which can lag a day behind for anyone east of Greenwich). */
 function localDate() {
   const now = new Date();
   const month = String(now.getMonth() + 1).padStart(2, "0");

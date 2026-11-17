@@ -654,7 +654,7 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
   if (run(process.execPath, [...bootstrap, "--dry-run"], repoRoot) !== 0) {
     throw new CreateError(
       "the bootstrap refused these values (see above). Nothing was written; pass the flag " +
-        "that fixes it — --name, --title, --description, or one of the --author-*, " +
+        "that fixes it — --name, --title, --description, --method-name, or one of the --author-*, " +
         "--repo-url and --license* flags.",
     );
   }

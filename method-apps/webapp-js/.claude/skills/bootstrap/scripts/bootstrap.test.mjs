@@ -289,6 +289,16 @@ describe.skipIf(!IS_TEMPLATE)("bootstrap.mjs against the template's files", SPAW
     expect(siteValues(read(root, "src/site.ts"))).toEqual({ title, description });
   });
 
+  it("accepts as --method-dir every slug add-method scaffolds, however long", () => {
+    // `make create` passes add-method's slug, which has no length limit, so a
+    // stricter rule here would refuse a method the scaffold had accepted.
+    const methodDir = "extract-structured-line-items-from-scanned-supplier-invoices-and-reconcile";
+    const root = makeTempRepo();
+    const res = runScript([...baseArgs(root), "--method-dir", methodDir, "--clean", "--dry-run"]);
+    expect(res.status).toBe(0);
+    expect(res.stderr).not.toContain("--method-dir");
+  });
+
   it("keeps $-patterns in user values literal instead of expanding them", () => {
     const root = makeTempRepo();
     const res = runScript([

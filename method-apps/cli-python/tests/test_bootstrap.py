@@ -96,10 +96,10 @@ def binding_for(pipe_ref: str) -> str:
     return render_binding(ChosenPipe(ref=pipe_ref, domain=domain, code=code), OutputBinding(model="Text", plural=False))
 
 
-#: Whether the tests run as root, who writes into a directory whose mode refuses everyone else.
 # The names the tests bootstrap most copies under; the title never reaches CLAUDE.md, so any one does.
 INVOICE_NAMES = BOOTSTRAP.Names(name="invoice-extractor", package="invoice_extractor", title="Invoice Extractor")
 
+#: Whether the tests run as root, who writes into a directory whose mode refuses everyone else.
 AS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
