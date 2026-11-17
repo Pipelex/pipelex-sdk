@@ -29,7 +29,7 @@ Ask the user for the following in one consolidated message. Lead with the packag
 
 - **Package name** — the npm name, e.g. `invoice-extractor` (or scoped, `@acme/invoice-extractor`). Lowercase letters/digits/`-`/`.`/`_` only — the script validates it. This becomes `package.json`'s `name` and the heading of `CLAUDE.md` and `AGENTS.md`.
 - **Display title** — e.g. `Invoice Extractor`. Default: the package name title-cased (scope stripped). It becomes the page heading, the browser title and the README heading. Any characters are safe: the script writes it into `src/site.ts` as a string literal, never into markup.
-- **Description** — a one-liner. Lands in `package.json`, the README, `CLAUDE.md`, and `src/site.ts`, which the page subtitle and the meta description read.
+- **Description** — a one-liner. Lands in `package.json`, the README and `src/site.ts`, which the page subtitle and the meta description read. Never in `CLAUDE.md` or `AGENTS.md`: a coding agent reads those as instructions, and a description taken from a method is its author's text.
 
 **Optional** (let them skip any):
 
@@ -59,6 +59,7 @@ node .claude/skills/bootstrap/scripts/bootstrap.mjs \
   --name "<package-name>" \
   --title "<title>" \
   --description "<description>" \
+  [--method-dir "<method-dir>"] \
   [--author-name "<name>" --author-email "<email>"] \
   [--repo-url "<url>"] \
   [--license "mit|proprietary|<spdx-id>"] \
@@ -68,7 +69,7 @@ node .claude/skills/bootstrap/scripts/bootstrap.mjs \
   --dry-run
 ```
 
-`--license` defaults to `mit`. `--license-year` defaults to the current year — only pass it to override. Add `--force` only in the confirmed re-run case from Step 1.
+`--method-dir` is the method's directory under `methods/` when the project already has one; `CLAUDE.md`'s description line names it. `--license` defaults to `mit`. `--license-year` defaults to the current year — only pass it to override. Add `--force` only in the confirmed re-run case from Step 1.
 
 Pass `--clean` so the script strips `CLAUDE.md`'s template charter paragraph: a bootstrapped project is no longer a template, and that paragraph would steer every future agent session toward template-maintainer behavior. Omit it only if the user explicitly wants the charter kept.
 
@@ -80,7 +81,7 @@ Re-run the exact same command **without** `--dry-run`. The script:
 
 - sets `package.json`'s name, description, license, and (if given) author and repository, and resets its version to `0.1.0`
 - renders a new `README.md` for the project: its title, its description, how to run it and work on it, the docs, and its license
-- replaces `CLAUDE.md`'s description line and, with `--clean`, strips the charter paragraph; the template's name, which appears only in the headings of `CLAUDE.md` and `AGENTS.md`, becomes the package name
+- replaces `CLAUDE.md`'s description line, given `--method-dir <name>` (the method's directory under `methods/`, which `make create` passes), with a fixed sentence naming that directory, and otherwise keeps the template's line; with `--clean`, strips the charter paragraph; the template's name, which appears only in the headings of `CLAUDE.md` and `AGENTS.md`, becomes the package name. Neither file ever receives the description or the title
 - writes the title and description into `src/site.ts`
 - applies the license choice to `LICENSE`
 - rewrites `CHANGELOG.md` to a fresh `v0.1.0` entry dated today

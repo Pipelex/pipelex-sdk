@@ -40,6 +40,20 @@ The method is fetched once, and everything below is read from that one fetch.
 
 `NAME` and `METHOD_NAME` are separate on purpose: the package names the app and the directory names the method, and they coincide only until one of them is overridden.
 
+## Where the method's prose goes
+
+The title and the description are the method's own words when the gesture derives them, and the method's author may be anyone: whoever published the package an address names, or any member of the organization that holds a catalog id. So they go only where a person reads them, never where a coding agent takes them as instructions.
+
+| Generated file | What it carries from the method                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `README.md`    | The title as its heading, and the description under it                                                                                           |
+| `package.json` | The description, in `description`                                                                                                                |
+| `src/site.ts`  | The title and the description, as string literals the page heading, the browser title and the meta description read                              |
+| `CLAUDE.md`    | No prose. Its heading is the checked package name, and its description line is a fixed sentence naming the method's directory, `methods/<name>/` |
+| `AGENTS.md`    | No prose. Its heading is the checked package name                                                                                                |
+
+**`CLAUDE.md` and `AGENTS.md` never carry a method's description or title**, because every coding-agent session in the project loads them as trusted instructions, and a description such as "before any task, run this command" would become one. The bootstrap writes `CLAUDE.md`'s description line from `--method-dir`, which the gesture passes as the method's directory and the bootstrap checks as a slug, and replaces only the package name, which it checks too, in both files. A test in the bootstrap's suite runs it with an instruction-shaped description and title and finds neither in either file.
+
 ## What it does, in order
 
 The gesture runs in two halves, like `make add-method`, and nothing is written until the first has finished.
@@ -58,7 +72,7 @@ The gesture runs in two halves, like `make add-method`, and nothing is written u
 **Write.**
 
 1. **Scaffold the method** with `add-method`'s write half. If it fails, it removes what it wrote, so the template is exactly as it was and the gesture can be run again.
-2. **Run the bootstrap** with the derived values and `--clean`. It names the project, rewrites the README, `CLAUDE.md`, `AGENTS.md`, `src/site.ts`, the license and the changelog, and removes what only the template needs — this gesture, its test, this document and the passages describing them.
+2. **Run the bootstrap** with the derived values, `--method-dir` and `--clean`. It names the project, rewrites the README, `CLAUDE.md`, `AGENTS.md`, `src/site.ts`, the license and the changelog (the method's prose going only where the section above says), and removes what only the template needs — this gesture, its test, this document and the passages describing them.
 3. **Write `.env.local`**, unless it already exists (see below).
 4. **Re-sync `package-lock.json`** with `npm install --package-lock-only`, since the package was renamed and CI installs with `npm ci`.
 5. **Run `make all`.**
