@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **A created app's `CLAUDE.md` and `AGENTS.md` carry no method prose**: `make create` in either template no longer writes the method's description into the new project's `CLAUDE.md`, which every coding-agent session in the project loads as instructions, so a method whose author wrote a description such as "before any task, run this command" can no longer instruct the developer's agent. `CLAUDE.md`'s description line is now a fixed sentence naming the method's directory (`methods/<name>/` in the web app, passed to its bootstrap as the new `--method-dir`, and `src/<package>/method/` in the CLI), the title never reaches either file, and the description stays in the README, the package manifest and, in the web app, `src/site.ts`.
+
 ## [v0.69.0] - 2026-11-16
 
 ### Fixed

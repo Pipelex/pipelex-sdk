@@ -7,6 +7,14 @@
  * its version and changelog, its license — so the skill (and the human) can
  * focus on collecting good inputs and verifying the result.
  *
+ * **No method prose reaches `CLAUDE.md` or `AGENTS.md`.** Every coding-agent
+ * session in the project loads them as trusted instructions, and `make create`
+ * derives the description, and often the title, from the method, whose author
+ * may be anyone. So the description goes into `package.json`, the README and
+ * `src/site.ts` only, the title never reaches either agent file, and
+ * `CLAUDE.md`'s description line becomes a fixed sentence naming the method's
+ * directory (`--method-dir`, a slug checked here).
+ *
  * Two rules keep a rename from garbling anything, and each one is a defect the
  * gallery's version of this script shipped:
  *
@@ -50,7 +58,8 @@ export const TEMPLATE_URL =
 // Fresh projects restart here — package.json and CHANGELOG.md must agree.
 export const RESET_VERSION = "0.1.0";
 
-// CLAUDE.md's one-line description, which the project's own description replaces.
+// CLAUDE.md's one-line description. A project's description never replaces it:
+// see `claudeDescriptionLine`.
 const CLAUDE_DESCRIPTION =
   "A Next.js 16 app that runs MTHDS methods through the [Pipelex](https://pipelex.com) API with [`@pipelex/sdk`](https://www.npmjs.com/package/@pipelex/sdk), rendering each method's input form and result view from its own contract.";
 
@@ -93,6 +102,12 @@ const TEMPLATE_ONLY_SCRIPTS = ["create"];
 export const TEMPLATE_ONLY_BEGIN = "template-only:begin";
 export const TEMPLATE_ONLY_END = "template-only:end";
 
+// The method's directory under `methods/`: `add-method`'s slug, the only value
+// derived from a method that `CLAUDE.md` carries, so it is held to the slug's
+// shape — lowercase words joined by single dashes, a letter first — and to
+// nothing stricter, so every slug `add-method` scaffolds is accepted here too.
+const METHOD_DIR_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
 // npm package name rules (legacy-strict subset: new packages must be lowercase
 // URL-safe, optionally scoped). Anything else breaks `npm install` later.
 const NAME_RE = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
@@ -111,6 +126,15 @@ export function validateName(name) {
     fail(
       `invalid package name ${JSON.stringify(name)}: use lowercase letters, digits, '-', '.', '_',` +
         ` optionally scoped (e.g. 'invoice-extractor' or '@acme/invoice-extractor').`,
+    );
+  }
+}
+
+export function validateMethodDir(methodDir) {
+  if (!METHOD_DIR_RE.test(methodDir)) {
+    fail(
+      `invalid --method-dir ${JSON.stringify(methodDir)}: the method's directory under methods/,` +
+        ` lowercase words joined by dashes (e.g. 'invoice-extractor').`,
     );
   }
 }
@@ -195,6 +219,16 @@ export function applyNameTokens(text, names) {
   return text
     .replaceAll(TEMPLATE_NAME, literally(names.name))
     .replaceAll(TEMPLATE_TITLE, literally(names.title));
+}
+
+/**
+ * Substitute the package name alone, for `CLAUDE.md` and `AGENTS.md`. The title
+ * may be a catalog entry's name, which is method prose, and a coding agent reads
+ * those two files as instructions; the package name is checked by
+ * `validateName`.
+ */
+export function applyPackageName(text, names) {
+  return text.replaceAll(TEMPLATE_NAME, literally(names.name));
 }
 
 /**
@@ -351,17 +385,34 @@ export function stripTemplateParagraph(text) {
   return text.slice(0, start) + text.slice(start + end.index + end[0].length);
 }
 
+/**
+ * `CLAUDE.md`'s description line in a project: a fixed sentence naming the
+ * directory of the method the app was created for, or the template's own line
+ * when no directory is given. Never the project's description: every
+ * coding-agent session in the project loads `CLAUDE.md` as instructions, and a
+ * description derived from a method is its author's text.
+ */
+export function claudeDescriptionLine(methodDir) {
+  if (!methodDir) return CLAUDE_DESCRIPTION;
+  return (
+    `A Next.js 16 app, created for the MTHDS method in [\`methods/${methodDir}/\`](methods/${methodDir}/),` +
+    " that runs its methods through the [Pipelex](https://pipelex.com) API with" +
+    " [`@pipelex/sdk`](https://www.npmjs.com/package/@pipelex/sdk), rendering each method's" +
+    " input form and result view from its own contract."
+  );
+}
+
 export function transformClaudeMd(text, names, opts) {
   text = stripTemplateOnly(text, "CLAUDE.md");
   if (text.includes(CLAUDE_DESCRIPTION)) {
-    text = text.replace(CLAUDE_DESCRIPTION, literally(opts.description));
+    text = text.replace(CLAUDE_DESCRIPTION, literally(claudeDescriptionLine(opts.methodDir)));
   } else {
     warn("CLAUDE.md: template description line not found; left as-is.");
   }
   if (opts.clean) {
     text = stripTemplateParagraph(text);
   }
-  return applyNameTokens(text, names);
+  return applyPackageName(text, names);
 }
 
 // `title: "…"` and `description: "…"` in src/site.ts — a double-quoted string
@@ -463,10 +514,11 @@ export const TARGETS = [
   { rel: "CLAUDE.md", transform: transformClaudeMd },
   // AGENTS.md carries the template name in its heading only; its rules are
   // generic to any project built from this template, but for the one about
-  // `make create`, which is the template's alone.
+  // `make create`, which is the template's alone. Like CLAUDE.md, it is read by
+  // coding agents as instructions, so only the checked package name goes in.
   {
     rel: "AGENTS.md",
-    transform: (text, names) => applyNameTokens(stripTemplateOnly(text, "AGENTS.md"), names),
+    transform: (text, names) => applyPackageName(stripTemplateOnly(text, "AGENTS.md"), names),
   },
   { rel: "Makefile", transform: (text) => stripTemplateOnly(text, "Makefile") },
   { rel: "docs/ci.md", transform: (text) => stripTemplateOnly(text, "docs/ci.md") },
@@ -593,6 +645,7 @@ const FLAGS = {
   "--name": "name",
   "--title": "title",
   "--description": "description",
+  "--method-dir": "methodDir",
   "--author-name": "authorName",
   "--author-email": "authorEmail",
   "--repo-url": "repoUrl",
@@ -634,6 +687,8 @@ export async function main(argv) {
   if (!title) fail("--title is empty");
   const description = args.description.trim();
   if (!description) fail("--description is empty");
+  const methodDir = args.methodDir === undefined ? null : args.methodDir.trim();
+  if (methodDir !== null) validateMethodDir(methodDir);
   const names = { name, title };
 
   const rawYear = (args.licenseYear || "").trim();
@@ -652,6 +707,7 @@ export async function main(argv) {
 
   const opts = {
     description,
+    methodDir,
     authorName,
     authorEmail,
     repoUrl: (args.repoUrl || "").trim().replace(/\/+$/, "") || null,

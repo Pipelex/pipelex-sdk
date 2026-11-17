@@ -51,6 +51,19 @@ The method is fetched once, through the codegen kit's own `fetch_generated` (`do
 
 The name is the distribution and the command as derived, and the import package with its dashes as underscores: `receipt-review` gives the command `receipt-review` and the package `receipt_review`. The bootstrap refuses a name whose package would be a Python keyword, shadow a standard-library module, shadow one of the project's own or its dependencies' import names, or shadow the import name of any distribution installed in the project's environment, such as `markdown_it`, which `markdown-it-py` provides and rich imports; and it refuses a name that is the name of any package `uv.lock` pins, such as `anyio`, which the dependencies need and the project would replace. Since the name is also the command's, which `uv sync` installs into `.venv/bin/` after the rename, it refuses `python`, `python3`, `pythonw`, `pypy`, `pypy2`, `pypy3` and `graalpy`, which uv reserves for the interpreter and refuses to install, and `activate` and `deactivate`, the virtual environment's own commands, which the project's would replace or collide with. A name the gesture derived is checked by those same rules, which it reads from the bootstrap rather than restating them, before anything else: a method whose domain is `email` or `json` is refused with the derived name, the reason, and `NAME` (`--name`) as the fix.
 
+## Where the method's prose goes
+
+The title and the description are the method's own words when the gesture derives them, and the method's author may be anyone: whoever published the package an address names, or any member of the organization that holds a catalog id. So they go only where a person reads them, never where a coding agent takes them as instructions.
+
+| Generated file | What it carries from the method |
+| --- | --- |
+| `README.md` | The title as its heading, and the description under it |
+| `pyproject.toml` | The description, in `[project].description` |
+| `CLAUDE.md` | No prose. Its heading is the checked name, and its description line is a fixed sentence naming the method's directory, `src/<package>/method/` |
+| `AGENTS.md` | No prose. Its heading is the checked name |
+
+**`CLAUDE.md` and `AGENTS.md` never carry a method's description or title**, because every coding-agent session in the project loads them as trusted instructions, and a description such as "before any task, run this command" would become one. A test in `tests/test_bootstrap.py` runs the bootstrap with an instruction-shaped description and title and finds neither in either file.
+
 The pipe's inputs are derived as options the way the command derives them when it loads, so a method whose input form the command cannot offer is refused here, before anything is written, rather than by the first `--help`.
 
 A catalog id comes with a warning: a stored method is scoped to the organization of the key that stored it, so `make codegen` and every run of the command need a key of that organization. A published address is the portable form.
@@ -73,7 +86,7 @@ The gesture runs in two halves, and nothing is written until the first has finis
 **Write.**
 
 1. **Write the method**: `method/`, the generated tree through the codegen kit's own `write_generated`, so that it is exactly the tree `make codegen` would write, and `binding.py`. Nothing is overwritten: each part is created exclusively before anything is written into it, so a `generated/` that appeared since the read-only half is refused and left as it is. If a write fails, everything this step created is removed, and nothing else, so the template is exactly as it was and the gesture can be run again.
-2. **Run the bootstrap** with the derived values and `--clean`. It renames the distribution, the package directory under `src/` and the command; rewrites the template's identifier wherever the project keeps it, `.gitattributes` and the Makefile included; renders the README; rewrites `CLAUDE.md`'s description line, `AGENTS.md`'s heading, the license and the changelog; and removes what only the template needs: this gesture, its planning code, its tests and their fixtures, this document, and the passages describing them. Its warnings start with `warning: `. It writes each file whole, and `pyproject.toml` last, so a bootstrap that stops part-way leaves a tree that its own command, run again, finishes.
+2. **Run the bootstrap** with the derived values and `--clean`. It renames the distribution, the package directory under `src/` and the command; rewrites the template's identifier wherever the project keeps it, `.gitattributes` and the Makefile included; renders the README; rewrites `CLAUDE.md`'s description line with a fixed sentence naming the method's directory and `AGENTS.md`'s heading, neither of them receiving any of the method's prose, the license and the changelog; and removes what only the template needs: this gesture, its planning code, its tests and their fixtures, this document, and the passages describing them. Its warnings start with `warning: `. It writes each file whole, and `pyproject.toml` last, so a bootstrap that stops part-way leaves a tree that its own command, run again, finishes.
 3. **Write `.env`**, unless it already exists or a `.env` above the project supplies the key (see below).
 4. **Re-sync `uv.lock` and the environment** with `uv sync`, since the project was renamed, its command with it, and CI installs with a locked `uv.lock`.
 5. **Run `make all`.**
