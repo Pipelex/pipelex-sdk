@@ -158,6 +158,8 @@ from pipelex_sdk.product_models import (
     PlanView,
     PublicMethodDetail,
     ResolvedStorageUrl,
+    RunCharges,
+    RunChargesResponse,
     RunDetail,
     RunFilesPage,
     RunHistoryItem,
@@ -374,6 +376,8 @@ _AnswerT = TypeVar("_AnswerT")
 _HEALTH_ANSWER_ADAPTER: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 _PLAN_LIST_ADAPTER: TypeAdapter[list[PlanView]] = TypeAdapter(list[PlanView])
 _INVOICE_LIST_ADAPTER: TypeAdapter[list[InvoiceView]] = TypeAdapter(list[InvoiceView])
+#: The most runs `POST /v1/billing/run-charges` reads in one request; `read_run_charges` sends larger sets in batches.
+RUN_CHARGES_BATCH_SIZE = 100
 
 # The pydantic error types with which a reader refuses, at the root of the body, JSON that is not an object
 # where its route answers one: a model's `model_type`, the liveness probe's free-form object's `dict_type`, and
@@ -3896,6 +3900,29 @@ class PipelexAPIClient(MthdsAPIClient):
     async def list_invoices(self) -> list[InvoiceView]:
         """Past invoices — `GET /v1/billing/invoices`."""
         return await self._request_product("GET", "billing/invoices", read=_INVOICE_LIST_ADAPTER.validate_python)
+
+    async def read_run_charges(self, run_ids: list[str]) -> list[RunCharges]:
+        """What each run was charged on both credit ledgers — `POST /v1/billing/run-charges`.
+
+        The figures are the platform's charges, read from its ledgers, never the runtime's own estimate
+        (`summarize_usage`): the inference credits in US dollars, the usage credits with their dollar value,
+        and whether they are `settled`. Any number of runs is read, `RUN_CHARGES_BATCH_SIZE` per request, a
+        repeated id once; the items come back in the order the ids were first given. A run that is unknown,
+        erased or another organization's has no item, and never fails the call. The read is refused with
+        `403` (`ApiResponseError`) to a caller whose role may not change methods, a runner.
+        """
+        unique_ids = list(dict.fromkeys(run_ids))
+        charges: list[RunCharges] = []
+        for start in range(0, len(unique_ids), RUN_CHARGES_BATCH_SIZE):
+            batch = unique_ids[start : start + RUN_CHARGES_BATCH_SIZE]
+            response = await self._request_product(
+                "POST",
+                "billing/run-charges",
+                body={"pipeline_run_ids": batch},
+                read=RunChargesResponse.model_validate,
+            )
+            charges.extend(response.items)
+        return charges
 
     async def create_checkout(self, plan: str) -> CheckoutResponse:
         """Open a Stripe checkout for a plan — `POST /v1/billing/checkout`."""

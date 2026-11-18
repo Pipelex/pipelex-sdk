@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 from pytest_mock import MockerFixture, MockType
 
-from pipelex_sdk.client import PipelexAPIClient
+from pipelex_sdk.client import RUN_CHARGES_BATCH_SIZE, PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, RequestArgumentError
 from pipelex_sdk.product_models import (
     MethodDeletionState,
@@ -471,6 +471,63 @@ class TestClientProduct:
         send.reset_mock()
         asyncio.run(client.list_invoices())
         assert self._sent(send).url == f"{_BASE_URL}/v1/billing/invoices"
+
+    @staticmethod
+    def _run_charges(run_id: str) -> dict[str, object]:
+        return {
+            "pipeline_run_id": run_id,
+            "inference": {"amount": 0.0412, "calls": 3, "unpriced_calls": 0},
+            "usage": {"amount": 12.5, "pipes": 4, "amount_usd": 0.125},
+            "total_usd": 0.1662,
+            "settled": True,
+            "settles_at": "2026-11-18T10:05:00Z",
+            "ended_at": "2026-11-18T10:00:00Z",
+        }
+
+    def test_read_run_charges(self, mocker: MockerFixture) -> None:
+        """One request names the runs, each repeated id once, and each item reads both ledgers."""
+        client = self._client()
+        send = self._mock_send(mocker, client, _response(200, json_body={"items": [self._run_charges("run_a")]}))
+
+        result = asyncio.run(client.read_run_charges(["run_a", "run_b", "run_a"]))
+
+        sent = self._sent(send)
+        assert sent.method == "POST"
+        assert sent.url == f"{_BASE_URL}/v1/billing/run-charges"
+        assert sent.body == {"pipeline_run_ids": ["run_a", "run_b"]}
+        assert len(result) == 1
+        assert result[0].pipeline_run_id == "run_a"
+        assert result[0].inference.amount == 0.0412
+        assert result[0].inference.unpriced_calls == 0
+        assert result[0].usage.amount == 12.5
+        assert result[0].usage.amount_usd == 0.125
+        assert result[0].settled is True
+
+    def test_read_run_charges_batches_and_skips_an_empty_read(self, mocker: MockerFixture) -> None:
+        """More runs than one request reads go in batches, in order; no runs sends nothing."""
+        client = self._client()
+        run_ids = [f"run_{index_run}" for index_run in range(RUN_CHARGES_BATCH_SIZE + 1)]
+        send = mocker.patch.object(
+            client,
+            "_send",
+            mocker.AsyncMock(
+                side_effect=[
+                    _response(200, json_body={"items": [self._run_charges("run_0")]}),
+                    _response(200, json_body={"items": [self._run_charges(run_ids[-1])]}),
+                ]
+            ),
+        )
+
+        result = asyncio.run(client.read_run_charges(run_ids))
+
+        bodies = [json.loads(call.kwargs["content"]) for call in send.call_args_list]
+        assert [len(body["pipeline_run_ids"]) for body in bodies] == [RUN_CHARGES_BATCH_SIZE, 1]
+        assert bodies[1]["pipeline_run_ids"] == [run_ids[-1]]
+        assert [item.pipeline_run_id for item in result] == ["run_0", run_ids[-1]]
+
+        send.reset_mock()
+        assert asyncio.run(client.read_run_charges([])) == []
+        send.assert_not_called()
 
     def test_create_checkout(self, mocker: MockerFixture) -> None:
         client = self._client()
