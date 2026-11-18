@@ -1278,6 +1278,60 @@ class InvoiceView(BaseModel):
     download_url: str | None
 
 
+class InferenceCharges(BaseModel):
+    """A run's model calls, as the inference ledger charged them."""
+
+    model_config = ConfigDict(extra="allow")
+
+    #: The charges added up, in US dollars, unrounded.
+    amount: float
+    #: How many charges the gateway wrote for the run, aborted calls included.
+    calls: int
+    #: How many of those no price applied to; each charged nothing, so `amount` is then a lower bound.
+    unpriced_calls: int
+
+
+class UsageCharges(BaseModel):
+    """A run's operator pipes, as the usage ledger charged them."""
+
+    model_config = ConfigDict(extra="allow")
+
+    #: The charges added up, in usage credits, unrounded.
+    amount: float
+    #: How many pipe charges the run has.
+    pipes: int
+    #: `amount` in US dollars, at the environment's usage credits per US dollar, unrounded.
+    amount_usd: float
+
+
+class RunCharges(BaseModel):
+    """What one run was charged on both credit ledgers, and whether those figures are final — `POST /v1/billing/run-charges`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    pipeline_run_id: str
+    #: Its model calls, on the inference ledger (inference credits count US dollars).
+    inference: InferenceCharges
+    #: Its operator pipes, on the usage ledger (usage credits).
+    usage: UsageCharges
+    #: `inference.amount` plus `usage.amount_usd`, in US dollars, unrounded.
+    total_usd: float
+    #: Whether the run has ended and the platform's grace for late inference charges has passed: the figures are final.
+    settled: bool
+    #: When the figures become final; `None` exactly when `ended_at` is.
+    settles_at: str | None
+    #: When the run ended; `None` while it has not.
+    ended_at: str | None
+
+
+class RunChargesResponse(BaseModel):
+    """One item per run found, in the request's order — `POST /v1/billing/run-charges`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    items: list[RunCharges]
+
+
 class CheckoutResponse(BaseModel):
     """A Stripe checkout session URL — `POST /v1/billing/checkout`."""
 

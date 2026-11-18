@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **What a run was charged**: `read_run_charges(run_ids)` reads `POST /v1/billing/run-charges` and returns a `RunCharges` per run found, in the order given: its inference credits (`inference.amount` in US dollars, `calls`, `unpriced_calls`, a lower bound when some calls found no price), its usage credits (`usage.amount`, `pipes`, `amount_usd`), `total_usd`, and whether the figures are `settled`, with `settles_at` and `ended_at`. Any number of runs is read, `RUN_CHARGES_BATCH_SIZE` per request, a repeated id once; a run the organization does not have is left out, and a runner is refused with `403` (`docs/architecture.md`, "Billing").
+
 ## [v0.69.0] - 2026-11-16
 
 ### Added
