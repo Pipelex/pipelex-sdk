@@ -436,12 +436,12 @@ describe("a run", () => {
       env: runEnv(root),
       out: { write: (text) => (output += text) },
       packDir: packs(),
-      nodeVersion: "22.11.9",
+      nodeVersion: "22.12.9",
     });
     assert.equal(code, 1);
     assert.match(
       output,
-      /^refused: node-too-old — webapp-js needs Node 22\.12\.0 or later, and this is Node 22\.11\.9/m,
+      /^refused: node-too-old — webapp-js needs Node 22\.13\.0 or later, and this is Node 22\.12\.9/m,
     );
     assert.equal(fs.existsSync(path.join(work, "app")), false);
   });
