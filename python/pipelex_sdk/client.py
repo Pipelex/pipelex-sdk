@@ -3901,7 +3901,7 @@ class PipelexAPIClient(MthdsAPIClient):
         """Past invoices — `GET /v1/billing/invoices`."""
         return await self._request_product("GET", "billing/invoices", read=_INVOICE_LIST_ADAPTER.validate_python)
 
-    async def read_run_charges(self, run_ids: Sequence[str]) -> list[RunCharges]:
+    async def read_run_charges(self, run_ids: list[str]) -> list[RunCharges]:
         """What each run was charged on both credit ledgers — `POST /v1/billing/run-charges`.
 
         The figures are the platform's charges, read from its ledgers, never the runtime's own estimate
