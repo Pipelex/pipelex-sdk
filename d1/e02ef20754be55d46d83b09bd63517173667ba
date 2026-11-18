@@ -1,0 +1,32 @@
+python/pipelex_sdk/client.py
+  s_8d383adaea911d::t_685fd3b8da3ab5 379-380,3904-3925
+  s_8d383adaea911d::t_de487e855d9386 161-162
+  s_8d383adaea911d::t_97f261b14e6b82 3926
+python/docs/architecture.md
+  s_8d383adaea911d::t_8871bb5d434f98 289
+python/CHANGELOG.md
+  s_8d383adaea911d::t_8871bb5d434f98 3-8
+python/pipelex_sdk/product_models.py
+  s_8d383adaea911d::t_685fd3b8da3ab5 1281-1334
+python/tests/unit/test_client_product.py
+  s_8d383adaea911d::t_9f3609cb36f572 475-531
+  s_8d383adaea911d::t_de487e855d9386 17
+python/docs/run-usage.md
+  s_8d383adaea911d::t_062aaa976451a4 152-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d1e02ef20754be55d46d83b09bd63517173667ba",
+  "prompts": {},
+  "sessions": {
+    "s_8d383adaea911d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf312f0b-f0d1-4c18-82f1-5702f03005ad",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Thomas Hebrard <thomas@pipelex.com>"
+    }
+  }
+}
