@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.69.3] - 2026-11-18
+
+### Changed
+
+- **Node.js 22.13 floor**: the starter declares `engines.node` `>=22.13.0` and its README asks for Node.js 22.13+, where it said 22.12, because its lint toolchain (`eslint-visitor-keys` under `eslint-config-next`) requires 22.13, so an install on Node 22.12 printed an engine warning and failed under `engine-strict`.
+
+### Security
+
+- **Dependencies past the npm advisories outside Next.js**: the starter requires `zod` at `^4.6.6`, past its memory exhaustion while validating oversized constrained collections (GHSA-mrhx-c7xc-m3w5), and moves its development tooling to `happy-dom` `^21.0.4`, `vitest` `^4.1.12` and the Tailwind CSS packages at `^4.3.5`, while its lock takes `undici` 7.30.2 under `@pipelex/sdk`, `vite` 8.3.8 and the patched `source-map-js`, `follow-redirects`, `fast-uri` and `minimatch`. The lock still holds `picomatch` 4.0.7 and 2.3.2 under the ReDoS advisory GHSA-fc5q-39xc-vjpf, which this release leaves unaddressed; it is reached only through development tooling (`eslint-config-next`, `lint-staged`, `vitest` and `@tailwindcss/cli`).
+
 ## [v0.69.2] - 2026-11-17
 
 ### Security
