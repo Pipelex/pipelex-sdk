@@ -51,7 +51,7 @@ The page wears the branding of the organization the API key belongs to, when an 
 
 ## Prerequisites
 
-- Node.js 22.12+.
+- Node.js 22.13+.
 - Access to the **hosted Pipelex API**: sign up at [app.pipelex.com](https://app.pipelex.com) and get an API key there.
 
 ## Environment variables
