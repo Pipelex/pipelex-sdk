@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **Dependencies past the npm advisories outside Next.js**: the web app template requires `zod` at `^4.6.6`, past its memory exhaustion while validating oversized constrained collections (GHSA-mrhx-c7xc-m3w5), and moves its development tooling to `happy-dom` `^21.0.4`, `vitest` `^4.1.12` and the Tailwind CSS packages at `^4.3.5`, while its lock takes `undici` 7.30.2 under `@pipelex/sdk`, `vite` 8.3.8 and the patched `source-map-js`, `follow-redirects`, `fast-uri` and `minimatch`. `npm audit` in a new project now reports only the `picomatch` ReDoS (GHSA-fc5q-39xc-vjpf), reached through `eslint-config-next`, `lint-staged`, `vitest` and `@tailwindcss/cli` in development tooling only, for which no fixed release exists yet.
+
 ## [v0.69.2] - 2026-11-17
 
 ### Security
