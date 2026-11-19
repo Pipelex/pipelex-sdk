@@ -86,7 +86,7 @@ export interface UploadCapableClient {
 }
 
 /** The kinds an upload is recorded as, in the order the refusal of another one lists them. */
-const UPLOAD_KINDS: readonly UploadKind[] = ["uploaded", "test"];
+const UPLOAD_KINDS: readonly UploadKind[] = ["uploaded", "attachment", "test"];
 
 /** A value an upload's kind or method was given as, described for a refusal without quoting more than an id. */
 function describedArgument(value: unknown): string {
@@ -98,7 +98,7 @@ function describedArgument(value: unknown): string {
 /**
  * The `kind` and `method_id` an upload is sent with, checked as the upload route checks them, so
  * a request the route would refuse with a `422` is refused before any file is read: a `kind` is
- * `uploaded` or `test`, a `method_id` is a bare catalog id, `kind: "test"` needs one and only a
+ * `uploaded`, `attachment` or `test`, a `method_id` is a bare catalog id, `kind: "test"` needs one and only a
  * test file names one. Returns the members to send, each only when given; `null` reads as
  * absent, as it does on the route. A refusal is an `InputPreparationError` whose message opens
  * with `refusal` and names each member as `field` prefixes it, so `prepareInputs` names its
@@ -114,7 +114,7 @@ export function uploadKindFields(
   const methodId = raw.method_id ?? undefined;
   if (kind !== undefined && !(UPLOAD_KINDS as readonly unknown[]).includes(kind)) {
     throw new InputPreparationError(
-      `${refusal}: \`${field}kind\` is "uploaded" or "test", got ${describedArgument(kind)}.`,
+      `${refusal}: \`${field}kind\` is "uploaded", "attachment" or "test", got ${describedArgument(kind)}.`,
       { problem: argumentInvalidProblem(`${field}kind`, "unknown_value") },
     );
   }

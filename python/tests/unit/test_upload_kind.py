@@ -165,12 +165,16 @@ class TestUploadKind:
                 id="method-beside-uploaded",
             ),
             pytest.param(
-                "draft", None, '`kind` is "uploaded" or "test", got "draft"', {"argument": "kind", "reason": "unknown_value"}, id="unknown-kind"
+                "draft",
+                None,
+                '`kind` is "uploaded", "attachment" or "test", got "draft"',
+                {"argument": "kind", "reason": "unknown_value"},
+                id="unknown-kind",
             ),
             pytest.param(
                 FileKind.GENERATED,
                 None,
-                '`kind` is "uploaded" or "test", got "generated"',
+                '`kind` is "uploaded", "attachment" or "test", got "generated"',
                 {"argument": "kind", "reason": "unknown_value"},
                 id="generated-kind",
             ),

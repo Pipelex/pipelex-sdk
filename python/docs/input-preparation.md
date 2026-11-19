@@ -23,7 +23,7 @@ Uploads one asset and returns its upload record. It is the language-native conve
 - **Accepted sources:** `str` and `pathlib.Path` filesystem paths, and raw `bytes`. `upload_file` treats every string as a **filesystem path** — a URL handed directly to it is read as a local file and fails.
 - The URL / storage-URI **pass-through** (leaving **HTTP(S) URLs** and existing **`pipelex-storage://` URIs** untouched) is a `prepare_inputs`-level behavior (see pass-through rules below), not a feature of `upload_file` itself: `prepare_inputs` classifies each string (URL vs local path) against the declared signature *before* it reaches `upload_file`.
 - Open file objects and streams are **deferred** — they can be added later without removing anything.
-- **What the upload is recorded as:** `kind` (an `UploadKind`, `uploaded` when omitted) and, for a `test` file, the bare catalog id of the method it is for, `method_id`, such as `client.upload_file("cases/invoice.pdf", kind=UploadKind.TEST, method_id="mt_abc123")` for an input made to try a method. The pair is checked before the asset is read and sent only when given ([files.md](files.md#uploading-a-test-file)).
+- **What the upload is recorded as:** `kind` (an `UploadKind`, `uploaded` when omitted, or `attachment` for a file attached to a conversation that is not yet an input) and, for a `test` file, the bare catalog id of the method it is for, `method_id`, such as `client.upload_file("cases/invoice.pdf", kind=UploadKind.TEST, method_id="mt_abc123")` for an input made to try a method. The pair is checked before the asset is read and sent only when given ([files.md](files.md#uploading-a-test-file)).
 
 The returned **upload record** guarantees, beyond the source identity:
 

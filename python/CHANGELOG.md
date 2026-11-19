@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.69.4] - 2026-11-19
+
+### Added
+
+- **`UploadKind` and `FileKind` gain `ATTACHMENT`**: a file attached to a conversation, such as a build assistant's chat, is uploaded as `kind="attachment"` and is not an input; the platform records it as `uploaded` once a run or a method's example uses it. `upload_file` and `prepare_inputs` accept the new kind.
+
 ## [v0.69.0] - 2026-11-16
 
 ### Added

@@ -163,7 +163,7 @@ describe("listFiles", () => {
   });
 
   it("types the query and the rows as the server's contract states them", () => {
-    expectTypeOf<FileKind>().toEqualTypeOf<"uploaded" | "generated" | "test">();
+    expectTypeOf<FileKind>().toEqualTypeOf<"uploaded" | "attachment" | "generated" | "test">();
     expectTypeOf<FileOrigin["method_version"]>().toEqualTypeOf<number | "draft" | null>();
     expectTypeOf<FileOrigin["surface"]>().toEqualTypeOf<string | null>();
     expectTypeOf<ListFilesQuery["kind"]>().toEqualTypeOf<FileKind | undefined>();

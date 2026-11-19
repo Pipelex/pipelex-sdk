@@ -75,7 +75,7 @@ describe("an upload's kind and method", () => {
       method_id: "mt_abc",
     });
     expectTypeOf<UploadInput["kind"]>().toEqualTypeOf<UploadKind | undefined>();
-    expectTypeOf<UploadKind>().toEqualTypeOf<"uploaded" | "test">();
+    expectTypeOf<UploadKind>().toEqualTypeOf<"uploaded" | "attachment" | "test">();
   });
 
   it("uploadFile sends a test file's kind and method with its bytes", async () => {
