@@ -1065,9 +1065,21 @@ export async function pollUntilResult(
   const { signal } = linked;
   // The deadline, not the caller, ended the step: the wait's own timeout.
   const timedOut = (): boolean => deadline.signal.aborted && options.signal?.aborted !== true;
+  // Set once a read saw the run completed, its result still lacking the concepts that tell its
+  // texts apart: from then on the deadline ends a wait on texts, never on a run still going.
+  let completedSeen = false;
   const notFinished = (): RunTimeoutError =>
+    completedSeen
+      ? completedButNotLoaded()
+      : new RunTimeoutError(
+          `Run ${runId} did not reach a terminal state within ${timeoutMs}ms.`,
+          runId,
+          timeoutMs,
+        );
+  const completedButNotLoaded = (): RunTimeoutError =>
     new RunTimeoutError(
-      `Run ${runId} did not reach a terminal state within ${timeoutMs}ms.`,
+      `Run ${runId} completed, but its stored texts did not load within ${timeoutMs}ms; ` +
+        "read it again with getRunResult, or with loadStoredTexts: false for the wire shape.",
       runId,
       timeoutMs,
     );
@@ -1109,20 +1121,14 @@ export async function pollUntilResult(
         try {
           return await loadCompleted(state.result, { signal });
         } catch (error) {
-          if (timedOut()) {
-            throw new RunTimeoutError(
-              `Run ${runId} completed, but its stored texts did not load within ${timeoutMs}ms; ` +
-                "read it again with getRunResult, or with loadStoredTexts: false for the wire shape.",
-              runId,
-              timeoutMs,
-            );
-          }
+          if (timedOut()) throw completedButNotLoaded();
           // A result read between the runtime's writes of `main_stuff` and `output_form`: poll
           // again, a few times, before saying the result does not tell its texts apart.
           const conceptsMissing =
             error instanceof StoredTextLoadError && error.reason === CONCEPTS_MISSING_REASON;
           if (!conceptsMissing || conceptsMissingPolls >= MAX_CONCEPTS_MISSING_POLLS) throw error;
           conceptsMissingPolls += 1;
+          completedSeen = true;
         }
       }
       if (state.state === "failed") {

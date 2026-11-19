@@ -1310,6 +1310,33 @@ _BASE64_WHITESPACE = "\t\n\f\r "
 _STRIP_BASE64_WHITESPACE = str.maketrans("", "", _BASE64_WHITESPACE)
 
 
+_PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
+_PERCENT_COUNT_CHUNK = 1 << 20
+"""The characters `_percent_decoded_length` encodes at once, so its count holds a few MiB at most."""
+
+
+def _percent_decoded_length(payload: str, *, limit: int) -> int:
+    """The bytes a percent-encoded payload decodes to, without decoding or copying it whole.
+
+    Counted chunk by chunk: each chunk's UTF-8 length, less two bytes for each escape `%XX` it holds, which
+    `unquote_to_bytes` turns into one byte. A chunk is never cut inside an escape, and the count stops once it passes
+    `limit`.
+    """
+    count = 0
+    start = 0
+    while start < len(payload) and count <= limit:
+        end = min(start + _PERCENT_COUNT_CHUNK, len(payload))
+        # An escape that starts in the chunk's last two characters is kept whole in it.
+        cut = payload.rfind("%", max(start, end - 2), end)
+        if cut >= 0:
+            end = min(cut + 3, len(payload))
+        chunk = payload[start:end]
+        escapes = sum(1 for _ in _PERCENT_ESCAPE.finditer(chunk))
+        count += len(chunk.encode("utf-8", "surrogatepass")) - 2 * escapes
+        start = end
+    return count
+
+
 class _DataUrlRefusal(StrEnum):
     """Why a `data:` URL was not decoded."""
 
@@ -1348,7 +1375,7 @@ def _decode_data_url(url: str, max_bytes: int) -> bytes | _DataUrlRefusal:
             return base64.b64decode(data + "=" * (-len(data) % 4), validate=True)
         except binascii.Error:
             return _DataUrlRefusal.MALFORMED
-    if math.ceil(len(payload) / 3) > max_bytes:
+    if _percent_decoded_length(payload, limit=max_bytes) > max_bytes:
         return _DataUrlRefusal.TOO_LARGE
     decoded = unquote_to_bytes(payload)
     if len(decoded) > max_bytes:

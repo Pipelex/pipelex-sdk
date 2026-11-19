@@ -1745,6 +1745,33 @@ async function readStoredBytes(
   }
 }
 
+/**
+ * The bytes a percent-encoded payload decodes to, counted in one pass that copies nothing: an
+ * escape `%XX` is one byte and any other character its UTF-8 length, a surrogate pair four. A `%`
+ * not followed by two hex digits makes `decodeURIComponent` refuse the payload anyway. The count
+ * stops once it passes `limit`.
+ */
+function percentDecodedLength(payload: string, limit: number): number {
+  let count = 0;
+  for (let index = 0; index < payload.length && count <= limit; index += 1) {
+    const code = payload.charCodeAt(index);
+    if (code === 37) {
+      count += 1;
+      index += 2;
+    } else if (code < 0x80) {
+      count += 1;
+    } else if (code < 0x800) {
+      count += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < payload.length) {
+      count += 4;
+      index += 1;
+    } else {
+      count += 3;
+    }
+  }
+  return count;
+}
+
 /** The characters of a base64 payload that are not ASCII whitespace, counted in one pass. */
 function base64Significant(payload: string): number {
   let count = 0;
@@ -1788,8 +1815,8 @@ function decodeDataUrl(url: string, maxBytes: number): Uint8Array | "malformed" 
       return "malformed";
     }
   }
-  // A decoded byte takes at most three characters (`%XX`), so this many characters hold more.
-  if (Math.ceil(payload.length / 3) > maxBytes) return "too_large";
+  // Counted exactly before anything is decoded, so a payload over the cap is never copied.
+  if (percentDecodedLength(payload, maxBytes) > maxBytes) return "too_large";
   let bytes: Uint8Array;
   try {
     bytes = new TextEncoder().encode(decodeURIComponent(payload));

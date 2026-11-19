@@ -818,6 +818,19 @@ describe("a result that does not say which values are texts", () => {
     expect(boundary.reads).toHaveLength(MAX_CONCEPTS_MISSING_POLLS + 1);
     expect(boundary.resolved).toEqual([]);
   });
+
+  it("waitForResult says a run completed when its deadline ends the window's wait", async () => {
+    const uri = storedUri("n6");
+    const body = { ...results("my_domain.Report", { summary: reference(uri) }), output_form: null };
+    mockBoundary({ body });
+
+    const failure = await makeClient()
+      .waitForResult(RUN_ID, { intervalMs: 10_000, timeoutMs: 50 })
+      .catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(RunTimeoutError);
+    expect((failure as RunTimeoutError).message).toContain(`Run ${RUN_ID} completed`);
+  });
 });
 
 describe("a stored-text load is bounded", () => {
@@ -926,6 +939,30 @@ describe("a stored-text load is bounded", () => {
       url: "data:text/plain;base64,QUI",
     }) as unknown as RunResults;
     expect((await loadStoredTexts(makeClient(), unpadded)).main_stuff).toEqual({ text: "AB" });
+  });
+
+  it("refuses a percent-encoded data: URL whose characters decode over the cap, before decoding it", async () => {
+    const decode = vi.spyOn(globalThis, "decodeURIComponent");
+    const wire = results("native.Text", {
+      url: `data:text/plain,${"€".repeat(60)}`,
+    }) as unknown as RunResults;
+
+    const failure = await loadStoredTexts(makeClient(), wire, { maxBytes: 100 }).catch(
+      (err: unknown) => err,
+    );
+
+    expect(failure).toMatchObject({ name: "StoredTextLoadError", reason: "too_large" });
+    expect(decode).not.toHaveBeenCalled();
+  });
+
+  it("loads a percent-encoded data: URL exactly at the cap", async () => {
+    const wire = results("native.Text", {
+      url: `data:text/plain,${"%C3%A9".repeat(10)}${"a".repeat(80)}`,
+    }) as unknown as RunResults;
+
+    expect((await loadStoredTexts(makeClient(), wire, { maxBytes: 100 })).main_stuff).toEqual({
+      text: `${"é".repeat(10)}${"a".repeat(80)}`,
+    });
   });
 
   it("refuses a whitespace-wrapped data: URL over the cap before stripping it", async () => {

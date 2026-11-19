@@ -668,6 +668,16 @@ class TestStoredTexts:
         assert len(boundary.reads) == MAX_CONCEPTS_MISSING_POLLS + 1
         assert boundary.resolved == []
 
+    def test_wait_for_result_says_a_run_completed_when_its_deadline_ends_the_windows_wait(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("n6")
+        _Boundary(mocker, client, body={**_results("my_domain.Report", {"summary": _reference(uri)}), "output_form": None})
+
+        with pytest.raises(RunTimeoutError) as exc_info:
+            asyncio.run(client.wait_for_result(_RUN_ID, WaitForResultOptions(interval_seconds=10, timeout_seconds=0.05)))
+
+        assert f"Run {_RUN_ID} completed" in str(exc_info.value)
+
     # ── a load is bounded ────────────────────────────────────────────
 
     def test_refuses_texts_whose_declared_sizes_together_cross_the_total_cap_before_anything_is_sent(self, mocker: MockerFixture) -> None:
@@ -772,6 +782,23 @@ class TestStoredTexts:
             asyncio.run(load_stored_texts(_client(), wire))
 
         assert exc_info.value.reason == "unsupported_url"
+
+    def test_refuses_a_percent_encoded_data_url_whose_characters_decode_over_the_cap_without_decoding_it(self, mocker: MockerFixture) -> None:
+        decode = mocker.patch("pipelex_sdk.artifacts.unquote_to_bytes", side_effect=AssertionError("decoded"))
+        wire = RunResults.model_validate(_results("native.Text", {"url": "data:text/plain," + "€" * 60}))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(_client(), wire, LoadStoredTextsOptions(max_bytes=100)))
+
+        assert exc_info.value.reason == "too_large"
+        decode.assert_not_called()
+
+    def test_loads_a_percent_encoded_data_url_exactly_at_the_cap(self) -> None:
+        wire = RunResults.model_validate(_results("native.Text", {"url": "data:text/plain," + "%C3%A9" * 10 + "a" * 80}))
+
+        loaded = asyncio.run(load_stored_texts(_client(), wire, LoadStoredTextsOptions(max_bytes=100)))
+
+        assert loaded.main_stuff == {"text": "é" * 10 + "a" * 80}
 
     def test_refuses_a_whitespace_wrapped_data_url_over_the_cap_without_decoding_it(self, mocker: MockerFixture) -> None:
         decode = mocker.spy(base64, "b64decode")
