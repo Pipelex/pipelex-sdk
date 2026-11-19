@@ -670,6 +670,40 @@ describe("the result readers load stored texts", () => {
     expect(failure).toMatchObject({ uri, path: "$", reason: "resolve_failed", status: 404 });
   });
 
+  it("leaves no listener on the caller's signal when the resolve route fails", async () => {
+    const uri = storedUri("x3");
+    mockBoundary({ body: results("native.Text", reference(uri), TEXT_NODE) });
+    const boundaryFetch = vi.mocked(globalThis.fetch).getMockImplementation()!;
+    vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/v1/resolve-storage-url/bulk") {
+        return jsonResponse(404, { detail: "Not Found" });
+      }
+      return boundaryFetch(input, init);
+    });
+    const caller = new AbortController();
+    let attached = 0;
+    const add = caller.signal.addEventListener.bind(caller.signal);
+    const remove = caller.signal.removeEventListener.bind(caller.signal);
+    vi.spyOn(caller.signal, "addEventListener").mockImplementation((type, listener, opts) => {
+      if (type === "abort") attached += 1;
+      add(type, listener, opts);
+    });
+    vi.spyOn(caller.signal, "removeEventListener").mockImplementation((type, listener, opts) => {
+      if (type === "abort") attached -= 1;
+      remove(type, listener, opts);
+    });
+    const wire = results("native.Text", reference(uri), TEXT_NODE) as unknown as RunResults;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(
+        loadStoredTexts(makeClient(), wire, { signal: caller.signal }),
+      ).rejects.toMatchObject({ reason: "resolve_failed" });
+    }
+
+    expect(attached).toBe(0);
+  });
+
   it("refuses a stored text the store no longer holds", async () => {
     const uri = storedUri("j");
     mockBoundary({ body: results("native.Text", reference(uri), TEXT_NODE) });
@@ -892,6 +926,33 @@ describe("a stored-text load is bounded", () => {
       url: "data:text/plain;base64,QUI",
     }) as unknown as RunResults;
     expect((await loadStoredTexts(makeClient(), unpadded)).main_stuff).toEqual({ text: "AB" });
+  });
+
+  it("refuses a whitespace-wrapped data: URL over the cap before stripping it", async () => {
+    const replace = vi.spyOn(String.prototype, "replace");
+    const lines = Array.from({ length: 20 }, () => "A".repeat(76)).join("\r\n");
+    const wire = results("native.Text", {
+      url: `data:text/plain;base64,${lines}`,
+    }) as unknown as RunResults;
+
+    const failure = await loadStoredTexts(makeClient(), wire, { maxBytes: 100 }).catch(
+      (err: unknown) => err,
+    );
+
+    expect(failure).toMatchObject({ name: "StoredTextLoadError", reason: "too_large" });
+    expect(replace.mock.calls.some(([pattern]) => String(pattern).includes("\\t\\n"))).toBe(false);
+  });
+
+  it("loads a whitespace-wrapped data: URL under the cap", async () => {
+    const encoded = btoa("Wrapped inline bytes.");
+    const wrapped = `${encoded.slice(0, 8)}\r\n${encoded.slice(8, 16)}\n ${encoded.slice(16)}`;
+    const wire = results("native.Text", {
+      url: `data:text/plain;base64,${wrapped}`,
+    }) as unknown as RunResults;
+
+    expect((await loadStoredTexts(makeClient(), wire)).main_stuff).toEqual({
+      text: "Wrapped inline bytes.",
+    });
   });
 
   it("refuses a base64 payload a backtracking pattern would stall on, at once", async () => {

@@ -1495,56 +1495,59 @@ async function loadStoredTextValues(
   // settled, or the caller's abort as it is.
   const stop = new AbortController();
   const stopping = eitherSignal(stop.signal, options.signal);
-  const bounds = fetchBounds({
-    maxBytes,
-    timeoutMs: options.timeoutMs,
-    allowHttp: options.allowHttp,
-    signal: stopping.signal,
-  });
-
-  const references = urls.filter(isStorageReference);
-  const resolved = new Map<string, ResolvedArtifact>();
-  const items = await resolveForTexts(client, references, firstSite, options.signal);
-  references.forEach((uri, index) => resolved.set(uri, items[index]!));
-
-  // Every byte read counts against the load's budget, whatever the references state.
-  let held = 0;
-  const take: TakeBytes = (bytes) => {
-    held += bytes;
-    return held <= maxTotalBytes;
-  };
-
+  // Everything after the link is in its disposal scope: a setup that fails, the bulk resolve
+  // above all, must not leave a listener on a caller's long-lived signal.
+  let dispatcher: Dispatcher | null = null;
   const texts = new Map<string, unknown>();
-  const dispatcher = await dispatcherFor(bounds.timeoutMs);
-  const readOne = async (url: string): Promise<void> => {
-    const site = firstSite.get(url)!;
-    let entry = resolved.get(url);
-    // A link resolved before the reads ahead of it is resolved again just before its own read.
-    if (entry !== undefined && entry.error === null && isExpired(entry.expires_at)) {
-      [entry] = await resolveForTexts(client, [url], firstSite, stopping.signal);
-    }
-    const bytes = await readStoredBytes(site, entry, bounds, maxTotalBytes, take, dispatcher);
-    texts.set(url, decodeStoredValue(site, bytes, runId));
-  };
-  let next = 0;
   let failed = false;
   let firstFailure: unknown;
-  const worker = async (): Promise<void> => {
-    while (!failed && next < urls.length) {
-      const url = urls[next]!;
-      next += 1;
-      try {
-        await readOne(url);
-      } catch (err) {
-        if (!failed) {
-          failed = true;
-          firstFailure = err;
-          stop.abort(err);
+  try {
+    const bounds = fetchBounds({
+      maxBytes,
+      timeoutMs: options.timeoutMs,
+      allowHttp: options.allowHttp,
+      signal: stopping.signal,
+    });
+
+    const references = urls.filter(isStorageReference);
+    const resolved = new Map<string, ResolvedArtifact>();
+    const items = await resolveForTexts(client, references, firstSite, options.signal);
+    references.forEach((uri, index) => resolved.set(uri, items[index]!));
+
+    // Every byte read counts against the load's budget, whatever the references state.
+    let held = 0;
+    const take: TakeBytes = (bytes) => {
+      held += bytes;
+      return held <= maxTotalBytes;
+    };
+
+    dispatcher = await dispatcherFor(bounds.timeoutMs);
+    const readOne = async (url: string): Promise<void> => {
+      const site = firstSite.get(url)!;
+      let entry = resolved.get(url);
+      // A link resolved before the reads ahead of it is resolved again just before its own read.
+      if (entry !== undefined && entry.error === null && isExpired(entry.expires_at)) {
+        [entry] = await resolveForTexts(client, [url], firstSite, stopping.signal);
+      }
+      const bytes = await readStoredBytes(site, entry, bounds, maxTotalBytes, take, dispatcher);
+      texts.set(url, decodeStoredValue(site, bytes, runId));
+    };
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (!failed && next < urls.length) {
+        const url = urls[next]!;
+        next += 1;
+        try {
+          await readOne(url);
+        } catch (err) {
+          if (!failed) {
+            failed = true;
+            firstFailure = err;
+            stop.abort(err);
+          }
         }
       }
-    }
-  };
-  try {
+    };
     await Promise.all(Array.from({ length: Math.min(concurrency, urls.length) }, worker));
   } finally {
     stopping.dispose();
@@ -1742,6 +1745,17 @@ async function readStoredBytes(
   }
 }
 
+/** The characters of a base64 payload that are not ASCII whitespace, counted in one pass. */
+function base64Significant(payload: string): number {
+  let count = 0;
+  for (let index = 0; index < payload.length; index += 1) {
+    const code = payload.charCodeAt(index);
+    // Tab, line feed, form feed, carriage return and space: what forgiving-base64 drops.
+    if (code !== 9 && code !== 10 && code !== 12 && code !== 13 && code !== 32) count += 1;
+  }
+  return count;
+}
+
 /**
  * A `data:` URL's bytes, base64 or percent-encoded; `"malformed"` when it does not decode, and
  * `"too_large"` when its bytes would be over `maxBytes`, told from the payload's length before
@@ -1758,6 +1772,9 @@ function decodeDataUrl(url: string, maxBytes: number): Uint8Array | "malformed" 
   const header = url.slice("data:".length, comma);
   const payload = url.slice(comma + 1);
   if (/;base64$/i.test(header)) {
+    // Refused from a count that copies nothing before the whitespace is stripped, so a payload
+    // over the cap is never copied: at most two of the characters counted are padding.
+    if (Math.floor(((base64Significant(payload) - 2) * 3) / 4) > maxBytes) return "too_large";
     let data = payload.replace(/[\t\n\f\r ]+/g, "");
     if (data.length % 4 === 0 && data.endsWith("=")) {
       data = data.slice(0, data.endsWith("==") ? -2 : -1);
