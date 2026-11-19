@@ -1,0 +1,27 @@
+js/docs/architecture.md
+  s_20466492cd539d::t_90a35deab3fcee 177
+js/docs/files.md
+  s_20466492cd539d::t_39f29feaa78f74 17,72,247,263
+js/docs/input-preparation.md
+  s_20466492cd539d::t_7e7cafca5000af 66
+python/docs/files.md
+  s_20466492cd539d::t_9d28cb8dad30e6 17,267,286
+python/docs/input-preparation.md
+  s_20466492cd539d::t_48908d990c77bd 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cd54755b6d74d044866302197ff8f524c2eea2f1",
+  "prompts": {},
+  "sessions": {
+    "s_20466492cd539d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4243fe99-6b2a-49af-ba95-8c0fb1e4dc61",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Thomas Hebrard <thomas@pipelex.com>"
+    }
+  }
+}
