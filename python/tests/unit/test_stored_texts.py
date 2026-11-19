@@ -2,6 +2,8 @@ import asyncio
 import base64
 import json
 import time
+from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -11,19 +13,29 @@ import pytest
 from mthds.protocol.input_form import InputFormItem, ListItem
 from pydantic import TypeAdapter
 from pytest_mock import MockerFixture
+from typing_extensions import override
 
-from pipelex_sdk.artifact_models import BULK_RESOLVE_MAX_URIS, ArtifactScope, DownloadArtifactsOptions, DownloadedKind, StoredTextLocation
+from pipelex_sdk.artifact_models import (
+    BULK_RESOLVE_MAX_URIS,
+    STORED_TEXT_CONCEPTS_MISSING,
+    ArtifactScope,
+    DownloadArtifactsOptions,
+    DownloadedKind,
+    LoadStoredTextsOptions,
+    StoredTextLocation,
+)
 from pipelex_sdk.artifacts import (
     artifact_filename,
     collect_artifacts,
     download_artifacts,
+    lacks_stored_text_concepts,
     load_stored_texts,
     locate_artifacts,
     locate_stored_references,
 )
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import RunTimeoutError, StoredTextLoadError
-from pipelex_sdk.runs import RunArtifact, RunResultCompleted, RunResults, WaitForResultOptions
+from pipelex_sdk.runs import MAX_CONCEPTS_MISSING_POLLS, RunArtifact, RunResultCompleted, RunResults, WaitForResultOptions
 from pipelex_sdk.stored_texts import (
     STORED_TEXT_CONCEPT_REFS,
     StoredTextKind,
@@ -41,6 +53,12 @@ _SCOPE = "pipelex-storage://org/method/run-stored/generated"
 _NODE: TypeAdapter[InputFormItem] = TypeAdapter(InputFormItem)
 
 _TEXT_NODE: dict[str, Any] = {"kind": "prose", "concept_ref": "native.Text", "required": True}
+_REPORT_NODE: dict[str, Any] = {
+    "kind": "object",
+    "concept_ref": "my_domain.Report",
+    "required": True,
+    "fields": [{"kind": "prose", "name": "summary", "concept_ref": "native.Text", "required": True}],
+}
 _DOSSIER_NODE: dict[str, Any] = {
     "kind": "object",
     "concept_ref": "my_domain.Dossier",
@@ -107,12 +125,18 @@ class _Boundary:
         client: PipelexAPIClient,
         *,
         body: dict[str, Any],
+        bodies: list[dict[str, Any]] | None = None,
         objects: dict[str, bytes] | None = None,
         refusals: dict[str, dict[str, Any]] | None = None,
+        expires_at: Callable[[str, int], str] | None = None,
     ) -> None:
         self.body = body
+        # The bodies successive reads of `main_stuff` answer, the last one answering every read past them.
+        self.bodies = bodies or [body]
+        self.main_reads = 0
         self.objects = objects or {}
         self.refusals = refusals or {}
+        self.expires_at = expires_at
         self.reads: list[str | None] = []
         self.resolved: list[list[str]] = []
         self.fetched: list[str] = []
@@ -133,16 +157,19 @@ class _Boundary:
             if selection is not None:
                 narrowed = {name: self.body[name] for name in ("pipeline_run_id", *selection.split(",")) if name in self.body}
                 return httpx.Response(200, json=narrowed, request=request)
-            return httpx.Response(200, json=self.body, request=request)
+            answered = self.bodies[min(self.main_reads, len(self.bodies) - 1)]
+            self.main_reads += 1
+            return httpx.Response(200, json=answered, request=request)
         if parts.path == "/v1/resolve-storage-url/bulk":
             uris: list[str] = json.loads(kwargs["content"])["uris"]
+            call = len(self.resolved)
             self.resolved.append(uris)
             items = [
                 self.refusals.get(uri)
                 or {
                     "uri": uri,
                     "url": f"{_STORE}/{quote(uri, safe='')}?sig=1",
-                    "expires_at": "2099-01-01T00:00:00Z",
+                    "expires_at": self.expires_at(uri, call) if self.expires_at else "2099-01-01T00:00:00Z",
                     "content_type": "text/plain",
                     "error": None,
                 }
@@ -576,9 +603,187 @@ class TestStoredTexts:
         assert loaded.main_stuff == {"text": "Inline bytes."}
         assert boundary.resolved == []
 
-    def test_returns_a_result_whose_concepts_are_unknown_as_it_is(self) -> None:
-        wire = RunResults.model_validate({"pipeline_run_id": _RUN_ID, "main_stuff": _reference(_stored_uri("v"))})
+    def test_returns_a_result_whose_concepts_are_unknown_as_it_is_when_nothing_looks_like_a_stored_text(self) -> None:
+        wire = RunResults.model_validate({"pipeline_run_id": _RUN_ID, "main_stuff": {"text": "Inline."}})
         assert asyncio.run(load_stored_texts(_client(), wire)) is wire
+
+    # ── a result that does not say which values are texts ────────────
+
+    def test_fails_a_result_without_a_working_memory_rather_than_handing_on_its_reference(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("n1")
+        boundary = _Boundary(mocker, client, body={})
+        wire = RunResults.model_validate({"pipeline_run_id": _RUN_ID, "main_stuff": {"summary": _reference(uri)}})
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(client, wire))
+
+        assert exc_info.value.reason == STORED_TEXT_CONCEPTS_MISSING
+        assert exc_info.value.path == "$.summary"
+        assert exc_info.value.uri == uri
+        assert "working_memory" in str(exc_info.value)
+        assert boundary.resolved == []
+
+    def test_fails_a_structured_output_whose_output_form_is_not_written(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("n2")
+        body = {**_results("my_domain.Report", {"summary": _reference(uri)}), "output_form": None}
+        boundary = _Boundary(mocker, client, body=body)
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID))
+
+        assert exc_info.value.reason == "concepts_missing"
+        assert exc_info.value.path == "$.summary"
+        assert "output_form" in str(exc_info.value)
+        assert boundary.resolved == []
+        assert lacks_stored_text_concepts(RunResults.model_validate(body)) is True
+
+    def test_needs_no_form_for_a_native_concept(self) -> None:
+        body = {**_results("native.Text", _reference(_stored_uri("n3"))), "output_form": None}
+        assert lacks_stored_text_concepts(RunResults.model_validate(body)) is False
+
+    def test_wait_for_result_waits_through_the_window_where_the_output_form_is_not_yet_written(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("n4")
+        described = _results("my_domain.Report", {"summary": _reference(uri)}, _REPORT_NODE)
+        boundary = _Boundary(mocker, client, body=described, bodies=[{**described, "output_form": None}, described], objects={uri: b"The summary."})
+
+        result = asyncio.run(client.wait_for_result(_RUN_ID, WaitForResultOptions(interval_seconds=0.001, timeout_seconds=5)))
+
+        assert result.main_stuff == {"summary": {"text": "The summary."}}
+        assert boundary.reads == [None, None]
+        assert boundary.resolved == [[uri]]
+
+    def test_wait_for_result_fails_once_the_output_form_never_arrives(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("n5")
+        body = {**_results("my_domain.Report", {"summary": _reference(uri)}), "output_form": None}
+        boundary = _Boundary(mocker, client, body=body)
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.wait_for_result(_RUN_ID, WaitForResultOptions(interval_seconds=0.001, timeout_seconds=5)))
+
+        assert exc_info.value.reason == "concepts_missing"
+        assert len(boundary.reads) == MAX_CONCEPTS_MISSING_POLLS + 1
+        assert boundary.resolved == []
+
+    # ── a load is bounded ────────────────────────────────────────────
+
+    def test_refuses_texts_whose_declared_sizes_together_cross_the_total_cap_before_anything_is_sent(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uris = [_stored_uri(digest) for digest in ("t1", "t2", "t3")]
+        boundary = _Boundary(mocker, client, body={})
+        wire = RunResults.model_validate(_results("native.Text", {"items": [_reference(uri) for uri in uris]}))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(client, wire, LoadStoredTextsOptions(max_total_bytes=10_000)))
+
+        assert exc_info.value.reason == "total_limit_exceeded"
+        assert exc_info.value.path == "$.items[2]"
+        assert "total limit" in str(exc_info.value)
+        assert boundary.resolved == []
+        assert boundary.fetched == []
+
+    def test_refuses_a_text_whose_declared_size_is_over_the_cap_on_one_text(self, mocker: MockerFixture) -> None:
+        client = _client()
+        boundary = _Boundary(mocker, client, body={})
+        wire = RunResults.model_validate(_results("native.Text", _reference(_stored_uri("t4"))))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(client, wire, LoadStoredTextsOptions(max_bytes=1_000)))
+
+        assert exc_info.value.reason == "too_large"
+        assert exc_info.value.path == "$"
+        assert boundary.resolved == []
+
+    def test_fails_the_load_once_the_bytes_read_together_cross_the_total_cap_stopping_every_read(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uris = [_stored_uri(digest) for digest in ("u1", "u2", "u3")]
+        _Boundary(mocker, client, body={})
+        closed: list[str] = []
+
+        class _Endless(httpx.AsyncByteStream):
+            """Sends its bytes, then nothing more, never ending on its own."""
+
+            def __init__(self, uri: str) -> None:
+                self.uri = uri
+
+            @override
+            async def __aiter__(self) -> AsyncIterator[bytes]:
+                # One whole chunk of the SDK's reads, so it reaches the load before the stream stalls.
+                yield b"a" * 64 * 1024
+                await asyncio.sleep(30)
+
+            @override
+            async def aclose(self) -> None:
+                closed.append(self.uri)
+
+        def _endless_store(timeout_seconds: float) -> httpx.AsyncClient:
+            def answer(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(200, stream=_Endless(unquote(request.url.path.removeprefix("/"))))
+
+            return httpx.AsyncClient(transport=httpx.MockTransport(answer), timeout=httpx.Timeout(timeout_seconds))
+
+        mocker.patch("pipelex_sdk.artifacts._new_storage_client", _endless_store)
+        # Each reference understates its size: only the bytes read tell.
+        wire = RunResults.model_validate(_results("native.Text", {"items": [{**_reference(uri), "size": 1} for uri in uris]}))
+        started = time.monotonic()
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(client, wire, LoadStoredTextsOptions(max_total_bytes=150_000)))
+
+        assert exc_info.value.reason == "total_limit_exceeded"
+        assert time.monotonic() - started < 5
+        assert sorted(closed) == sorted(uris)
+
+    def test_refuses_a_data_url_over_the_cap_without_decoding_it(self, mocker: MockerFixture) -> None:
+        decode = mocker.spy(base64, "b64decode")
+        wire = RunResults.model_validate(_results("native.Text", {"url": "data:text/plain;base64," + "A" * 400, "size": 1}))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(_client(), wire, LoadStoredTextsOptions(max_bytes=100)))
+
+        assert exc_info.value.reason == "too_large"
+        decode.assert_not_called()
+
+    def test_refuses_a_percent_encoded_data_url_over_the_cap_without_decoding_it(self) -> None:
+        wire = RunResults.model_validate(_results("native.Text", {"url": "data:text/plain," + "a" * 400}))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(_client(), wire, LoadStoredTextsOptions(max_bytes=100)))
+
+        assert exc_info.value.reason == "too_large"
+
+    def test_counts_a_data_urls_bytes_against_the_total_cap(self) -> None:
+        payload = base64.b64encode(b"x" * 600).decode()
+        items = [{"url": f"data:text/plain;base64,{payload}"}, {"url": f"data:text/plain;base64,{payload}eA=="}]
+        wire = RunResults.model_validate(_results("native.Text", {"items": items}))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(_client(), wire, LoadStoredTextsOptions(max_total_bytes=1_000, concurrency=1)))
+
+        assert exc_info.value.reason == "total_limit_exceeded"
+        assert exc_info.value.path == "$.items[1]"
+
+    # ── a link about to expire ───────────────────────────────────────
+
+    def test_resolves_a_link_again_when_it_expires_before_its_read_starts(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("e1")
+
+        def expires_at(_uri: str, call: int) -> str:
+            return (datetime.now(UTC) + (timedelta(seconds=-1) if call == 0 else timedelta(minutes=15))).isoformat()
+
+        boundary = _Boundary(
+            mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE), objects={uri: b"Fresh."}, expires_at=expires_at
+        )
+
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID)))
+
+        assert result.main_stuff == {"text": "Fresh."}
+        assert boundary.resolved == [[uri], [uri]]
+        assert len(boundary.fetched) == 1
 
     # ── the walkers tell stored texts from files ─────────────────────
 

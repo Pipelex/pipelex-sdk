@@ -34,9 +34,11 @@ import json
 import math
 import os
 import re
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypeAlias, cast
 from urllib.parse import unquote, unquote_to_bytes, urlsplit
@@ -53,6 +55,7 @@ from pipelex_sdk._answer_json import dumps_as_javascript
 from pipelex_sdk.artifact_models import (
     BULK_RESOLVE_MAX_URIS,
     PIPELEX_STORAGE_SCHEME,
+    STORED_TEXT_CONCEPTS_MISSING,
     ArtifactItemError,
     ArtifactLocation,
     ArtifactScope,
@@ -87,6 +90,8 @@ from pipelex_sdk.stored_texts import (
     STORED_TEXT_VALUE_FIELDS,
     StoredTextKind,
     child_node,
+    describes_concept,
+    main_stuff_concept_ref,
     main_stuff_node,
     stored_text_kind_of_node,
     working_memory_node,
@@ -939,22 +944,37 @@ async def load_stored_texts(
 
     Which values are stored texts is decided by concept, never by URL or MIME type: the concept at each path comes
     from the run's working memory and output form (`pipelex_sdk.stored_texts.main_stuff_node`), so the results must
-    carry them; a result that carries neither is returned as it is. A `pipelex-storage://` reference is resolved
-    through the platform's bulk route, at most `BULK_RESOLVE_MAX_URIS` per request, and its signed link fetched under
-    the same bounds as `fetch_artifact`, and a `data:` URL is decoded. A stored text under any other URL
+    carry them. A result that cannot say (no working memory naming the main stuff, or a concept of the method's own
+    that no form describes) is returned as it is when nothing in `main_stuff` is shaped like a stored text's reference;
+    when something is, it raises `StoredTextLoadError` with the reason `concepts_missing` rather than hand a reference
+    on where a text is promised (`lacks_stored_text_concepts`). The runtime writes `output_form` after `main_stuff`, so
+    a read can land in between: `wait_for_result` keeps polling through that window for a few polls before it raises.
+
+    A `pipelex-storage://` reference is resolved through the platform's bulk route, at most `BULK_RESOLVE_MAX_URIS` per
+    request, and its signed link fetched under the same bounds as `fetch_artifact`; a link within ten seconds of its
+    `expires_at` when its read is about to start, having waited behind the other reads, is resolved again first. A
+    `data:` URL is decoded, its size bounded from its length before it is. A stored text under any other URL
     (`is_loadable_stored_text_url`) is refused before anything is sent, since fetching it would read a host the method
     chose rather than the caller; a result read with `load_stored_texts=False` keeps it as written. The bytes are UTF-8
     by the standard's rule, and a JSON value is the object they serialize.
+
+    Each text is bounded by `options.max_bytes` (100 MiB by default) and the load as a whole by
+    `options.max_total_bytes` (256 MiB by default), both checked first against the sizes the references state, before
+    anything is sent, then as the bytes arrive; the first text that fails stops every other read in flight.
 
     The result passed in is never changed: a new one is returned, or the same one when there is nothing to load.
 
     Raises:
         StoredTextLoadError: Naming the text that could not be loaded, where it sits and why, a whole-request failure of
-            the resolve route included (`resolve_failed`, the route's error as its cause).
+            the resolve route included (`resolve_failed`, the route's error as its cause), the load's total over
+            `max_total_bytes` as `total_limit_exceeded`, and a result that does not say which values are texts as
+            `concepts_missing`.
         ArtifactOperationError: For nonsense bounds.
     """
     if results.main_stuff is None:
         return results
+    if lacks_stored_text_concepts(results):
+        raise _concepts_missing_error(results)
     node = main_stuff_node(results)
     if node is None:
         return results
@@ -987,6 +1007,64 @@ def may_hold_stored_texts(value: Any) -> bool:
     return any(may_hold_stored_texts(entry) for entry in fields.values())
 
 
+def lacks_stored_text_concepts(results: RunResults) -> bool:
+    """Whether a completed result cannot say which values of its `main_stuff` are stored texts while something there
+    is shaped like one's reference (`may_hold_stored_texts`).
+
+    The working memory names no main stuff, or its concept is the method's own and no `output_form` / `input_form`
+    node describes it, so a text in one of its fields could not be told from any other value. A native concept needs no
+    form: the walk knows its shape. The runtime writes `output_form` after `main_stuff`, so a read can land in between;
+    `load_stored_texts` then raises `StoredTextLoadError` (`concepts_missing`) rather than hand a reference on.
+    """
+    if results.main_stuff is None or not may_hold_stored_texts(results.main_stuff):
+        return False
+    concept_ref = main_stuff_concept_ref(results)
+    if concept_ref is None:
+        return True
+    return not describes_concept(concept_ref, results)
+
+
+def _concepts_missing_error(results: RunResults) -> StoredTextLoadError:
+    """The `concepts_missing` failure, naming the first value shaped like a stored text's reference."""
+    shaped = _first_reference_shape(results.main_stuff, ())
+    segments, url = shaped or ((), "")
+    path = _render_path(segments)
+    msg = (
+        f"The stored text at {path} could not be loaded: the result does not say which of its values are stored texts "
+        "(its working_memory or its output_form is missing), so none is handed on as its reference; read the result "
+        "again in a moment, or with load_stored_texts=False to see it as written."
+    )
+    problem = response_unreadable_problem(status=200, pipeline_run_id=results.pipeline_run_id)
+    return StoredTextLoadError(msg, uri=url, path=path, reason=STORED_TEXT_CONCEPTS_MISSING, problem=problem)
+
+
+def _first_reference_shape(value: Any, segments: tuple[_PathSegment, ...]) -> tuple[tuple[_PathSegment, ...], str] | None:
+    """The first value `may_hold_stored_texts` answers for, depth first, with where it sits and its `url`."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    if isinstance(value, (list, tuple)):
+        for index_item, item in enumerate(cast("list[Any]", value)):
+            found = _first_reference_shape(item, (*segments, index_item))
+            if found is not None:
+                return found
+        return None
+    if not isinstance(value, dict):
+        return None
+    fields = cast("dict[str, Any]", value)
+    url = fields.get("url")
+    if (
+        isinstance(url, str)
+        and all(fields.get(field_name) is None for field_name in STORED_TEXT_VALUE_FIELDS)
+        and ("size" in fields or "preview" in fields)
+    ):
+        return segments, url
+    for key, entry in fields.items():
+        found = _first_reference_shape(entry, (*segments, key))
+        if found is not None:
+            return found
+    return None
+
+
 def carries_concept_artifacts(selection: Sequence[RunArtifact] | None) -> bool:
     """Whether a results read narrowed to `selection` carried every artifact the concept at each path is read from:
     the working memory and both forms. `None`, a read of every artifact, does.
@@ -1017,6 +1095,11 @@ async def with_concept_artifacts(
     return results.model_copy(update=concepts)
 
 
+#: Takes a count of bytes from the load's budget of `max_total_bytes`, answering whether the load's texts together are
+#: still within it.
+_TakeBytes: TypeAlias = Callable[[int], bool]
+
+
 async def _load_stored_text_values(
     client: BulkResolveClient,
     value: Any,
@@ -1032,17 +1115,42 @@ async def _load_stored_text_values(
     if options.concurrency < 1:
         msg = f'"concurrency" must be a positive integer, got {options.concurrency}.'
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument="concurrency", reason="not_positive"))
+    _require_positive("max_total_bytes", options.max_total_bytes)
     bounds = _validated_bounds(
         FetchArtifactOptions(max_bytes=options.max_bytes, timeout_seconds=options.timeout_seconds, allow_http=options.allow_http)
     )
+    max_total_bytes = options.max_total_bytes
 
     # One read per distinct URL, named by the first place it was found.
     first_site: dict[str, _StoredTextSite] = {}
     for site in sites:
         first_site.setdefault(site.url, site)
     urls = list(first_site)
+
+    # Refused before anything is sent: a text whose reference states a size over the cap on one text, and texts whose
+    # stated sizes together are over the load's cap.
+    declared_total = 0
+    for url in urls:
+        site = first_site[url]
+        size = site.reference.get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            continue
+        if size > bounds.max_bytes:
+            raise _over_text_cap(site, bounds.max_bytes, size=size)
+        declared_total += size
+        if declared_total > max_total_bytes:
+            raise _over_load_cap(site, max_total_bytes)
+
     references = [url for url in urls if is_storage_reference(url)]
     resolved = dict(zip(references, await _resolve_for_texts(client, references, first_site), strict=True))
+
+    # Every byte read counts against the load's budget, whatever the references state.
+    held = 0
+
+    def take(byte_count: int) -> bool:
+        nonlocal held
+        held += byte_count
+        return held <= max_total_bytes
 
     texts: dict[str, Any] = {}
     semaphore = asyncio.Semaphore(options.concurrency)
@@ -1051,18 +1159,46 @@ async def _load_stored_text_values(
     async def load_one(url: str) -> None:
         async with semaphore:
             site = first_site[url]
-            raw = await _read_stored_bytes(storage_client, site, resolved.get(url), bounds)
+            entry = resolved.get(url)
+            # A link resolved before the reads ahead of it is resolved again just before its own read.
+            if entry is not None and entry.error is None and _is_expired(entry.expires_at):
+                entry = (await _resolve_for_texts(client, [url], first_site))[0]
+            raw = await _read_stored_bytes(storage_client, site, entry, bounds, max_total_bytes=max_total_bytes, take=take)
             texts[url] = _decode_stored_value(site, raw, run_id=run_id)
 
+    # The first failure stops every other read, those waiting and those in flight, and is raised once they have all
+    # settled; a cancellation of the load cancels them the same way.
+    tasks = [asyncio.create_task(load_one(url)) for url in urls]
     try:
-        await asyncio.gather(*[load_one(url) for url in urls])
+        for finished in asyncio.as_completed(tasks):
+            await finished
     finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await storage_client.aclose()
 
     loaded = copy.deepcopy(value.model_dump() if isinstance(value, BaseModel) else value)
     for site in sites:
         loaded = _replace_at(loaded, site.segments, _loaded_form(site, texts[site.url]))
     return loaded
+
+
+def _over_text_cap(site: _StoredTextSite, max_bytes: int, *, size: int | None = None) -> StoredTextLoadError:
+    """A stored text over the cap on one text; `size` when its reference or its length states it."""
+    over = f"over the {_format_mib(max_bytes)} cap."
+    stated = over if size is None else f"{_format_mib(size)}, {over}"
+    msg = f"The stored text at {site.path} could not be loaded: it is {stated}"
+    return StoredTextLoadError(msg, uri=site.url, path=site.path, reason="too_large", problem=_over_the_cap(max_bytes))
+
+
+def _over_load_cap(site: _StoredTextSite, max_total_bytes: int) -> StoredTextLoadError:
+    """A stored text that takes the load's texts together over `max_total_bytes`."""
+    msg = (
+        f"The stored text at {site.path} could not be loaded: with the texts loaded before it, the load is over its "
+        f"{_format_mib(max_total_bytes)} total limit (max_total_bytes)."
+    )
+    return StoredTextLoadError(msg, uri=site.url, path=site.path, reason="total_limit_exceeded", problem=_over_the_cap(max_total_bytes))
 
 
 async def _resolve_for_texts(client: BulkResolveClient, references: list[str], first_site: dict[str, _StoredTextSite]) -> list[ResolvedArtifact]:
@@ -1126,18 +1262,26 @@ async def _read_stored_bytes(
     site: _StoredTextSite,
     resolved: ResolvedArtifact | None,
     bounds: _FetchBounds,
+    *,
+    max_total_bytes: int,
+    take: _TakeBytes,
 ) -> bytes:
-    """The bytes of one stored text: a reference's signed link fetched, or a `data:` URL decoded. Nothing else is read."""
+    """The bytes of one stored text: a reference's signed link fetched, or a `data:` URL decoded. Nothing else is read.
+
+    Every chunk is taken from the load's budget as it arrives, and the read is cut once the budget is crossed.
+    """
     if site.url.startswith("data:"):
-        decoded = _decode_data_url(site.url)
-        if decoded is None:
-            msg = f"The stored text at {site.path} could not be loaded: its data URL does not decode."
-            raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="unsupported_url")
-        if len(decoded) > bounds.max_bytes:
-            size = _format_mib(len(decoded))
-            msg = f"The stored text at {site.path} could not be loaded: it is {size}, over the {_format_mib(bounds.max_bytes)} cap."
-            raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="too_large", problem=_over_the_cap(bounds.max_bytes))
-        return decoded
+        decoded = _decode_data_url(site.url, bounds.max_bytes)
+        match decoded:
+            case _DataUrlRefusal.MALFORMED:
+                msg = f"The stored text at {site.path} could not be loaded: its data URL does not decode."
+                raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="unsupported_url")
+            case _DataUrlRefusal.TOO_LARGE:
+                raise _over_text_cap(site, bounds.max_bytes)
+            case bytes():
+                if not take(len(decoded)):
+                    raise _over_load_cap(site, max_total_bytes)
+                return decoded
     if resolved is None:
         # Unreachable: the walk admits only a reference or a data: URL, and every reference is resolved first.
         msg = f"The stored text at {site.path} could not be loaded: its url was not resolved by the platform."
@@ -1148,25 +1292,50 @@ async def _read_stored_bytes(
     if resolved.url is None:
         msg = f"The stored text at {site.path} could not be loaded: the bulk resolve route answered its item with neither a link nor an error."
         raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="resolve_failed", problem=response_unreadable_problem(status=200))
+    parts: list[bytes] = []
     try:
         async with _stream_resolved_url(storage_client, site.url, resolved.url, bounds) as stream:
-            return await stream.read()
+            async for chunk in stream.aiter_bytes():
+                if not take(len(chunk)):
+                    raise _over_load_cap(site, max_total_bytes)
+                parts.append(chunk)
     except ArtifactFetchError as exc:
         msg = f"The stored text at {site.path} could not be loaded: {exc}"
         raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=exc.reason, status=exc.status, problem=exc.problem) from exc
+    return b"".join(parts)
 
 
-def _decode_data_url(url: str) -> bytes | None:
-    """A `data:` URL's bytes, base64 or percent-encoded, or `None` when it is no data URL."""
+class _DataUrlRefusal(StrEnum):
+    """Why a `data:` URL was not decoded."""
+
+    MALFORMED = "malformed"
+    TOO_LARGE = "too_large"
+
+
+def _decode_data_url(url: str, max_bytes: int) -> bytes | _DataUrlRefusal:
+    """A `data:` URL's bytes, base64 or percent-encoded.
+
+    `MALFORMED` when it does not decode, and `TOO_LARGE` when its bytes would be over `max_bytes`, told from the
+    payload's length before anything is decoded: a base64 payload decodes to three bytes per four characters, less its
+    padding, and a percent-encoded byte takes at most three characters.
+    """
     header, separator, payload = url.removeprefix("data:").partition(",")
     if not separator:
-        return None
+        return _DataUrlRefusal.MALFORMED
     if header.lower().endswith(";base64"):
+        padding = len(payload) - len(payload.rstrip("="))
+        if len(payload) * 3 // 4 - min(padding, 2) > max_bytes:
+            return _DataUrlRefusal.TOO_LARGE
         try:
             return base64.b64decode(payload, validate=True)
         except binascii.Error:
-            return None
-    return unquote_to_bytes(payload)
+            return _DataUrlRefusal.MALFORMED
+    if math.ceil(len(payload) / 3) > max_bytes:
+        return _DataUrlRefusal.TOO_LARGE
+    decoded = unquote_to_bytes(payload)
+    if len(decoded) > max_bytes:
+        return _DataUrlRefusal.TOO_LARGE
+    return decoded
 
 
 def _decode_stored_value(site: _StoredTextSite, raw: bytes, *, run_id: str | None) -> Any:

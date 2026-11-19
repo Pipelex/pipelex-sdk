@@ -15,9 +15,11 @@ import type { InputFormItem, InputFormTopLevelField, OutputForm } from "mthds/pr
 import { PipelexApiClient } from "../src/client.js";
 import {
   BULK_RESOLVE_MAX_URIS,
+  STORED_TEXT_CONCEPTS_MISSING,
   collectArtifacts,
   downloadArtifacts,
   artifactFilename,
+  lacksStoredTextConcepts,
   loadStoredTexts,
   locateArtifacts,
   locateStoredReferences,
@@ -32,6 +34,7 @@ import {
   storedTextKindOfNode,
   workingMemoryNode,
 } from "../src/stored-texts.js";
+import { MAX_CONCEPTS_MISSING_POLLS } from "../src/runs.js";
 import type { RunResults, RunResultState } from "../src/runs.js";
 import * as sdk from "../src/index.js";
 
@@ -95,12 +98,19 @@ interface Boundary {
  */
 function mockBoundary(options: {
   body: Record<string, unknown>;
+  /** The bodies successive reads of `main_stuff` answer, the last one answering every read past them. */
+  bodies?: Record<string, unknown>[];
   conceptsBody?: Record<string, unknown>;
   objects?: Record<string, string | Uint8Array>;
+  /** A store body per reference, built afresh for each fetch, in place of its `objects` bytes. */
+  streams?: Record<string, () => ReadableStream<Uint8Array>>;
   refusals?: Record<string, ResolvedArtifact>;
   stallStore?: boolean;
+  /** The `expires_at` of each resolved link, by reference and the resolve call it is in (from 0). */
+  expiresAt?: (uri: string, call: number) => string;
 }): Boundary {
   const boundary: Boundary = { resolved: [], reads: [], fetched: [] };
+  let mainReads = 0;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     if (url.pathname === `/v1/runs/${RUN_ID}/results`) {
@@ -112,17 +122,22 @@ function mockBoundary(options: {
         for (const name of selection.split(",")) picked[name] = concepts[name] ?? null;
         return jsonResponse(200, picked);
       }
-      return jsonResponse(200, options.body);
+      const bodies = options.bodies ?? [options.body];
+      const answered = bodies[Math.min(mainReads, bodies.length - 1)]!;
+      mainReads += 1;
+      return jsonResponse(200, answered);
     }
     if (url.pathname === "/v1/resolve-storage-url/bulk") {
       const { uris } = JSON.parse(String(init?.body)) as { uris: string[] };
+      const call = boundary.resolved.length;
       boundary.resolved.push(uris);
       const items = uris.map(
         (uri) =>
           options.refusals?.[uri] ?? {
             uri,
             url: `${STORE}/${encodeURIComponent(uri)}?sig=1`,
-            expires_at: new Date(Date.now() + 900_000).toISOString(),
+            expires_at:
+              options.expiresAt?.(uri, call) ?? new Date(Date.now() + 900_000).toISOString(),
             content_type: "text/plain",
             error: null,
           },
@@ -138,6 +153,8 @@ function mockBoundary(options: {
         });
       }
       const uri = decodeURIComponent(url.pathname.slice(1));
+      const stream = options.streams?.[uri];
+      if (stream !== undefined) return new Response(stream(), { status: 200 });
       const object = options.objects?.[uri];
       if (object === undefined) return new Response(null, { status: 404 });
       const bytes = typeof object === "string" ? new TextEncoder().encode(object) : object;
@@ -690,9 +707,233 @@ describe("loadStoredTexts", () => {
     expect(boundary.resolved).toEqual([]);
   });
 
-  it("returns a result whose concepts are unknown as it is", async () => {
-    const wire = { pipeline_run_id: RUN_ID, main_stuff: reference(storedUri("l")) };
+  it("returns a result whose concepts are unknown as it is when nothing in it looks like a stored text", async () => {
+    const wire = { pipeline_run_id: RUN_ID, main_stuff: { text: "Inline." } };
     expect(await loadStoredTexts(makeClient(), wire)).toBe(wire);
+  });
+});
+
+describe("a result that does not say which values are texts", () => {
+  const REPORT_FIELD: InputFormItem = {
+    kind: "object",
+    concept_ref: "my_domain.Report",
+    required: true,
+    fields: [{ kind: "prose", name: "summary", concept_ref: "native.Text", required: true }],
+  };
+
+  it("fails a result without a working memory rather than handing on its reference", async () => {
+    const uri = storedUri("n1");
+    const boundary = mockBoundary({ body: {} });
+    const wire = { pipeline_run_id: RUN_ID, main_stuff: { summary: reference(uri) } };
+
+    const failure = await loadStoredTexts(makeClient(), wire).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    expect(failure).toMatchObject({ reason: STORED_TEXT_CONCEPTS_MISSING, path: "$.summary", uri });
+    expect((failure as StoredTextLoadError).message).toContain("working_memory");
+    expect(boundary.resolved).toEqual([]);
+  });
+
+  it("fails a structured output whose output form is not written rather than handing on its texts", async () => {
+    const uri = storedUri("n2");
+    const body = { ...results("my_domain.Report", { summary: reference(uri) }), output_form: null };
+    const boundary = mockBoundary({ body });
+
+    const failure = await makeClient()
+      .getRunResult(RUN_ID)
+      .catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    expect(failure).toMatchObject({ reason: "concepts_missing", path: "$.summary" });
+    expect((failure as StoredTextLoadError).message).toContain("output_form");
+    expect(boundary.resolved).toEqual([]);
+    expect(lacksStoredTextConcepts(body as unknown as RunResults)).toBe(true);
+  });
+
+  it("needs no form for a native concept", () => {
+    const body = { ...results("native.Text", reference(storedUri("n3"))), output_form: null };
+    expect(lacksStoredTextConcepts(body as unknown as RunResults)).toBe(false);
+  });
+
+  it("waitForResult waits through the window where the output form is not yet written", async () => {
+    const uri = storedUri("n4");
+    const described = results("my_domain.Report", { summary: reference(uri) }, REPORT_FIELD);
+    const boundary = mockBoundary({
+      body: described,
+      bodies: [{ ...described, output_form: null }, described],
+      objects: { [uri]: "The summary." },
+    });
+
+    const result = await makeClient().waitForResult(RUN_ID, { intervalMs: 1 });
+
+    expect(result.main_stuff).toEqual({ summary: { text: "The summary." } });
+    expect(boundary.reads).toEqual([null, null]);
+    expect(boundary.resolved).toEqual([[uri]]);
+  });
+
+  it("waitForResult fails once the output form never arrives", async () => {
+    const uri = storedUri("n5");
+    const body = { ...results("my_domain.Report", { summary: reference(uri) }), output_form: null };
+    const boundary = mockBoundary({ body });
+
+    const failure = await makeClient()
+      .waitForResult(RUN_ID, { intervalMs: 1 })
+      .catch((err: unknown) => err);
+
+    expect(failure).toMatchObject({ name: "StoredTextLoadError", reason: "concepts_missing" });
+    expect(boundary.reads).toHaveLength(MAX_CONCEPTS_MISSING_POLLS + 1);
+    expect(boundary.resolved).toEqual([]);
+  });
+});
+
+describe("a stored-text load is bounded", () => {
+  it("refuses texts whose declared sizes together cross the total cap, before anything is sent", async () => {
+    const uris = ["t1", "t2", "t3"].map((hash) => storedUri(hash));
+    const boundary = mockBoundary({ body: {} });
+    const wire = results("native.Text", {
+      items: uris.map((uri) => reference(uri)),
+    }) as unknown as RunResults;
+
+    const failure = await loadStoredTexts(makeClient(), wire, { maxTotalBytes: 10_000 }).catch(
+      (err: unknown) => err,
+    );
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    expect(failure).toMatchObject({ reason: "total_limit_exceeded", path: "$.items[2]" });
+    expect((failure as StoredTextLoadError).message).toContain("total limit");
+    expect(boundary.resolved).toEqual([]);
+    expect(boundary.fetched).toEqual([]);
+  });
+
+  it("refuses a text whose declared size is over the cap on one text, before anything is sent", async () => {
+    const uri = storedUri("t4");
+    const boundary = mockBoundary({ body: {} });
+    const wire = results("native.Text", reference(uri)) as unknown as RunResults;
+
+    const failure = await loadStoredTexts(makeClient(), wire, { maxBytes: 1_000 }).catch(
+      (err: unknown) => err,
+    );
+
+    expect(failure).toMatchObject({ name: "StoredTextLoadError", reason: "too_large", path: "$" });
+    expect(boundary.resolved).toEqual([]);
+  });
+
+  it("fails the load once the bytes read together cross the total cap, stopping every read", async () => {
+    const uris = ["u1", "u2", "u3"].map((hash) => storedUri(hash));
+    const cancelled: string[] = [];
+    // Sends its bytes, then nothing more, never ending on its own.
+    const endless = (uri: string) => (): ReadableStream<Uint8Array> =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(4_000).fill(0x61));
+        },
+        cancel() {
+          cancelled.push(uri);
+        },
+      });
+    mockBoundary({
+      body: {},
+      streams: Object.fromEntries(uris.map((uri) => [uri, endless(uri)])),
+    });
+    // Each reference understates its size: only the bytes read tell.
+    const wire = results("native.Text", {
+      items: uris.map((uri) => ({ ...reference(uri), size: 1 })),
+    }) as unknown as RunResults;
+
+    const failure = await loadStoredTexts(makeClient(), wire, { maxTotalBytes: 10_000 }).catch(
+      (err: unknown) => err,
+    );
+
+    expect(failure).toMatchObject({ name: "StoredTextLoadError", reason: "total_limit_exceeded" });
+    expect([...cancelled].sort()).toEqual([...uris].sort());
+  });
+
+  it("refuses a data: URL over the cap without decoding it", async () => {
+    const decode = vi.spyOn(globalThis, "atob");
+    const wire = results("native.Text", {
+      url: `data:text/plain;base64,${"A".repeat(400)}`,
+      size: 1,
+    }) as unknown as RunResults;
+
+    const failure = await loadStoredTexts(makeClient(), wire, { maxBytes: 100 }).catch(
+      (err: unknown) => err,
+    );
+
+    expect(failure).toMatchObject({ name: "StoredTextLoadError", reason: "too_large" });
+    expect(decode).not.toHaveBeenCalled();
+  });
+
+  it("counts a data: URL's bytes against the total cap", async () => {
+    const payload = btoa("x".repeat(600));
+    const wire = results("native.Text", {
+      items: [
+        { url: `data:text/plain;base64,${payload}` },
+        { url: `data:text/plain;base64,${payload}` + "eA==" },
+      ],
+    }) as unknown as RunResults;
+
+    const failure = await loadStoredTexts(makeClient(), wire, {
+      maxTotalBytes: 1_000,
+      concurrency: 1,
+    }).catch((err: unknown) => err);
+
+    expect(failure).toMatchObject({ reason: "total_limit_exceeded", path: "$.items[1]" });
+  });
+
+  it("refuses malformed base64 rather than decoding it truncated, and accepts unpadded base64 as atob does", async () => {
+    const malformed = results("native.Text", {
+      url: "data:text/plain;base64,QUJDa",
+    }) as unknown as RunResults;
+    await expect(loadStoredTexts(makeClient(), malformed)).rejects.toMatchObject({
+      reason: "unsupported_url",
+    });
+
+    const unpadded = results("native.Text", {
+      url: "data:text/plain;base64,QUI",
+    }) as unknown as RunResults;
+    expect((await loadStoredTexts(makeClient(), unpadded)).main_stuff).toEqual({ text: "AB" });
+  });
+
+  it("refuses a base64 payload a backtracking pattern would stall on, at once", async () => {
+    const wire = results("native.Text", {
+      url: `data:text/plain;base64,A${" ".repeat(200_000)}!`,
+    }) as unknown as RunResults;
+    const startedAt = Date.now();
+
+    await expect(loadStoredTexts(makeClient(), wire)).rejects.toMatchObject({
+      reason: "unsupported_url",
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+});
+
+describe("a stored text's link about to expire", () => {
+  it("is resolved again just before its read", async () => {
+    const uri = storedUri("e1");
+    const boundary = mockBoundary({
+      body: results("native.Text", reference(uri), TEXT_NODE),
+      objects: { [uri]: "Fresh." },
+      expiresAt: (_uri, call) =>
+        new Date(Date.now() + (call === 0 ? -1_000 : 900_000)).toISOString(),
+    });
+
+    const result = await completedResult(makeClient().getRunResult(RUN_ID));
+
+    expect(result.main_stuff).toEqual({ text: "Fresh." });
+    expect(boundary.resolved).toEqual([[uri], [uri]]);
+    expect(boundary.fetched).toHaveLength(1);
+  });
+
+  it("is read at once while it is still fresh", async () => {
+    const uri = storedUri("e2");
+    const boundary = mockBoundary({
+      body: results("native.Text", reference(uri), TEXT_NODE),
+      objects: { [uri]: "Fresh." },
+    });
+
+    await completedResult(makeClient().getRunResult(RUN_ID));
+
+    expect(boundary.resolved).toEqual([[uri]]);
   });
 });
 

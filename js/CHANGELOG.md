@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`maxTotalBytes` on `loadStoredTexts`**: one load of a result's stored texts is bounded as a whole, 256 MiB by default (`DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES`), checked against the sizes the references state before anything is sent and then counted as the bytes arrive, so a list of long texts throws `StoredTextLoadError` with the reason `total_limit_exceeded` instead of exhausting the process; each text's own `maxBytes` is now also checked against its stated size first, and a `data:` URL's decoded size is bounded from its length before it is decoded (`docs/run-results.md`).
+
+### Fixed
+
+- **A result that does not say which values are texts no longer hands their references on**: when `working_memory` names no main stuff, or the main stuff's concept is the method's own and no form describes it, while `main_stuff` holds something shaped like a stored text's reference, `loadStoredTexts` and the result readers throw `StoredTextLoadError` with the reason `concepts_missing` instead of returning `{ url, size, mime_type, preview }` where a text was promised; `waitForResult` and `startAndWaitForResult` first poll again a few times, since the runtime writes `output_form` after `main_stuff`. `lacksStoredTextConcepts` and `STORED_TEXT_CONCEPTS_MISSING` are exported.
+- **A stored text's link about to expire is resolved again before its read**: a load of many texts no longer fails with a storage refusal when a text's turn comes after its signed link has expired; a link within ten seconds of its `expires_at` is resolved again first, and the first text that fails stops the other reads in flight.
+
 ## [v0.69.4] - 2026-11-19
 
 ### Added

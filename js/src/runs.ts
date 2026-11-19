@@ -7,6 +7,7 @@ import {
   argumentInvalidProblem,
   RunLifecycleUnavailableError,
   RunTimeoutError,
+  StoredTextLoadError,
 } from "./errors.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
 import { eitherSignal } from "./signals.js";
@@ -928,7 +929,9 @@ export interface WaitForResultOptions {
    * but whose texts did not load in the time the wait had left throws `RunTimeoutError` saying so,
    * and `getRunResult` reads it again. `startAndWaitForResult`'s blocking fallback honours it too,
    * a failed load there throwing `StoredTextLoadError` with the completed result on its
-   * `wireResults`.
+   * `wireResults`. A completed result that does not yet say which of its values are stored texts
+   * (its `output_form`, which the runtime writes after `main_stuff`, not yet there) is polled
+   * again a few times before the wait throws `StoredTextLoadError` (`concepts_missing`).
    */
   loadStoredTexts?: boolean;
 }
@@ -963,6 +966,16 @@ export interface StartAndWaitForResultOptions extends WaitForResultOptions {
 
 export const DEFAULT_POLL_INTERVAL_MS = 2_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 1_200_000; // 20 min — matches the runner's blocking execute ceiling.
+
+/**
+ * How many polls the wait makes for a completed result that does not yet say which of its values
+ * are stored texts (`StoredTextLoadError` with the reason `concepts_missing`) before it throws that
+ * error: the runtime writes `output_form` after `main_stuff`, so a read can land in between.
+ */
+export const MAX_CONCEPTS_MISSING_POLLS = 5;
+
+/** The reason `loadStoredTexts` throws for a result missing its concepts (`STORED_TEXT_CONCEPTS_MISSING`). */
+const CONCEPTS_MISSING_REASON = "concepts_missing";
 
 /** A single result lookup — the primitive the poll loop drives. */
 export type FetchResultOnce = (
@@ -1021,6 +1034,11 @@ export function assertWaitOptions(options: WaitForResultOptions = {}): void {
  * a route-absent `404` (`RunLifecycleUnavailableError`) stops the progress reads for the rest of
  * the wait; the caller's abort still ends the wait.
  *
+ * A completed result that does not yet say which of its values are stored texts, the load
+ * throwing `StoredTextLoadError` with the reason `concepts_missing`, is read again after the
+ * interval, at most {@link MAX_CONCEPTS_MISSING_POLLS} times, since the runtime writes
+ * `output_form` after `main_stuff`; past that, the error is thrown.
+ *
  * The single owner of the wait/poll/Retry-After/abort logic — `PipelexApiClient.waitForResult`
  * delegates here, so the behavior can never drift.
  */
@@ -1060,6 +1078,7 @@ export async function pollUntilResult(
     // No progress request at all unless the caller asked for progress.
     let readsProgress = onProgress !== undefined && fetchProgress !== undefined;
     let delivered: RunProgress | undefined;
+    let conceptsMissingPolls = 0;
 
     for (;;) {
       throwIfAborted(options.signal);
@@ -1098,14 +1117,24 @@ export async function pollUntilResult(
               timeoutMs,
             );
           }
-          throw error;
+          // A result read between the runtime's writes of `main_stuff` and `output_form`: poll
+          // again, a few times, before saying the result does not tell its texts apart.
+          const conceptsMissing =
+            error instanceof StoredTextLoadError && error.reason === CONCEPTS_MISSING_REASON;
+          if (!conceptsMissing || conceptsMissingPolls >= MAX_CONCEPTS_MISSING_POLLS) throw error;
+          conceptsMissingPolls += 1;
         }
       }
       if (state.state === "failed") {
         throw new RunFailedError(state.message, runId, state.status, { problem: state.problem });
       }
 
-      if (readsProgress && onProgress !== undefined && fetchProgress !== undefined) {
+      if (
+        state.state === "running" &&
+        readsProgress &&
+        onProgress !== undefined &&
+        fetchProgress !== undefined
+      ) {
         let progress: RunProgress | undefined;
         try {
           progress = await fetchProgress(runId, { signal });
@@ -1127,7 +1156,10 @@ export async function pollUntilResult(
       attempt += 1;
       options.onPoll?.({ attempt, elapsedMs });
 
-      const retryMs = state.retry_after_seconds != null ? state.retry_after_seconds * 1000 : 0;
+      const retryMs =
+        state.state === "running" && state.retry_after_seconds != null
+          ? state.retry_after_seconds * 1000
+          : 0;
       const waitMs = Math.min(Math.max(intervalMs, retryMs), timeoutMs - elapsedMs);
       try {
         await sleep(waitMs, signal);

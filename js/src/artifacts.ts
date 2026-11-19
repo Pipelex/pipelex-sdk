@@ -44,11 +44,14 @@ import type { Problem } from "mthds/protocol";
 import type { GetRunResultOptions, RunResultArtifact, RunResults, RunResultState } from "./runs.js";
 import { absenceCause, loadNodeHost } from "./node-host.js";
 import { MAX_TIMER_DELAY_MS, isTimerDelay } from "./timers.js";
+import { eitherSignal } from "./signals.js";
 import type { InputFormItem } from "mthds/protocol";
 import {
   STORED_TEXT_REFERENCE_FIELDS,
   STORED_TEXT_VALUE_FIELD,
   childNode,
+  describesConcept,
+  mainStuffConceptRef,
   mainStuffNode,
   storedTextKindOfNode,
   workingMemoryNode,
@@ -1211,13 +1214,36 @@ function formatMiB(bytes: number): string {
  */
 export const DEFAULT_STORED_TEXT_MAX_BYTES = 100 * 1024 * 1024;
 
+/**
+ * The cap on the bytes of all the stored texts of one load together. Every loaded value is held
+ * until the load ends, as bytes and then as a string that can take twice as many, so the load
+ * itself must be bounded, not only each text: 256 MiB leaves room for two texts at the per-text
+ * cap while keeping what one load holds to a few hundred MiB of the process's memory.
+ */
+export const DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+
 /** How many stored texts one load reads at once. */
 export const DEFAULT_STORED_TEXT_CONCURRENCY = 8;
 
+/**
+ * The `StoredTextLoadError` reason of a result that cannot say which of its values are stored
+ * texts ({@link lacksStoredTextConcepts}); `waitForResult` keeps polling through it for a while.
+ */
+export const STORED_TEXT_CONCEPTS_MISSING = "concepts_missing";
+
 /** The bounds `loadStoredTexts` applies. Every one has a safe default. */
 export interface LoadStoredTextsOptions {
-  /** Refuse a stored text over this many bytes, before and while reading it. Default 100 MiB. */
+  /**
+   * Refuse a stored text over this many bytes: against the size its reference states before
+   * anything is sent, then while reading it. Default 100 MiB.
+   */
   maxBytes?: number;
+  /**
+   * Refuse the load once its stored texts together cross this many bytes: against the sizes their
+   * references state before anything is sent, then counted as the bytes arrive, every read in
+   * flight then stopped. Default 256 MiB ({@link DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES}).
+   */
+  maxTotalBytes?: number;
   /** Budget for each text's exchange — connect, headers and body. Default 120 s. */
   timeoutMs?: number;
   /** Accept a plain `http:` link, as the local stack's object store hands out. Off by default. */
@@ -1245,19 +1271,34 @@ interface StoredTextSite {
  *
  * Which values are stored texts is decided by concept, never by URL or MIME type: the concept at
  * each path comes from the run's working memory and output form ({@link mainStuffNode}), so the
- * results must carry them; a result that carries neither is returned as it is. A
- * `pipelex-storage://` reference is resolved through the platform's bulk route, at most
+ * results must carry them. A result that cannot say (no working memory naming the main stuff, or
+ * a concept of the method's own that no form describes) is returned as it is when nothing in
+ * `main_stuff` is shaped like a stored text's reference; when something is, it throws
+ * `StoredTextLoadError` with the reason `concepts_missing` rather than hand a reference on where a
+ * text is promised ({@link lacksStoredTextConcepts}). The runtime writes `output_form` after
+ * `main_stuff`, so a read can land in between: `waitForResult` keeps polling through that window
+ * for a few polls before it throws.
+ *
+ * A `pipelex-storage://` reference is resolved through the platform's bulk route, at most
  * {@link BULK_RESOLVE_MAX_URIS} per request, and its signed link fetched under the same bounds as
- * `fetchArtifact`, and a `data:` URL is decoded. A stored text under any other URL
+ * `fetchArtifact`; a link within ten seconds of its `expires_at` when its read is about to start,
+ * having waited behind the other reads, is resolved again first. A `data:` URL is decoded, its
+ * size bounded from its length before it is. A stored text under any other URL
  * ({@link isLoadableStoredTextUrl}) is refused before anything is sent, since fetching it would
  * read a host the method chose rather than the caller; a result read with
  * `loadStoredTexts: false` keeps it as written. The bytes are UTF-8 by the standard's rule, and a
  * JSON value is the object they serialize.
  *
+ * Each text is bounded by `maxBytes` (100 MiB by default) and the load as a whole by
+ * `maxTotalBytes` (256 MiB by default), both checked first against the sizes the references state,
+ * before anything is sent, then as the bytes arrive; the first text that fails stops every other
+ * read in flight.
+ *
  * The result passed in is never changed: a new one is returned, or the same one when there is
  * nothing to load. Throws `StoredTextLoadError` naming the text that could not be loaded, where it
  * sits and why, a whole-request failure of the resolve route included (`resolve_failed`, the
- * route's error as its `cause`), and lets the caller's abort through.
+ * route's error as its `cause`), the load's total over `maxTotalBytes` as
+ * `total_limit_exceeded`, and lets the caller's abort through.
  */
 export async function loadStoredTexts(
   client: Pick<ArtifactCapableClient, "resolveStorageUrls">,
@@ -1265,6 +1306,7 @@ export async function loadStoredTexts(
   options: LoadStoredTextsOptions = {},
 ): Promise<RunResults> {
   if (results.main_stuff == null) return results;
+  if (lacksStoredTextConcepts(results)) throw conceptsMissingError(results);
   const node = mainStuffNode(results);
   if (node === null) return results;
   const loaded = await loadStoredTextValues(
@@ -1331,6 +1373,67 @@ export function mayHoldStoredTexts(value: unknown): boolean {
 }
 
 /**
+ * Whether a completed result cannot say which values of its `main_stuff` are stored texts while
+ * something there is shaped like one's reference ({@link mayHoldStoredTexts}): the working memory
+ * names no main stuff, or its concept is the method's own and no `output_form` / `input_form` node
+ * describes it, so a text in one of its fields could not be told from any other value. A native
+ * concept needs no form: the walk knows its shape. The runtime writes `output_form` after
+ * `main_stuff`, so a read can land in between; {@link loadStoredTexts} then throws
+ * `StoredTextLoadError` (`concepts_missing`) rather than hand a reference on.
+ */
+export function lacksStoredTextConcepts(
+  results: ConceptSource & { main_stuff?: unknown },
+): boolean {
+  if (results.main_stuff == null || !mayHoldStoredTexts(results.main_stuff)) return false;
+  const conceptRef = mainStuffConceptRef(results);
+  if (conceptRef === null) return true;
+  return !describesConcept(conceptRef, results);
+}
+
+/** The `concepts_missing` failure, naming the first value shaped like a stored text's reference. */
+function conceptsMissingError(results: RunResults): StoredTextLoadError {
+  const shaped = firstReferenceShape(results.main_stuff);
+  const path = renderPath(shaped?.segments ?? []);
+  return new StoredTextLoadError(
+    `The stored text at ${path} could not be loaded: the result does not say which of its values ` +
+      "are stored texts (its working_memory or its output_form is missing), so none is handed on " +
+      "as its reference; read the result again in a moment, or with loadStoredTexts: false to see " +
+      "it as written.",
+    { uri: shaped?.url ?? "", path, reason: STORED_TEXT_CONCEPTS_MISSING },
+    { problem: responseUnreadableProblem(200, results.pipeline_run_id) },
+  );
+}
+
+/** The first value {@link mayHoldStoredTexts} answers for, depth first, with where it sits. */
+function firstReferenceShape(
+  value: unknown,
+  segments: PathSegment[] = [],
+): { segments: PathSegment[]; url: string } | null {
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      const found = firstReferenceShape(entry, [...segments, index]);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const fields = value as Record<string, unknown>;
+  const url = fields["url"];
+  if (
+    typeof url === "string" &&
+    Object.values(STORED_TEXT_VALUE_FIELD).every((field) => fields[field] == null) &&
+    ("size" in fields || "preview" in fields)
+  ) {
+    return { segments, url };
+  }
+  for (const [key, entry] of Object.entries(fields)) {
+    const found = firstReferenceShape(entry, [...segments, key]);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/**
  * Whether a results read narrowed to `selection` carried every artifact the concept at each path
  * is read from: the working memory and both forms. `undefined`, a read of every artifact, does.
  */
@@ -1341,6 +1444,12 @@ export function carriesConceptArtifacts(
     selection === undefined || CONCEPT_ARTIFACTS.every((artifact) => selection.includes(artifact))
   );
 }
+
+/**
+ * Takes `bytes` from the load's budget of `maxTotalBytes`, answering whether the load's texts
+ * together are still within it.
+ */
+type TakeBytes = (bytes: number) => boolean;
 
 /** `value` with its stored texts loaded, walked with `node`; `value` itself when it holds none. */
 async function loadStoredTextValues(
@@ -1359,24 +1468,114 @@ async function loadStoredTextValues(
       { problem: argumentInvalidProblem("concurrency", "not_positive") },
     );
   }
-  const bounds = fetchBounds({
-    maxBytes: options.maxBytes ?? DEFAULT_STORED_TEXT_MAX_BYTES,
-    timeoutMs: options.timeoutMs,
-    allowHttp: options.allowHttp,
-    signal: options.signal,
-  });
+  const maxTotalBytes = options.maxTotalBytes ?? DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES;
+  requirePositive("maxTotalBytes", maxTotalBytes);
+  const maxBytes = options.maxBytes ?? DEFAULT_STORED_TEXT_MAX_BYTES;
+  requirePositive("maxBytes", maxBytes);
 
   // One read per distinct URL, named by the first place it was found.
   const firstSite = new Map<string, StoredTextSite>();
   for (const site of sites) if (!firstSite.has(site.url)) firstSite.set(site.url, site);
   const urls = [...firstSite.keys()];
+
+  // Refused before anything is sent: a text whose reference states a size over the cap on one
+  // text, and texts whose stated sizes together are over the load's cap.
+  let declaredTotal = 0;
+  for (const url of urls) {
+    const site = firstSite.get(url)!;
+    const size = site.reference["size"];
+    if (typeof size !== "number" || !(size > 0)) continue;
+    if (size > maxBytes) throw overTextCap(site, maxBytes, size);
+    declaredTotal += size;
+    if (declaredTotal > maxTotalBytes) throw overLoadCap(site, maxTotalBytes);
+  }
+
+  // The first failure stops new reads from starting and stops the reads in flight, through one
+  // signal linked with the caller's; the load then throws that first failure once every read has
+  // settled, or the caller's abort as it is.
+  const stop = new AbortController();
+  const stopping = eitherSignal(stop.signal, options.signal);
+  const bounds = fetchBounds({
+    maxBytes,
+    timeoutMs: options.timeoutMs,
+    allowHttp: options.allowHttp,
+    signal: stopping.signal,
+  });
+
   const references = urls.filter(isStorageReference);
   const resolved = new Map<string, ResolvedArtifact>();
-  let items: ResolvedArtifact[];
+  const items = await resolveForTexts(client, references, firstSite, options.signal);
+  references.forEach((uri, index) => resolved.set(uri, items[index]!));
+
+  // Every byte read counts against the load's budget, whatever the references state.
+  let held = 0;
+  const take: TakeBytes = (bytes) => {
+    held += bytes;
+    return held <= maxTotalBytes;
+  };
+
+  const texts = new Map<string, unknown>();
+  const dispatcher = await dispatcherFor(bounds.timeoutMs);
+  const readOne = async (url: string): Promise<void> => {
+    const site = firstSite.get(url)!;
+    let entry = resolved.get(url);
+    // A link resolved before the reads ahead of it is resolved again just before its own read.
+    if (entry !== undefined && entry.error === null && isExpired(entry.expires_at)) {
+      [entry] = await resolveForTexts(client, [url], firstSite, stopping.signal);
+    }
+    const bytes = await readStoredBytes(site, entry, bounds, maxTotalBytes, take, dispatcher);
+    texts.set(url, decodeStoredValue(site, bytes, runId));
+  };
+  let next = 0;
+  let failed = false;
+  let firstFailure: unknown;
+  const worker = async (): Promise<void> => {
+    while (!failed && next < urls.length) {
+      const url = urls[next]!;
+      next += 1;
+      try {
+        await readOne(url);
+      } catch (err) {
+        if (!failed) {
+          failed = true;
+          firstFailure = err;
+          stop.abort(err);
+        }
+      }
+    }
+  };
   try {
-    items = await resolveArtifacts(client, references, { signal: options.signal });
-  } catch (err) {
+    await Promise.all(Array.from({ length: Math.min(concurrency, urls.length) }, worker));
+  } finally {
+    stopping.dispose();
+    void dispatcher?.close().catch(() => undefined);
+  }
+  if (failed) {
     if (options.signal?.aborted === true) throw options.signal.reason;
+    throw firstFailure;
+  }
+
+  let loaded: unknown = structuredClone(value);
+  for (const site of sites) {
+    loaded = replaceAt(loaded, site.segments, loadedForm(site, texts.get(site.url)));
+  }
+  return loaded;
+}
+
+/**
+ * The bulk resolve of stored texts' references, a whole-request failure being the first text's
+ * `StoredTextLoadError` (`resolve_failed`); the caller's abort goes through as it is.
+ */
+async function resolveForTexts(
+  client: Pick<ArtifactCapableClient, "resolveStorageUrls">,
+  references: string[],
+  firstSite: ReadonlyMap<string, StoredTextSite>,
+  signal: AbortSignal | undefined,
+): Promise<ResolvedArtifact[]> {
+  try {
+    return await resolveArtifacts(client, references, { signal });
+  } catch (err) {
+    if (signal?.aborted === true) throw signal.reason;
     // A whole-request failure of the route, a bare runner's 404 among them, is the first text's.
     const site = firstSite.get(references[0]!)!;
     const path = renderPath(site.segments);
@@ -1392,33 +1591,29 @@ async function loadStoredTextValues(
       { cause: err, problem: err instanceof ProblemError ? err.problem : undefined },
     );
   }
-  references.forEach((uri, index) => resolved.set(uri, items[index]!));
+}
 
-  const texts = new Map<string, unknown>();
-  const dispatcher = await dispatcherFor(bounds.timeoutMs);
-  try {
-    let next = 0;
-    const worker = async (): Promise<void> => {
-      for (;;) {
-        const index = next;
-        next += 1;
-        if (index >= urls.length) return;
-        const url = urls[index]!;
-        const site = firstSite.get(url)!;
-        const bytes = await readStoredBytes(site, resolved.get(url), bounds, dispatcher);
-        texts.set(url, decodeStoredValue(site, bytes, runId));
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, urls.length) }, worker));
-  } finally {
-    void dispatcher?.close().catch(() => undefined);
-  }
+/** A stored text over the cap on one text; `size` when its reference or its length states it. */
+function overTextCap(site: StoredTextSite, maxBytes: number, size?: number): StoredTextLoadError {
+  const path = renderPath(site.segments);
+  const over = `over the ${formatMiB(maxBytes)} cap.`;
+  return new StoredTextLoadError(
+    `The stored text at ${path} could not be loaded: it is ` +
+      (size === undefined ? over : `${formatMiB(size)}, ${over}`),
+    { uri: site.url, path, reason: "too_large" },
+    { problem: downloadLimitProblem(maxBytes) },
+  );
+}
 
-  let loaded: unknown = structuredClone(value);
-  for (const site of sites) {
-    loaded = replaceAt(loaded, site.segments, loadedForm(site, texts.get(site.url)));
-  }
-  return loaded;
+/** A stored text that takes the load's texts together over `maxTotalBytes`. */
+function overLoadCap(site: StoredTextSite, maxTotalBytes: number): StoredTextLoadError {
+  const path = renderPath(site.segments);
+  return new StoredTextLoadError(
+    `The stored text at ${path} could not be loaded: with the texts loaded before it, the load ` +
+      `is over its ${formatMiB(maxTotalBytes)} total limit (maxTotalBytes).`,
+    { uri: site.url, path, reason: "total_limit_exceeded" },
+    { problem: downloadLimitProblem(maxTotalBytes) },
+  );
 }
 
 /**
@@ -1471,11 +1666,17 @@ function findStoredTexts(value: unknown, node: InputFormItem): StoredTextSite[] 
   return sites;
 }
 
-/** The bytes of one stored text: a reference's signed link fetched, or a `data:` URL decoded. Nothing else is read. */
+/**
+ * The bytes of one stored text: a reference's signed link fetched, or a `data:` URL decoded.
+ * Nothing else is read. Every chunk is taken from the load's budget as it arrives, and the read
+ * is cut once the budget is crossed.
+ */
 async function readStoredBytes(
   site: StoredTextSite,
   resolved: ResolvedArtifact | undefined,
   bounds: FetchBounds,
+  maxTotalBytes: number,
+  take: TakeBytes,
   dispatcher: Dispatcher | null,
 ): Promise<Uint8Array> {
   const path = renderPath(site.segments);
@@ -1491,17 +1692,10 @@ async function readStoredBytes(
     );
   };
   if (site.url.startsWith("data:")) {
-    const bytes = decodeDataUrl(site.url);
-    if (bytes === null) return fail("unsupported_url", "its data URL does not decode.");
-    if (bytes.byteLength > bounds.maxBytes) {
-      return fail(
-        "too_large",
-        `it is ${formatMiB(bytes.byteLength)}, over the ${formatMiB(bounds.maxBytes)} cap.`,
-        {
-          problem: downloadLimitProblem(bounds.maxBytes),
-        },
-      );
-    }
+    const bytes = decodeDataUrl(site.url, bounds.maxBytes);
+    if (bytes === "malformed") return fail("unsupported_url", "its data URL does not decode.");
+    if (bytes === "too_large") throw overTextCap(site, bounds.maxBytes);
+    if (!take(bytes.byteLength)) throw overLoadCap(site, maxTotalBytes);
     return bytes;
   }
   // Unreachable: the walk admits only a reference or a data: URL, and every reference is resolved first.
@@ -1510,10 +1704,32 @@ async function readStoredBytes(
   }
   if (resolved.error !== null) return fail(resolved.error.code, resolved.error.detail);
   const link = resolved.url;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     const response = await fetchResolvedUrl(site.url, link, bounds, dispatcher, () => undefined);
-    return new Uint8Array(await response.arrayBuffer());
+    if (response.body === null) return new Uint8Array(0);
+    reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (!take(chunk.value.byteLength)) {
+        await reader.cancel().catch(() => undefined);
+        throw overLoadCap(site, maxTotalBytes);
+      }
+      chunks.push(chunk.value);
+      total += chunk.value.byteLength;
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
   } catch (err) {
+    if (err instanceof StoredTextLoadError) throw err;
     if (bounds.signal?.aborted === true) throw bounds.signal.reason;
     if (err instanceof ArtifactFetchError) {
       return fail(err.reason, err.message, {
@@ -1526,21 +1742,44 @@ async function readStoredBytes(
   }
 }
 
-/** A `data:` URL's bytes, base64 or percent-encoded, or `null` when it is no data URL. */
-function decodeDataUrl(url: string): Uint8Array | null {
+/**
+ * A `data:` URL's bytes, base64 or percent-encoded; `"malformed"` when it does not decode, and
+ * `"too_large"` when its bytes would be over `maxBytes`, told from the payload's length before
+ * anything is decoded.
+ *
+ * Base64 is read as `atob` reads it (the WHATWG forgiving-base64 decode): ASCII whitespace
+ * dropped, at most two `=` of padding when the length is a multiple of four, then a length that is
+ * not one past a multiple of four and nothing outside the alphabet. Every test is one linear pass,
+ * never a pattern a method's payload could drive into backtracking.
+ */
+function decodeDataUrl(url: string, maxBytes: number): Uint8Array | "malformed" | "too_large" {
   const comma = url.indexOf(",");
-  if (comma < 0) return null;
+  if (comma < 0) return "malformed";
   const header = url.slice("data:".length, comma);
   const payload = url.slice(comma + 1);
-  try {
-    if (/;base64$/i.test(header)) {
-      const binary = atob(payload);
-      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  if (/;base64$/i.test(header)) {
+    let data = payload.replace(/[\t\n\f\r ]+/g, "");
+    if (data.length % 4 === 0 && data.endsWith("=")) {
+      data = data.slice(0, data.endsWith("==") ? -2 : -1);
     }
-    return new TextEncoder().encode(decodeURIComponent(payload));
-  } catch {
-    return null;
+    if (data.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(data)) return "malformed";
+    if (Math.floor((data.length * 3) / 4) > maxBytes) return "too_large";
+    try {
+      const binary = atob(data);
+      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    } catch {
+      return "malformed";
+    }
   }
+  // A decoded byte takes at most three characters (`%XX`), so this many characters hold more.
+  if (Math.ceil(payload.length / 3) > maxBytes) return "too_large";
+  let bytes: Uint8Array;
+  try {
+    bytes = new TextEncoder().encode(decodeURIComponent(payload));
+  } catch {
+    return "malformed";
+  }
+  return bytes.byteLength > maxBytes ? "too_large" : bytes;
 }
 
 /** The value one stored text holds: its UTF-8 text, or for a JSON value the object that text serializes. */

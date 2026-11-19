@@ -838,6 +838,12 @@ class PollInfo:
     elapsed_seconds: float
 
 
+#: How many polls `wait_for_result` makes for a completed result that does not yet say which of its values are stored
+#: texts (`StoredTextLoadError` with the reason `concepts_missing`) before it raises that error: the runtime writes
+#: `output_form` after `main_stuff`, so a read can land in between.
+MAX_CONCEPTS_MISSING_POLLS = 5
+
+
 @dataclass
 class WaitForResultOptions:
     """Tuning for `wait_for_result`'s poll loop.
