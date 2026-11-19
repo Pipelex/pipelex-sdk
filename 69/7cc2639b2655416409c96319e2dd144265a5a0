@@ -1,0 +1,33 @@
+VERSION
+  s_20466492cd539d::t_993f6074e92b25 1
+js/CHANGELOG.md
+  s_20466492cd539d::t_055264c096b6aa 3
+js/package-lock.json
+  s_20466492cd539d::t_b571edb4384baa 3,9
+js/package.json
+  s_20466492cd539d::t_f9b46292b9a791 3
+js/src/version.ts
+  s_20466492cd539d::t_9b1f7fa6421114 6
+python/CHANGELOG.md
+  s_20466492cd539d::t_75be59f9b451fe 3
+python/pyproject.toml
+  s_20466492cd539d::t_70b5d3ad224cd5 3
+python/uv.lock
+  s_20466492cd539d::t_2db54fc0a86d8e 399
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "697cc2639b2655416409c96319e2dd144265a5a0",
+  "prompts": {},
+  "sessions": {
+    "s_20466492cd539d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4243fe99-6b2a-49af-ba95-8c0fb1e4dc61",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Thomas Hebrard <thomas@pipelex.com>"
+    }
+  }
+}
