@@ -747,6 +747,43 @@ class TestStoredTexts:
         assert exc_info.value.reason == "too_large"
         decode.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ("QUI", "AB"),
+            ("QUI=", "AB"),
+            ("QU\r\nI= ", "AB"),
+            (
+                base64.b64encode(b"Wrapped inline bytes.").decode()[:8] + "\n " + base64.b64encode(b"Wrapped inline bytes.").decode()[8:],
+                "Wrapped inline bytes.",
+            ),
+        ],
+    )
+    def test_reads_base64_as_the_typescript_sdk_does(self, payload: str, expected: str) -> None:
+        wire = RunResults.model_validate(_results("native.Text", {"url": f"data:text/plain;base64,{payload}"}))
+
+        assert asyncio.run(load_stored_texts(_client(), wire)).main_stuff == {"text": expected}
+
+    @pytest.mark.parametrize("payload", ["QUJDa", "QU=I", "QUI!"])
+    def test_refuses_malformed_base64(self, payload: str) -> None:
+        wire = RunResults.model_validate(_results("native.Text", {"url": f"data:text/plain;base64,{payload}"}))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(_client(), wire))
+
+        assert exc_info.value.reason == "unsupported_url"
+
+    def test_refuses_a_whitespace_wrapped_data_url_over_the_cap_without_decoding_it(self, mocker: MockerFixture) -> None:
+        decode = mocker.spy(base64, "b64decode")
+        lines = "\r\n".join("A" * 76 for _ in range(20))
+        wire = RunResults.model_validate(_results("native.Text", {"url": f"data:text/plain;base64,{lines}"}))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(_client(), wire, LoadStoredTextsOptions(max_bytes=100)))
+
+        assert exc_info.value.reason == "too_large"
+        decode.assert_not_called()
+
     def test_refuses_a_percent_encoded_data_url_over_the_cap_without_decoding_it(self) -> None:
         wire = RunResults.model_validate(_results("native.Text", {"url": "data:text/plain," + "a" * 400}))
 

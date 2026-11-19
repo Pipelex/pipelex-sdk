@@ -1305,6 +1305,11 @@ async def _read_stored_bytes(
     return b"".join(parts)
 
 
+_BASE64_WHITESPACE = "\t\n\f\r "
+"""The ASCII whitespace forgiving-base64 drops: tab, line feed, form feed, carriage return and space."""
+_STRIP_BASE64_WHITESPACE = str.maketrans("", "", _BASE64_WHITESPACE)
+
+
 class _DataUrlRefusal(StrEnum):
     """Why a `data:` URL was not decoded."""
 
@@ -1318,16 +1323,29 @@ def _decode_data_url(url: str, max_bytes: int) -> bytes | _DataUrlRefusal:
     `MALFORMED` when it does not decode, and `TOO_LARGE` when its bytes would be over `max_bytes`, told from the
     payload's length before anything is decoded: a base64 payload decodes to three bytes per four characters, less its
     padding, and a percent-encoded byte takes at most three characters.
+
+    Base64 is read as the TypeScript SDK and `atob` read it (the WHATWG forgiving-base64 decode): ASCII whitespace
+    dropped, at most two `=` of padding when the length is a multiple of four, and otherwise no padding needed, so the
+    same `data:` URL loads in both SDKs. The size is bounded from a count of the payload's other characters before the
+    whitespace is stripped, so a payload over the cap is never copied.
     """
     header, separator, payload = url.removeprefix("data:").partition(",")
     if not separator:
         return _DataUrlRefusal.MALFORMED
     if header.lower().endswith(";base64"):
-        padding = len(payload) - len(payload.rstrip("="))
-        if len(payload) * 3 // 4 - min(padding, 2) > max_bytes:
+        whitespace = sum(payload.count(char) for char in _BASE64_WHITESPACE)
+        # At most two of the significant characters are padding.
+        if (len(payload) - whitespace - 2) * 3 // 4 > max_bytes:
+            return _DataUrlRefusal.TOO_LARGE
+        data = payload.translate(_STRIP_BASE64_WHITESPACE) if whitespace else payload
+        if len(data) % 4 == 0 and data.endswith("="):
+            data = data[:-2] if data.endswith("==") else data[:-1]
+        if len(data) % 4 == 1:
+            return _DataUrlRefusal.MALFORMED
+        if len(data) * 3 // 4 > max_bytes:
             return _DataUrlRefusal.TOO_LARGE
         try:
-            return base64.b64decode(payload, validate=True)
+            return base64.b64decode(data + "=" * (-len(data) % 4), validate=True)
         except binascii.Error:
             return _DataUrlRefusal.MALFORMED
     if math.ceil(len(payload) / 3) > max_bytes:
