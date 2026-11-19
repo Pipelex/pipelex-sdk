@@ -1276,14 +1276,20 @@ class StoredTextLoadError(ArtifactOperationError):
     route's per-reference code, then the fetch boundary's reasons) plus the loader's own: `unsupported_url` for a
     stored text whose `url` is neither a `pipelex-storage://` reference nor a `data:` URL, which is never fetched;
     `resolve_failed` when the bulk resolve route failed as a whole, naming the first text it was asked for, the
-    route's error being the cause and its problem kept; `not_utf8` for bytes that are no UTF-8 text; and
+    route's error being the cause and its problem kept; `too_large` for a text over the load's `max_bytes`;
+    `total_limit_exceeded` for a text that takes the load's texts together over its `max_total_bytes`;
+    `concepts_missing` for a result that does not say which of its values are stored texts (no working memory naming
+    the main stuff, or a concept of the method's own that no form describes) while something in `main_stuff` is shaped
+    like a stored text's reference, naming the first such value; `not_utf8` for bytes that are no UTF-8 text; and
     `not_json_object` for a stored JSON value that is no JSON object. `status` is the HTTP status received, the
     store's or the resolve route's, when one was.
 
     Its `problem` is the fetch failure's own when the bytes could not be read (`artifact_fetch_problem`), the resolve
-    route's own for `resolve_failed`, and `client.response_unreadable` naming the run when the bytes were read but are
-    not the value. A caller who wants the result anyway reads it again with the loading turned off
-    (`load_stored_texts=False`) and gets every stored text as its reference.
+    route's own for `resolve_failed`, `client.download_limit_exceeded` naming the cap for `too_large` and
+    `total_limit_exceeded`, and `client.response_unreadable` naming the run when the bytes were read but are not the
+    value, or when the result does not say which values are texts (`concepts_missing`). A caller who wants the result
+    anyway reads it again with the loading turned off (`load_stored_texts=False`) and gets every stored text as its
+    reference.
 
     `wire_results` is that result, as it was answered, every stored text still its reference, when nothing else holds
     it: it is set only by `start_and_wait`'s blocking fallback, a bare runner's `POST /v1/execute`, where there is no
