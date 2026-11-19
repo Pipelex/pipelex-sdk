@@ -46,8 +46,18 @@ DEFAULT_DOWNLOAD_CONCURRENCY = 4
 #: reads from storage.
 DEFAULT_STORED_TEXT_MAX_BYTES = 100 * 1024 * 1024
 
+#: The cap on the bytes of all the stored texts of one `load_stored_texts` call together. Every loaded value is held
+#: until the load ends, as bytes and then as a string that can take several times as many, so the load itself must be
+#: bounded, not only each text: 256 MiB leaves room for two texts at the per-text cap while keeping what one load holds
+#: to a few hundred MiB of the process's memory.
+DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+
 #: How many stored texts one `load_stored_texts` call reads at once.
 DEFAULT_STORED_TEXT_CONCURRENCY = 8
+
+#: The `StoredTextLoadError` reason of a result that cannot say which of its values are stored texts
+#: (`pipelex_sdk.artifacts.lacks_stored_text_concepts`); `wait_for_result` keeps polling through it for a while.
+STORED_TEXT_CONCEPTS_MISSING = "concepts_missing"
 
 
 # ── Types ────────────────────────────────────────────────────────────
@@ -143,10 +153,14 @@ class LoadStoredTextsOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    #: Refuse a stored text over this many bytes, before and while reading it. Default 100 MiB, the
-    #: runtime's own cap on what it reads from storage, so a text the runtime could read is never one
-    #: the SDK refuses.
+    #: Refuse a stored text over this many bytes: against the size its reference states before anything is sent,
+    #: then while reading it. Default 100 MiB, the runtime's own cap on what it reads from storage, so a text the
+    #: runtime could read is never one the SDK refuses.
     max_bytes: int = DEFAULT_STORED_TEXT_MAX_BYTES
+    #: Refuse the load once its stored texts together cross this many bytes: against the sizes their references state
+    #: before anything is sent, then counted as the bytes arrive, every read in flight then stopped. Default 256 MiB
+    #: (`DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES`).
+    max_total_bytes: int = DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES
     #: Budget for each text's exchange — connect, headers and body. Default 120 s.
     timeout_seconds: float = DEFAULT_ARTIFACT_TIMEOUT_SECONDS
     #: Accept a plain `http:` link, as the local stack's object store hands out. Off by default.

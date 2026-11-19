@@ -64,6 +64,7 @@ from typing_extensions import override
 from pipelex_sdk._answer_json import decode_json_as_written, dumps_as_javascript
 from pipelex_sdk.answer_reading import outcome_unknown_problem, read_hosted_answer, run_id_named_by
 from pipelex_sdk.artifact_models import (
+    STORED_TEXT_CONCEPTS_MISSING,
     BulkResolvedStorageUrls,
     DownloadArtifactsOptions,
     DownloadArtifactsResult,
@@ -169,6 +170,7 @@ from pipelex_sdk.product_models import (
     read_method,
 )
 from pipelex_sdk.runs import (
+    MAX_CONCEPTS_MISSING_POLLS,
     PipelexRunResultStart,
     PollInfo,
     RunArtifact,
@@ -1767,7 +1769,9 @@ class PipelexAPIClient(MthdsAPIClient):
         result's stored texts, exactly as on `get_run_result`. `timeout_seconds` bounds the whole wait, the load of the
         stored texts included: a run that completed but whose texts did not load in the time left raises
         `RunTimeoutError` saying so, and `get_run_result` reads it again, `load_stored_texts=False` returning the wire
-        shape at once.
+        shape at once. A completed result that does not yet say which of its values are stored texts (its
+        `output_form`, which the runtime writes after `main_stuff`, not yet there) is polled again, at most
+        `MAX_CONCEPTS_MISSING_POLLS` times, before the wait raises `StoredTextLoadError` (`concepts_missing`).
 
         With `options.on_progress`, each poll that finds the run still running also reads
         `get_run_progress` and hands the callback every snapshot fresher than the last it delivered
@@ -1785,12 +1789,20 @@ class PipelexAPIClient(MthdsAPIClient):
         # answered that it serves no progress route.
         on_progress = opts.on_progress
         delivered: RunProgress | None = None
+        concepts_missing_polls = 0
+
+        def timeout_message() -> str:
+            # A wait that saw the run complete, its result still lacking the concepts that tell its texts apart,
+            # ends on its texts, never on a run still going.
+            if concepts_missing_polls:
+                return _loading_timeout_message(run_id, opts.timeout_seconds)
+            return _timeout_message(run_id, opts.timeout_seconds)
 
         while True:
             elapsed = monotonic() - started_at
             remaining = opts.timeout_seconds - elapsed
             if remaining <= 0:
-                raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds)
+                raise RunTimeoutError(timeout_message(), run_id=run_id, timeout_seconds=opts.timeout_seconds)
 
             # `asyncio.timeout`, never `asyncio.wait_for`: on Python 3.11, `wait_for` returns a poll that
             # finished in the same loop step as a cancellation of the awaiting task, swallowing it.
@@ -1800,29 +1812,35 @@ class PipelexAPIClient(MthdsAPIClient):
                 async with asyncio.timeout(remaining):
                     state = await self.get_run_result(run_id, artifacts=artifacts, load_stored_texts=False)
             except TimeoutError as exc:
-                raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds) from exc
+                raise RunTimeoutError(timeout_message(), run_id=run_id, timeout_seconds=opts.timeout_seconds) from exc
 
             if isinstance(state, RunResultCompleted):
                 if not load_stored_texts:
                     return state.result
-                return await self._load_within_wait(state.result, artifacts=artifacts, opts=opts, started_at=started_at)
+                try:
+                    return await self._load_within_wait(state.result, artifacts=artifacts, opts=opts, started_at=started_at)
+                except StoredTextLoadError as exc:
+                    # A result read between the runtime's writes of `main_stuff` and `output_form`: poll again, a few
+                    # times, before saying the result does not tell its texts apart.
+                    if exc.reason != STORED_TEXT_CONCEPTS_MISSING or concepts_missing_polls >= MAX_CONCEPTS_MISSING_POLLS:
+                        raise
+                    concepts_missing_polls += 1
             if isinstance(state, RunResultFailed):
                 msg = state.message
                 raise RunFailedError(msg, run_id=run_id, status=state.status, problem=state.problem)
 
-            # state is RunResultRunning — report its progress when asked, then decide whether to keep waiting.
-            if on_progress is not None:
+            # The run is still running, or its completed result does not yet say which values are texts — report the
+            # progress of a running run when asked, then decide whether to keep waiting.
+            if on_progress is not None and isinstance(state, RunResultRunning):
                 # The deadline is checked again before the progress read and bounds it, and the elapsed time
                 # below is taken after it, so a slow progress read never holds the wait past its timeout.
                 remaining = opts.timeout_seconds - (monotonic() - started_at)
                 if remaining <= 0:
-                    raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds)
+                    raise RunTimeoutError(timeout_message(), run_id=run_id, timeout_seconds=opts.timeout_seconds)
                 try:
                     progress = await self._read_progress_while_waiting(run_id, time_left_seconds=remaining)
                 except TimeoutError as exc:
-                    raise RunTimeoutError(
-                        _timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds
-                    ) from exc
+                    raise RunTimeoutError(timeout_message(), run_id=run_id, timeout_seconds=opts.timeout_seconds) from exc
                 except RunLifecycleUnavailableError:
                     # A server without the route answers every read with the same 404: stop asking.
                     on_progress = None
@@ -1834,11 +1852,11 @@ class PipelexAPIClient(MthdsAPIClient):
             attempt += 1
             elapsed = monotonic() - started_at
             if elapsed >= opts.timeout_seconds:
-                raise RunTimeoutError(_timeout_message(run_id, opts.timeout_seconds), run_id=run_id, timeout_seconds=opts.timeout_seconds)
+                raise RunTimeoutError(timeout_message(), run_id=run_id, timeout_seconds=opts.timeout_seconds)
             if opts.on_poll is not None:
                 opts.on_poll(PollInfo(attempt=attempt, elapsed_seconds=elapsed))
 
-            retry_seconds = state.retry_after_seconds if state.retry_after_seconds is not None else 0
+            retry_seconds = state.retry_after_seconds if isinstance(state, RunResultRunning) and state.retry_after_seconds is not None else 0
             wait_seconds = min(max(opts.interval_seconds, retry_seconds), opts.timeout_seconds - elapsed)
             await asyncio.sleep(wait_seconds)
 

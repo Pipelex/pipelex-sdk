@@ -104,8 +104,11 @@ export {
   DEFAULT_DOWNLOAD_MAX_TOTAL_BYTES,
   DEFAULT_DOWNLOAD_CONCURRENCY,
   loadStoredTexts,
+  lacksStoredTextConcepts,
   DEFAULT_STORED_TEXT_MAX_BYTES,
+  DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES,
   DEFAULT_STORED_TEXT_CONCURRENCY,
+  STORED_TEXT_CONCEPTS_MISSING,
 } from "./artifacts.js";
 // Stored texts — which values of a run the runtime holds by reference, told by concept.
 export {

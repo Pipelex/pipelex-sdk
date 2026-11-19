@@ -148,6 +148,16 @@ export interface ConceptSource {
 export function mainStuffNode(
   results: ConceptSource & { main_stuff?: unknown },
 ): InputFormItem | null {
+  const conceptRef = mainStuffConceptRef(results);
+  if (conceptRef === null) return null;
+  return contentNode(conceptRef, results.main_stuff, results);
+}
+
+/**
+ * The main stuff's concept, as the run's working memory names it, or `null` when the results carry
+ * no working memory or one naming no main stuff.
+ */
+export function mainStuffConceptRef(results: ConceptSource): string | null {
   const memory = results.working_memory;
   if (memory == null || typeof memory !== "object") return null;
   const aliases = (memory as { aliases?: unknown }).aliases;
@@ -157,9 +167,18 @@ export function mainStuffNode(
       : undefined;
   const name = typeof aliased === "string" ? aliased : MAIN_STUFF_ALIAS;
   const stuff = (memory.root as Record<string, unknown> | undefined)?.[name];
-  const conceptRef = conceptRefOf((stuff as { concept?: unknown } | undefined)?.concept);
-  if (conceptRef === null) return null;
-  return contentNode(conceptRef, results.main_stuff, results);
+  return conceptRefOf((stuff as { concept?: unknown } | undefined)?.concept);
+}
+
+/**
+ * Whether the run's own artifacts can say what a value of `conceptRef` holds: a native, whose
+ * shape the walk knows, or a concept an `output_form` or `input_form` node describes. A concept of
+ * the method's own that no form describes cannot, so a stored text in one of its fields could not
+ * be told from any other value.
+ */
+export function describesConcept(conceptRef: string, source: ConceptSource): boolean {
+  if (conceptRef.startsWith(NATIVE_PREFIX)) return true;
+  return formNodeForConcept(conceptRef, source) !== undefined;
 }
 
 /**
@@ -241,6 +260,11 @@ function isPluralEnvelope(content: unknown, element: InputFormItem): boolean {
 
 /** The node the forms state for a concept, else the native's own shape, else an opaque node. */
 function nodeForConcept(conceptRef: string, source: ConceptSource): InputFormItem {
+  return formNodeForConcept(conceptRef, source) ?? nativeNode(conceptRef);
+}
+
+/** The first node of the `output_form`, then the `input_form`, that names a concept. */
+function formNodeForConcept(conceptRef: string, source: ConceptSource): InputFormItem | undefined {
   for (const form of [source.output_form, source.input_form]) {
     if (form == null || typeof form !== "object") continue;
     for (const descriptor of Object.values(form as Record<string, unknown>)) {
@@ -251,7 +275,7 @@ function nodeForConcept(conceptRef: string, source: ConceptSource): InputFormIte
       }
     }
   }
-  return nativeNode(conceptRef);
+  return undefined;
 }
 
 /** The top nodes of one form entry: an output's `field`, an input's `fields`. */

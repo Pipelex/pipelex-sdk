@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`LoadStoredTextsOptions.max_total_bytes`**: one load of a result's stored texts is bounded as a whole, 256 MiB by default (`DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES`), checked against the sizes the references state before anything is sent and then counted as the bytes arrive, so a list of long texts raises `StoredTextLoadError` with the reason `total_limit_exceeded` instead of exhausting the process; each text's own `max_bytes` is now also checked against its stated size first, and a `data:` URL's decoded size is bounded from its length before it is decoded (`docs/run-results.md`).
+
+### Fixed
+
+- **A result that does not say which values are texts no longer hands their references on**: when `working_memory` names no main stuff, or the main stuff's concept is the method's own and no form describes it, while `main_stuff` holds something shaped like a stored text's reference, `load_stored_texts` and the result readers raise `StoredTextLoadError` with the reason `concepts_missing` instead of returning `{url, size, mime_type, preview}` where a text was promised; `wait_for_result` and `start_and_wait` first poll again a few times, since the runtime writes `output_form` after `main_stuff`. `pipelex_sdk.artifacts.lacks_stored_text_concepts` and `STORED_TEXT_CONCEPTS_MISSING` are added.
+- **A stored text's link about to expire is resolved again before its read**: a load of many texts no longer fails with a storage refusal when a text's turn comes after its signed link has expired; a link within ten seconds of its `expires_at` is resolved again first, and the first text that fails stops the other reads in flight.
+- **A `data:` URL's base64 is read as the TypeScript SDK reads it**: ASCII whitespace inside the payload is dropped and missing padding is accepted, as `atob` does, so a wrapped or unpadded `data:` URL that loads in `@pipelex/sdk` no longer fails here as `unsupported_url`; its size is still bounded before anything is decoded or copied.
+
 ## [v0.69.4] - 2026-11-19
 
 ### Added

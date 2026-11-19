@@ -160,6 +160,16 @@ def main_stuff_node(results: RunResults) -> InputFormItem | None:
         The node, or `None` when the results carry no working memory, or one naming no main stuff: nothing then says
         what the output is, so a walk guided by it treats every value alike.
     """
+    concept_ref = main_stuff_concept_ref(results)
+    if concept_ref is None:
+        return None
+    return _content_node(concept_ref, results.main_stuff, output_form=results.output_form, input_form=results.input_form)
+
+
+def main_stuff_concept_ref(results: RunResults) -> str | None:
+    """The main stuff's concept, as the run's working memory names it, or `None` when the results carry no working
+    memory or one naming no main stuff.
+    """
     memory = results.working_memory
     if memory is None:
         return None
@@ -167,7 +177,17 @@ def main_stuff_node(results: RunResults) -> InputFormItem | None:
     stuff = memory.root.get(name)
     if stuff is None:
         return None
-    return _content_node(stuff.concept, results.main_stuff, output_form=results.output_form, input_form=results.input_form)
+    return stuff.concept
+
+
+def describes_concept(concept_ref: str, results: RunResults) -> bool:
+    """Whether the run's own artifacts can say what a value of `concept_ref` holds: a native, whose shape the walk
+    knows, or a concept an `output_form` or `input_form` node describes. A concept of the method's own that no form
+    describes cannot, so a stored text in one of its fields could not be told from any other value.
+    """
+    if concept_ref.startswith(_NATIVE_PREFIX):
+        return True
+    return _form_node_for_concept(concept_ref, output_form=results.output_form, input_form=results.input_form) is not None
 
 
 def working_memory_node(results: RunResults) -> InputFormItem | None:
@@ -236,6 +256,12 @@ def _is_plural_envelope(content: Any, element: InputFormItem) -> bool:
 
 def _node_for_concept(concept_ref: str, *, output_form: OutputForm | None, input_form: InputForm | None) -> InputFormItem:
     """The node the forms state for a concept, else the native's own shape, else an opaque node."""
+    found = _form_node_for_concept(concept_ref, output_form=output_form, input_form=input_form)
+    return found or _native_node(concept_ref)
+
+
+def _form_node_for_concept(concept_ref: str, *, output_form: OutputForm | None, input_form: InputForm | None) -> InputFormItem | None:
+    """The first node of the `output_form`, then the `input_form`, that names a concept, or `None`."""
     roots: list[InputFormItem] = []
     for output_descriptor in (output_form or {}).values():
         roots.append(output_descriptor.field)
@@ -245,7 +271,7 @@ def _node_for_concept(concept_ref: str, *, output_form: OutputForm | None, input
         found = _find_concept_node(root, concept_ref)
         if found is not None:
             return found
-    return _native_node(concept_ref)
+    return None
 
 
 def _find_concept_node(node: InputFormItem, concept_ref: str) -> InputFormItem | None:
