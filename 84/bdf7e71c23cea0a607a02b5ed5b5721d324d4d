@@ -1,0 +1,40 @@
+js/tests/upload-kind.test.ts
+  s_20466492cd539d::t_129a9cd04d71f6 78
+js/src/upload.ts
+  s_20466492cd539d::t_c16c57b44e3a5d 89,101,117
+js/tests/upload.test.ts
+  s_20466492cd539d::t_e0d1341cbe60de 368-372
+python/tests/unit/test_upload_kind.py
+  s_20466492cd539d::t_303aaa512e03f8 177
+  s_20466492cd539d::t_d83c9a9d621f5e 168-172
+js/CHANGELOG.md
+  s_20466492cd539d::t_c16c57b44e3a5d 3-8
+js/src/product-models.ts
+  s_20466492cd539d::t_c16c57b44e3a5d 1312-1315,1317,1407-1410,1412
+python/CHANGELOG.md
+  s_20466492cd539d::t_c16c57b44e3a5d 3-8
+js/tests/files.test.ts
+  s_20466492cd539d::t_129a9cd04d71f6 166
+python/pipelex_sdk/upload.py
+  s_20466492cd539d::t_c16c57b44e3a5d 106,136
+  s_20466492cd539d::t_52d57ee621f6f7 160
+python/pipelex_sdk/product_models.py
+  s_20466492cd539d::t_c16c57b44e3a5d 1429-1432,1491-1493
+  s_20466492cd539d::t_15c9cba7c65899 1494
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "84bdf7e71c23cea0a607a02b5ed5b5721d324d4d",
+  "prompts": {},
+  "sessions": {
+    "s_20466492cd539d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4243fe99-6b2a-49af-ba95-8c0fb1e4dc61",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Thomas Hebrard <thomas@pipelex.com>"
+    }
+  }
+}
