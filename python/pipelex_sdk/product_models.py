@@ -1426,6 +1426,10 @@ class UploadKind(StrEnum):
     UPLOADED = "uploaded"
     """A person's file, what an upload is recorded as when it names no kind."""
 
+    ATTACHMENT = "attachment"
+    """A file attached to a conversation, such as a build assistant's chat. The platform records it as
+    `uploaded` once a run or a method's example uses it as an input."""
+
     TEST = "test"
     """A test input made for one method, such as the inputs a build assistant makes to try it, which
     names that method in `method_id`."""
@@ -1483,6 +1487,10 @@ class FileKind(StrEnum):
 
     UPLOADED = "uploaded"
     """A person's upload, or a run's inline input."""
+
+    ATTACHMENT = "attachment"
+    """A file attached to a conversation and not yet used as an input; it becomes `uploaded` once a run
+    or a method's example uses it."""
 
     GENERATED = "generated"
     """A file a run made whose result reaches it."""

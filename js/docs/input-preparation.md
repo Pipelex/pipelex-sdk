@@ -63,7 +63,7 @@ const grant = await client.requestUploadGrant(description);
 // { file_id, uri, stored, url, headers, expires_at, max_bytes }
 ```
 
-The file is described, never sent. Beside the description, the request takes `kind`, `uploaded` by default or `test` for a test input made for one method, which then names that method's bare catalog id in `method_id`. The grant (`UploadGrant`) is one shape with nullable fields, and **a caller branches on `stored`, never on whether `url` is present**:
+The file is described, never sent. Beside the description, the request takes `kind`, `uploaded` by default, `attachment` for a file attached to a conversation that is not yet an input, or `test` for a test input made for one method, which then names that method's bare catalog id in `method_id`. The grant (`UploadGrant`) is one shape with nullable fields, and **a caller branches on `stored`, never on whether `url` is present**:
 
 - **`stored: true`**: the organization already holds these bytes. Nothing is to be sent: `uri` is the file's `pipelex-storage://` reference now, `file_id` its record, and `url`, `headers` and `expires_at` are `null`. The same person asking again for the same bytes under the same name and kind gets their existing record back.
 - **`stored: false`**: a presigned, create-only `PUT` for the object. `url` is where to send it, `headers` are the signed headers to send unchanged, `uri` is the reference the object will carry, `file_id` its record, `pending` until the bytes land, and `expires_at` is when storage stops accepting the `PUT`, a few minutes later.

@@ -365,7 +365,11 @@ describe("uploadFile's kind and method", () => {
       { kind: "uploaded", method_id: "mt_abc" },
       "only a test file names a method",
     ],
-    ["an unknown kind", { kind: "draft" }, '`kind` is "uploaded" or "test", got "draft"'],
+    [
+      "an unknown kind",
+      { kind: "draft" },
+      '`kind` is "uploaded", "attachment" or "test", got "draft"',
+    ],
     ["a suffixed method id", { kind: "test", method_id: "mt_abc@3" }, "with no version suffix"],
     ["an empty method id", { kind: "test", method_id: "" }, "is not a catalog id"],
     [

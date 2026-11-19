@@ -1309,10 +1309,12 @@ export interface UploadedFile {
 }
 
 /**
- * What an upload is recorded as: `uploaded`, a person's file, or `test`, a test input
- * made for one method, which names that method in `method_id`.
+ * What an upload is recorded as: `uploaded`, a person's file; `attachment`, a file attached to a
+ * conversation, such as a build assistant's chat, which becomes `uploaded` once a run or a
+ * method's example uses it as an input; or `test`, a test input made for one method, which names
+ * that method in `method_id`.
  */
-export type UploadKind = "uploaded" | "test";
+export type UploadKind = "uploaded" | "attachment" | "test";
 
 /**
  * What an upload grant is requested for — `POST /v1/upload/grant`. The file is
@@ -1402,11 +1404,12 @@ export interface UploadGrant {
 // as they take any address (see `docs/files.md`).
 
 /**
- * What made a file: `uploaded`, a person's upload or a run's inline input; `generated`, a file a
- * run made whose result reaches it; `test`, a test input made for one method, which its
- * `origin.method_id` names.
+ * What made a file: `uploaded`, a person's upload or a run's inline input; `attachment`, a file
+ * attached to a conversation and not yet used as an input (the platform records it as `uploaded`
+ * once a run or a method's example uses it); `generated`, a file a run made whose result reaches
+ * it; `test`, a test input made for one method, which its `origin.method_id` names.
  */
-export type FileKind = "uploaded" | "generated" | "test";
+export type FileKind = "uploaded" | "attachment" | "generated" | "test";
 
 /**
  * Who or what made a file, as far as the platform knows it. Each kind fills a different part, and

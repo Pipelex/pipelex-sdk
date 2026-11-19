@@ -103,7 +103,7 @@ def _checked_kind(kind: object, *, refusal: str, field: str) -> UploadKind | Non
             return UploadKind(kind)
         except ValueError:
             pass
-    msg = f'{refusal}: `{field}kind` is "uploaded" or "test", got {_described_argument(kind)}.'
+    msg = f'{refusal}: `{field}kind` is "uploaded", "attachment" or "test", got {_described_argument(kind)}.'
     raise InputPreparationError(msg, problem=argument_invalid_problem(argument=f"{field}kind", reason="unknown_value"))
 
 
@@ -133,7 +133,7 @@ def checked_upload_kind(*, kind: object, method_id: object, refusal: str, field:
     """The `kind` and `method_id` an upload is sent with, checked as the upload route checks them.
 
     A request the route would refuse with a `422` is refused here, before any file is read: a `kind` is
-    `uploaded` or `test` (a `str` naming one is read as the `UploadKind` it names), a `method_id` is a
+    `uploaded`, `attachment` or `test` (a `str` naming one is read as the `UploadKind` it names), a `method_id` is a
     bare catalog id, `kind="test"` needs one and only a test file names one. `None` reads as absent, and
     an absent member is not sent. The twin of `@pipelex/sdk`'s `uploadKindFields`.
 
@@ -157,7 +157,7 @@ def checked_upload_kind(*, kind: object, method_id: object, refusal: str, field:
     match checked_kind:
         case UploadKind.TEST:
             is_test_file = True
-        case UploadKind.UPLOADED | None:
+        case UploadKind.UPLOADED | UploadKind.ATTACHMENT | None:
             is_test_file = False
     if is_test_file and checked_method_id is None:
         msg = f'{refusal}: a test file names the method it is for; give `{field}method_id` with `{field}kind="test"`.'
