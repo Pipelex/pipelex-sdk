@@ -149,7 +149,7 @@ export function checkUploadRequest(
  *   the browser uploads it with a grant and the form's value holds its
  *   reference. The URIs are server-generated opaque ids, so this is not
  *   guessable — and a reference obtained from an earlier run round-trips too.
- * - `https://` is the kernel's "paste a URL instead" affordance. Accepting it
+ * - `https://` is the kernel's "Paste a link instead" affordance. Accepting it
  *   means the **runner** fetches that URL server-side, which is the feature —
  *   and it is also why a host that must not reach arbitrary origins wants an
  *   allow-list here rather than a scheme test. Left open in the template

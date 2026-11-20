@@ -138,7 +138,7 @@ describe("gateRunInputs", () => {
   });
 
   it("accepts a file input that carries a URL but no bytes", () => {
-    // The kernel's "paste a URL instead" path — filled, so the gate passes it
+    // The kernel's "Paste a link instead" path — filled, so the gate passes it
     // and resolving it is `prepareInputs`' job.
     const result = gateRunInputs(PDF_CONTRACT, { document: { url: "https://example.com/a.pdf" } });
     expect(result.ok).toBe(true);

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The starter runs on `@pipelex/mthds-form` 0.39.1, and a document result is its link (Breaking)**: moved from 0.17.1. The kernel now frames a document only when a host's resolver answered it on the page's own origin, and the starter mounts none, so a document a method returns, even an `https:` PDF, shows as its name, its link and its download, never in a frame. Every document and picture preview starts open, in the form and in a result, and its Preview button folds it away; a picture opens in a viewer on a click rather than in a new tab. The drop zone reads "Choose a file or drop it here", the link under it "Paste a link instead" and the optional badge "Optional", so a project's own tests that find a control by its old English name update it. A text that opens with its own heading no longer has the tab's name drawn over it, a structure in the form reads as a heading over its fields, and a focused or invalid control is outlined in the theme's `--ring` or `--destructive` rather than ringed. `npm ls mthds` lists the one copy the SDK and the kernel share, and `@pipelex/mthds-ui` keeps its own kernel 0.17.1 under it for its form entry, which the starter does not import.
+
 ## [v0.69.3] - 2026-11-18
 
 ### Changed

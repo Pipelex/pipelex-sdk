@@ -119,7 +119,7 @@ export function PdfForm() {
           values={values}
           onValuesChange={(next) => {
             // A rejection belongs to the value that caused it. The kernel's
-            // "paste a URL instead" writes straight through this setter without
+            // "Paste a link instead" writes straight through this setter without
             // touching `acceptFile`, so without clearing here a "File is too
             // large" alert sits under a field the user has already fixed.
             clearError();

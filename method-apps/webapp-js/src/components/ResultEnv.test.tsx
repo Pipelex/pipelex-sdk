@@ -126,16 +126,21 @@ describe("ResultEnv — the URLs a run's payload can reach", () => {
     );
   }
 
-  it("offers a preview of a stored document, through the resolver's path", () => {
-    // The positive control for the refusals below: a preview control exists,
-    // and a refusal is its absence rather than a label that never rendered. It
-    // is not clicked, because the frame would make happy-dom fetch its source.
-    renderResult(DOCUMENT_FIELD, {
+  it("frames a stored document through the resolver's path", () => {
+    // The positive control for the refusals below: a frame exists, so a refusal
+    // is its absence rather than a preview that never rendered. The kernel opens
+    // every preview as it mounts, and frames a whole result in `app` with no
+    // toggle at all, so the frame itself is what is asserted; happy-dom declines
+    // to load its page and says so on the console.
+    const { container } = renderResult(DOCUMENT_FIELD, {
       url: "pipelex-storage://org_1/runs/01J/outputs/report.pdf",
       filename: "report.pdf",
       mime_type: "application/pdf",
     });
-    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
+    expect(container.querySelector("iframe")).toHaveAttribute(
+      "src",
+      "/api/assets/org_1/runs/01J/outputs/report.pdf",
+    );
   });
 
   it("hands a browser no data:text/html document, whatever its filename claims", () => {
@@ -196,7 +201,10 @@ describe("ResultEnv — the URLs a run's payload can reach", () => {
     // the path itself — so provenance is the only thing that differs.
     const svg = { filename: "x.svg", mime_type: "image/svg+xml" };
     const stored = renderResult(DOCUMENT_FIELD, { ...svg, url: "pipelex-storage://org_1/x.svg" });
-    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
+    expect(stored.container.querySelector("iframe")).toHaveAttribute(
+      "src",
+      "/api/assets/org_1/x.svg",
+    );
     stored.unmount();
 
     const { container } = renderResult(DOCUMENT_FIELD, { ...svg, url: "/api/assets/org_1/x.svg" });

@@ -1559,7 +1559,7 @@ export function renderForm(plan: ScaffoldPlan): string {
         "          values={values}",
         "          onValuesChange={(next) => {",
         "            // A rejection belongs to the value that caused it: the kernel's",
-        '            // "paste a URL instead" writes straight through this setter.',
+        '            // "Paste a link instead" writes straight through this setter.',
         "            clearError();",
         "            setValues(next);",
         "          }}",

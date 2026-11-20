@@ -60,7 +60,8 @@ describe("RunResult", () => {
 // frame — see `docs/input-form.md`.) These cases pin the gate at this app's own
 // composition, `<RunResult>` with no resolver mounted above it, so a kernel
 // release that loosens the gate, or a `proseImages="load"` added here, fails the
-// suite. They assert on what a browser would be handed, never on kernel internals.
+// suite. With no resolver, nothing is framed at all: the kernel frames only what
+// a host's resolver answered on the page's own origin. They assert on what a browser would be handed, never on kernel internals.
 describe("RunResult — the URLs a run's payload can reach", () => {
   // No shipped method outputs a document, so the field is built by hand.
   const DOCUMENT_FIELD: RunField = {
@@ -93,16 +94,20 @@ describe("RunResult — the URLs a run's payload can reach", () => {
     return render(<RunResult field={field} value={value} name="output" />);
   }
 
-  it("offers a preview of a document at an https: URL", () => {
-    // The positive control for the refusals below: a preview control exists,
-    // and a refusal is its absence rather than a label that never rendered. It
-    // is not clicked, because the frame would make happy-dom fetch its source.
-    renderResult(DOCUMENT_FIELD, {
-      url: "https://cdn.example/report.pdf",
+  it("shows a document at an https: URL as its link, never a frame", () => {
+    // A third party's page drawn inside this app's is what the kernel refuses
+    // since 0.39.0. The link is the positive control for the refusals below: the
+    // document rendered, and a refusal is the frame's absence rather than a
+    // result that never rendered.
+    const url = "https://cdn.example/report.pdf";
+    const { container } = renderResult(DOCUMENT_FIELD, {
+      url,
       filename: "report.pdf",
       mime_type: "application/pdf",
     });
-    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "report.pdf" })).toHaveAttribute("href", url);
+    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+    expect(container.querySelector("iframe")).toBeNull();
   });
 
   it("hands a browser no data:text/html document, whatever its filename claims", () => {
@@ -154,14 +159,14 @@ describe("RunResult — the URLs a run's payload can reach", () => {
 
   it("frames no same-origin path the payload names", () => {
     // A path is this app's own origin; framed, an SVG served there is a document
-    // with a DOM beside the page. The same file is previewable at an `https:`
-    // URL, so the URL's provenance is the only thing that differs.
-    const svg = { filename: "x.svg", mime_type: "image/svg+xml" };
-    const remote = renderResult(DOCUMENT_FIELD, { ...svg, url: "https://cdn.example/x.svg" });
-    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
-    remote.unmount();
-
-    const { container } = renderResult(DOCUMENT_FIELD, { ...svg, url: "/files/x.svg" });
+    // with a DOM beside the page. Only a path a host's resolver produced may be
+    // framed, and this app mounts none, so a path the payload wrote is its link.
+    const { container } = renderResult(DOCUMENT_FIELD, {
+      filename: "x.svg",
+      mime_type: "image/svg+xml",
+      url: "/files/x.svg",
+    });
+    expect(screen.getByRole("link", { name: "x.svg" })).toHaveAttribute("href", "/files/x.svg");
     expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
     expect(container.querySelector("iframe")).toBeNull();
   });

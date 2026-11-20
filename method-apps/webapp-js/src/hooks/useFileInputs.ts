@@ -56,7 +56,7 @@ import type { GrantOutcome } from "@/lib/uploadGrant";
  *    one that fails, leaves nothing behind to submit by accident.
  *  - **Stay busy for the whole operation, not just one step.** While an id is
  *    in `uploadingIds` the kernel shuts every door into that value — the
- *    dropzone, the "paste a URL instead" toggle, the URL input behind it — and
+ *    dropzone, the "Paste a link instead" toggle, the URL input behind it — and
  *    shows a spinner. Hashing the file, the grant request and the upload are
  *    one operation: a window between them where the field is writable is a
  *    window where an older selection lands last and silently replaces the
