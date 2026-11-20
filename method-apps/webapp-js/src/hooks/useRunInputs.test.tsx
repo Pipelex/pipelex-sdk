@@ -19,9 +19,17 @@ function mimeTypesOf(field: RunField | undefined): string[] {
 describe("useRunInputs", () => {
   it("keeps every format the kernel knows for a file input when no list is given", () => {
     const { result } = renderHook(() => useRunInputs(CONTRACT, DESCRIPTOR));
-    // A document slot takes PDF and the two image formats the extract model reads.
+    // A document slot takes PDF, the Word, Excel, PowerPoint and CSV files the
+    // hosted runtime converts, and the two image formats the extract model reads.
     expect(mimeTypesOf(result.current.fields[0])).toEqual([
       "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.ms-powerpoint",
+      "text/csv",
       "image/jpeg",
       "image/png",
     ]);
@@ -38,7 +46,7 @@ describe("useRunInputs", () => {
 
   it("refuses a list that leaves a file input accepting nothing", () => {
     expect(() =>
-      renderHook(() => useRunInputs(CONTRACT, DESCRIPTOR, { allowedMimes: ["text/csv"] })),
+      renderHook(() => useRunInputs(CONTRACT, DESCRIPTOR, { allowedMimes: ["audio/mpeg"] })),
     ).toThrow();
   });
 });
