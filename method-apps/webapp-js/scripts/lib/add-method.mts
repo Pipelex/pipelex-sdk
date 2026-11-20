@@ -62,6 +62,7 @@ import {
   type PipeIOContracts,
   type ValidateMethodSelector,
 } from "@pipelex/sdk";
+import { DOCUMENT_FORMATS } from "@pipelex/mthds-form";
 
 import { assertSelectorSupport, describeRequestFailure, explainSelectorFailure } from "./api.mts";
 import {
@@ -796,11 +797,17 @@ export function fileInputsOf(descriptor: PipeInputFormDescriptor): FileInput[] {
   return files;
 }
 
-/** The media types a scaffolded action accepts, by the file kinds it declares. */
+/**
+ * The media types a scaffolded action accepts, by the file kinds it declares. A
+ * document takes every format the form kernel lists for one, which are the
+ * formats the hosted runtime reads: PDF, Word, Excel and PowerPoint files,
+ * CSV, JPG and PNG. An image takes PNG, JPEG and WebP.
+ */
 export function allowedMimesFor(files: FileInput[]): string[] {
   const mimes = new Set<string>();
   for (const field of files) {
-    if (field.kind === "document") mimes.add("application/pdf");
+    if (field.kind === "document")
+      for (const format of DOCUMENT_FORMATS) mimes.add(format.mimeType);
     else for (const mime of ["image/png", "image/jpeg", "image/webp"]) mimes.add(mime);
   }
   return [...mimes];

@@ -1,4 +1,7 @@
 import type { PipelineError } from "@/lib/errors";
+// The form kernel's headless entry: no React, so the grant action reads the
+// same file rule the dropzone does.
+import { DOCUMENT_FORMATS, IMAGE_FORMATS, isAcceptedFile } from "@pipelex/mthds-form";
 // Type-only, so nothing of the SDK reaches the client bundle through this
 // module. The descriptor types are the MTHDS standard's (`mthds/protocol`),
 // re-exported by the SDK whose `prepareInputs` walks the same nodes.
@@ -16,7 +19,8 @@ import type { InputFormItem, PipeInputFormDescriptor } from "@pipelex/sdk";
  * follow:
  *
  * - `checkUploadRequest` — what a grant action accepts: a file of a media type
- *   the method takes, no larger than `MAX_FILE_BYTES`, with a well-formed
+ *   the method takes, by the form kernel's rule, so the action takes what the
+ *   dropzone took, no larger than `MAX_FILE_BYTES`, with a well-formed
  *   SHA-256 when it states one. The grant signs the type and the size, and the
  *   bytes when the digest came with them, so storage refuses a file that
  *   differs from what was declared.
@@ -48,9 +52,8 @@ export type FileInputError = {
 /**
  * What the browser tells a grant action about a file it is about to upload —
  * the SDK's `UploadDescription`, which `describeUpload` reads off the `File`,
- * and the part of its `UploadGrantInput` that describes a file, with the type
- * required, since a type the method does not take is refused before any grant
- * is asked for.
+ * and the part of its `UploadGrantInput` that describes a file. The type is the
+ * browser's `File.type`, which is empty when the browser does not know it.
  */
 export interface UploadRequest {
   filename: string;
@@ -66,6 +69,30 @@ export interface UploadRequest {
    * did.
    */
   sha256?: string;
+}
+
+/** Every format the form kernel knows a file input to take. */
+const KERNEL_FORMATS = [...DOCUMENT_FORMATS, ...IMAGE_FORMATS];
+
+/**
+ * Whether a file of this name and reported type is one the method takes.
+ *
+ * The rule is the form kernel's dropzone rule, `isAcceptedFile`, over the
+ * kernel's formats among `allowedMimes`, so a grant is never refused for a file
+ * the dropzone took. A browser does not always report a file's own type: it
+ * leaves it empty, reports `application/octet-stream`, or reports one of the
+ * other types the kernel lists for a format (`alsoReportedAs`), such as
+ * `application/zip` for a `.docx` or `text/plain` for a `.csv`. The kernel
+ * then judges the file by its extension, and the platform types the stored
+ * file by its extension too. A wrong type that is present is still refused: a
+ * `.zip` reported as `application/zip`, or a `notes.pdf` reported as
+ * `text/plain`. A type in `allowedMimes` that the kernel has no format for,
+ * such as `image/webp`, is taken when the browser reports exactly it.
+ */
+function acceptsFile(filename: string, type: string, allowedMimes: readonly string[]): boolean {
+  if (allowedMimes.includes(type)) return true;
+  const formats = KERNEL_FORMATS.filter((format) => allowedMimes.includes(format.mimeType));
+  return isAcceptedFile(formats, { name: filename, type });
 }
 
 /** A SHA-256 as the grant route takes it: 64 lowercase hexadecimal digits. */
@@ -111,7 +138,7 @@ export function checkUploadRequest(
   if (typeof filename !== "string" || filename.length === 0) {
     return { kind: "invalid_file", message: "The file has no name." };
   }
-  if (typeof type !== "string" || !opts.allowedMimes.includes(type)) {
+  if (typeof type !== "string" || !acceptsFile(filename, type, opts.allowedMimes)) {
     const stated = typeof type === "string" && type.length > 0 ? `"${type}"` : "an unknown type";
     return {
       kind: "unsupported_file_type",
