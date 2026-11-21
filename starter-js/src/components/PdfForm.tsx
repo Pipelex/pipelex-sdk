@@ -34,9 +34,9 @@ const DOCUMENT_INPUT = "document";
 
 /**
  * Some drag-drop sources and Windows configurations hand a valid PDF over with
- * an empty `file.type`. The grant action takes it by its extension, and the
- * platform would type it by its extension too; re-wrapping it means the grant is
- * asked for, and the upload signed for, `application/pdf` itself.
+ * an empty `file.type`. The grant action takes it by its extension; re-wrapping
+ * it means the grant is requested with `application/pdf` declared rather than
+ * with no type.
  *
  * This is a description fix, not validation: the extension test is what keeps it
  * from stamping "PDF" on something that is not one, the grant action checks the

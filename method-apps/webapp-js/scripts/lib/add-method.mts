@@ -1081,9 +1081,10 @@ function methodReference(plan: ScaffoldPlan): {
  * A module of its own because both halves read the list and neither can hold
  * it. The upload action lives in a `"use server"` file, which may export async
  * functions only, and the form is a client component the action must not
- * import. So the action refuses a grant for any other type, the form narrows
- * each file input to these formats through `useRunInputs`, and the dropzone can
- * no longer offer a file the action would then refuse.
+ * import. So the action grants a file only in one of these types, judged by
+ * the form kernel's rule, the form narrows each file input to these formats
+ * through `useRunInputs`, and the dropzone can no longer offer a file the action
+ * would then refuse.
  */
 export function renderUploads(plan: ScaffoldPlan): string {
   return [
@@ -1092,10 +1093,12 @@ export function renderUploads(plan: ScaffoldPlan): string {
     "/**",
     " * Media types the file input(s) accept. Widen it if your method takes more.",
     " *",
-    ` * The one list both halves read: \`request${plan.names.pascal}Upload\` refuses a grant for any`,
-    " * other type, and the form narrows each file input to the formats among these,",
-    " * so the dropzone offers exactly what the action grants. The form can offer only",
-    " * a format the form kernel knows for the input's kind.",
+    ` * The one list both halves read: \`request${plan.names.pascal}Upload\` grants a file only in`,
+    " * one of these types, judged as the dropzone judges it: a type the browser left",
+    " * empty or reported as another of its format's types is read by the file's",
+    " * extension. The form narrows each file input to the formats among these, so the",
+    " * dropzone offers exactly what the action grants. The form can offer only a",
+    " * format the form kernel knows for the input's kind.",
     " */",
     `export const ALLOWED_MIMES = ${JSON.stringify(allowedMimesFor(plan.files))};`,
     "",

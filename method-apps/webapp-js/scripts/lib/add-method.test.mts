@@ -921,7 +921,7 @@ describe("renderUploads", () => {
     const source = renderUploads(DOCUMENTS_PLAN);
     expect(source).toContain('export const ALLOWED_MIMES = ["application/pdf",');
     expect(source).toContain('"text/csv","image/jpeg","image/png"];');
-    expect(source).toContain("`requestDocumentsUpload` refuses a grant for any");
+    expect(source).toContain("`requestDocumentsUpload` grants a file only in");
     // A plain module: the form, a client component, imports it too.
     expect(source).not.toContain("use server");
     expect(source).not.toContain("use client");

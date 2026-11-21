@@ -71,12 +71,12 @@ describe("checkUploadRequest", () => {
   });
 
   it("takes a listed type the form kernel has no format for when reported exactly", () => {
-    const images = {
-      allowedMimes: ["image/png", "image/jpeg", "image/webp"],
-      maxBytes: MAX_FILE_BYTES,
-    };
-    const shot = { filename: "shot.webp", content_type: "image/webp", size: 1024 };
-    expect(checkUploadRequest(shot, images)).toBeNull();
+    const data = { allowedMimes: ["application/json"], maxBytes: MAX_FILE_BYTES };
+    const exact = { filename: "rows.json", content_type: "application/json", size: 1024 };
+    expect(checkUploadRequest(exact, data)).toBeNull();
+    // With no kernel format to read the extension by, the type must be exact.
+    const untyped = { ...exact, content_type: "" };
+    expect(checkUploadRequest(untyped, data)?.kind).toBe("unsupported_file_type");
   });
 
   it("refuses a file over the cap with the shared wording", () => {

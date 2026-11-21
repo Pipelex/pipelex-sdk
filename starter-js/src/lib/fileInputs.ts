@@ -87,7 +87,7 @@ const KERNEL_FORMATS = [...DOCUMENT_FORMATS, ...IMAGE_FORMATS];
  * file by its extension too. A wrong type that is present is still refused: a
  * `.zip` reported as `application/zip`, or a `notes.pdf` reported as
  * `text/plain`. A type in `allowedMimes` that the kernel has no format for,
- * such as `image/webp`, is taken when the browser reports exactly it.
+ * such as `application/json`, is taken when the browser reports exactly it.
  */
 function acceptsFile(filename: string, type: string, allowedMimes: readonly string[]): boolean {
   if (allowedMimes.includes(type)) return true;
