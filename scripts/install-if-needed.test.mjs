@@ -133,12 +133,11 @@ for (const [directory, kind] of Object.entries(DIRECTORIES)) {
 
 describe("the JavaScript guard's two records", () => {
   for (const directory of JAVASCRIPT_DIRECTORIES) {
-    it(`${directory}: installs when ${JAVASCRIPT.lock} moved after the stamp, though npm's record is newer`, () => {
-      // `npm install --package-lock-only` rewrites npm's record without installing anything.
+    it(`${directory}: installs with npm ci when ${JAVASCRIPT.lock} moved after the stamp, though npm's record is newer`, () => {
+      // `npm install --package-lock-only` rewrites npm's record without installing anything, and npm
+      // trusts that record over node_modules, so only `npm ci` puts back exactly what the lock pins.
       const root = fixture(directory, { installed: true, records: { [JAVASCRIPT.stamp]: EARLIER, [JAVASCRIPT.npmRecord]: LATER } });
-      assert.match(guard(root), JAVASCRIPT.install);
-      // npm trusts its record over node_modules, so the guard removes it for npm to read the tree.
-      assert.ok(!fs.existsSync(path.join(root, JAVASCRIPT.npmRecord)));
+      assert.match(guard(root), /^npm ci\b/m);
     });
 
     it(`${directory}: reads npm's record where make install never ran, so a package installed over the lock stays`, () => {
@@ -164,14 +163,45 @@ describe("the install that records itself", () => {
   }
 });
 
-describe("make lock in the JavaScript templates", () => {
-  // The lock it writes is newer than the stamp, so the next agent target installs from it.
-  for (const directory of ["starter-js", "method-apps/webapp-js"]) {
-    it(`${directory}'s lock regenerates the lock and nothing else`, () => {
-      const printed = dryRun(fixture(directory), "lock");
-      assert.match(printed, /npm install --package-lock-only/);
-      assert.doesNotMatch(printed, /\brm\b|\btouch\b/);
+const JAVASCRIPT_TEMPLATES = ["starter-js", "method-apps/webapp-js"];
+
+describe("the JavaScript templates' install-locked", () => {
+  for (const directory of JAVASCRIPT_TEMPLATES) {
+    it(`${directory}'s install-locked runs npm ci, then touches ${JAVASCRIPT.stamp}`, () => {
+      const printed = dryRun(fixture(directory), "install-locked");
+      const installs = printed.search(/^npm ci\b/m);
+      assert.ok(installs >= 0 && printed.indexOf(JAVASCRIPT.stamp) > installs, printed);
     });
+  }
+});
+
+describe("make lock in the JavaScript templates", () => {
+  // The lock it writes is newer than the stamp, so the next agent target installs from it. Where no
+  // stamp exists, the lock-only install rewrites npm's record too, so the target leaves an old stamp.
+  for (const directory of JAVASCRIPT_TEMPLATES) {
+    it(`${directory}'s lock regenerates the lock, then leaves an old stamp where none exists`, () => {
+      const printed = dryRun(fixture(directory), "lock");
+      const lock = printed.search(/^npm install --package-lock-only$/m);
+      const stamp = printed.search(new RegExp(`\\[ -f ${JAVASCRIPT.stamp.replace(/[.]/g, "\\.")} \\] \\|\\| touch -t 200001010000 `));
+      assert.ok(lock >= 0 && stamp > lock, printed);
+      assert.doesNotMatch(printed, /\brm\b/);
+    });
+  }
+});
+
+describe("use-local runs the guard first", () => {
+  // A local build installed over a stale tree would be replaced by the next agent target's install.
+  for (const [directory, targets] of [
+    ["starter-js", ["use-local"]],
+    ["method-apps/webapp-js", ["use-local", "use-local-form"]],
+    ["method-apps/cli-python", ["use-local"]],
+  ]) {
+    for (const target of targets) {
+      it(`${directory}'s ${target} depends on install-if-needed`, () => {
+        const makefile = fs.readFileSync(path.join(ROOT, directory, "Makefile"), "utf8");
+        assert.match(makefile, new RegExp(`^${target}: install-if-needed\\b`, "m"));
+      });
+    }
   }
 });
 
