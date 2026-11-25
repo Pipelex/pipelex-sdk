@@ -1334,7 +1334,9 @@ async def _read_stored_bytes(
                 parts.append(chunk)
     except ArtifactFetchError as exc:
         msg = f"The stored text at {site.path} could not be loaded: {exc}"
-        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=exc.reason, status=exc.status, problem=exc.problem) from exc
+        raise StoredTextLoadError(
+            msg, uri=site.url, path=site.path, reason=exc.reason, status=exc.status, requirement=exc.requirement, problem=exc.problem
+        ) from exc
     return b"".join(parts)
 
 

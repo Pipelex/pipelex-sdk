@@ -409,6 +409,61 @@ describe("the result readers load stored texts", () => {
     expect(wireResults?.main_stuff).toEqual(stored);
   });
 
+  it("startAndWaitForResult's blocking fallback keeps a runner's scope refusal whole", async () => {
+    const uri = storedUri("b2");
+    const stored = reference(uri);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      switch (url.pathname) {
+        case "/v1/version":
+          return jsonResponse(200, { protocol_version: "0.6.0", runner_version: "9.9.9" });
+        case "/v1/start":
+          return jsonResponse(404, { detail: "Not Found" });
+        case "/v1/execute":
+          return jsonResponse(200, {
+            pipeline_run_id: RUN_ID,
+            created_at: "t0",
+            state: "COMPLETED",
+            main_stuff_name: "summary",
+            pipe_output: {
+              working_memory: memory("native.Text", stored),
+              pipeline_run_id: RUN_ID,
+            },
+          });
+        case "/v1/resolve-storage-url/bulk":
+          return jsonResponse(200, {
+            items: [
+              {
+                uri,
+                url: null,
+                expires_at: null,
+                content_type: null,
+                error: {
+                  code: "auth.forbidden",
+                  detail: "Refused.",
+                  params: { requirement: "read_scope_under_caller" },
+                },
+              },
+            ],
+          });
+        default:
+          throw new Error(`unexpected fetch ${url.href}`);
+      }
+    });
+
+    const failure = await makeClient()
+      .startAndWaitForResult({ pipe_code: "p", files: { "main.mthds": "x" } })
+      .catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    const error = failure as StoredTextLoadError;
+    expect(error).toMatchObject({ reason: "auth.forbidden", path: "$", uri });
+    expect(error.requirement).toBe("read_scope_under_caller");
+    expect(error.problem.code).toBe("input.reference_not_found");
+    expect(error.wireResults?.pipeline_run_id).toBe(RUN_ID);
+    expect(error.wireResults?.main_stuff).toEqual(stored);
+  });
+
   it("passes the opt-out through waitForResult", async () => {
     const uri = storedUri("a");
     const boundary = mockBoundary({ body: results("native.Text", reference(uri), TEXT_NODE) });

@@ -1829,6 +1829,7 @@ async function readStoredBytes(
         cause: err,
         problem: err.problem,
         status: err.status,
+        requirement: err.requirement,
       });
     }
     return fail("unknown", err instanceof Error ? err.message : String(err), { cause: err });

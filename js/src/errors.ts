@@ -736,8 +736,9 @@ export class ArtifactFetchError extends ArtifactOperationError {
  *
  * `wireResults` is that result, as it was answered, every stored text still its reference, when
  * nothing else holds it: it is set only by `startAndWaitForResult`'s blocking fallback, a bare
- * runner's `POST /v1/execute`, where there is no run to read again. It is `undefined` everywhere
- * else.
+ * runner's `POST /v1/execute`, where there is no run to read again, which sets it on the error the
+ * load raised and rethrows that error, so every other member stays as the load gave it. It is
+ * `undefined` everywhere else.
  */
 export class StoredTextLoadError extends ArtifactOperationError {
   public readonly uri: string;
@@ -745,7 +746,8 @@ export class StoredTextLoadError extends ArtifactOperationError {
   public readonly reason: string;
   public readonly status: number | undefined;
   public readonly requirement: string | undefined;
-  public readonly wireResults: RunResults | undefined;
+  /** Assignable only for `startAndWaitForResult`'s blocking fallback, which sets it once. */
+  public wireResults: RunResults | undefined;
 
   constructor(
     message: string,

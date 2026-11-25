@@ -6025,18 +6025,10 @@ export class PipelexApiClient implements HostedProtocolSurface {
     } catch (err) {
       if (!(err instanceof StoredTextLoadError)) throw err;
       // The answer is the only copy of a completed run, and a runner older than pipelex-api 0.118.0
-      // serves no bulk resolve route: the error carries the result.
-      throw new StoredTextLoadError(
-        err.message,
-        {
-          uri: err.uri,
-          path: err.path,
-          reason: err.reason,
-          status: err.status,
-          wireResults: results,
-        },
-        { cause: err.cause, problem: err.problem },
-      );
+      // serves no bulk resolve route: the error carries the result. It is set on the load's own
+      // error, rethrown, so its every other member, `requirement` included, stays as it was.
+      err.wireResults = results;
+      throw err;
     }
   }
 }
