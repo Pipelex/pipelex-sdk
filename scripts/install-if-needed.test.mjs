@@ -18,7 +18,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // How each kind of directory records an install, and the command its `make install` runs.
 const PYTHON = {
   lock: "uv.lock",
-  record: ".venv/.uv-lock-synced",
+  stamp: ".venv/.uv-lock-synced",
   installed: ".venv/bin/pytest",
   install: /\buv sync\b/,
   // Read when the Makefile is parsed: the interpreter and the project's name.
@@ -26,7 +26,9 @@ const PYTHON = {
 };
 const JAVASCRIPT = {
   lock: "package-lock.json",
-  record: "node_modules/.package-lock.json",
+  stamp: "node_modules/.lock-installed",
+  // npm's own record of the last install, which the guard reads where `make install` never ran.
+  npmRecord: "node_modules/.package-lock.json",
   installed: "node_modules",
   install: /\bnpm (ci|install)\b/,
   files: {},
@@ -39,6 +41,7 @@ const DIRECTORIES = {
   "starter-js": JAVASCRIPT,
   "method-apps/webapp-js": JAVASCRIPT,
 };
+const JAVASCRIPT_DIRECTORIES = Object.keys(DIRECTORIES).filter((name) => DIRECTORIES[name] === JAVASCRIPT);
 
 const roots = [];
 after(() => {
@@ -46,7 +49,8 @@ after(() => {
 });
 
 const EARLIER = new Date("2026-01-01T00:00:00Z");
-const LATER = new Date("2026-01-02T00:00:00Z");
+const MIDDLE = new Date("2026-01-02T00:00:00Z");
+const LATER = new Date("2026-01-03T00:00:00Z");
 
 /** Write `file` under `root`, dated `when`. */
 function write(root, file, content, when) {
@@ -58,10 +62,10 @@ function write(root, file, content, when) {
 
 /**
  * A copy of `directory`'s Makefile in a temporary directory, its lockfile dated `lockAt`. With
- * `installed`, the directory looks installed, and with `recordAt` as well, its last install is
- * recorded at that date.
+ * `installed`, the directory looks installed, and each entry of `records`, a map from a path to a
+ * date, is written at that date: the install's stamp, or npm's record.
  */
-function fixture(directory, { installed = false, recordAt, lockAt = EARLIER } = {}) {
+function fixture(directory, { installed = false, records = {}, lockAt = MIDDLE } = {}) {
   const kind = DIRECTORIES[directory];
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "install-if-needed-"));
   roots.push(root);
@@ -75,22 +79,27 @@ function fixture(directory, { installed = false, recordAt, lockAt = EARLIER } = 
     } else {
       fs.mkdirSync(path.join(root, kind.installed), { recursive: true });
     }
-    if (recordAt) write(root, kind.record, "", recordAt);
+    for (const [file, when] of Object.entries(records)) write(root, file, "", when);
   }
   return root;
 }
 
-/**
- * What `make -n install-if-needed` prints in `root`: a recursive make runs, the rest is printed. The
- * recipe's own text is printed whichever branch runs, indented, so what the guard says when it runs
- * is the line that opens with it.
- */
-function guard(root) {
+/** Run `make -n <target>` in `root`, with no make or interpreter variables inherited. */
+function dryRun(root, target) {
   const env = { ...process.env };
   for (const name of ["MAKEFLAGS", "MAKELEVEL", "MFLAGS", "UV_PYTHON", "PYTHON_VERSION"]) delete env[name];
-  const result = spawnSync("make", ["--no-print-directory", "-n", "install-if-needed"], { cwd: root, env, encoding: "utf8" });
+  const result = spawnSync("make", ["--no-print-directory", "-n", target], { cwd: root, env, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;
+}
+
+/**
+ * What `make -n install-if-needed` prints in `root`. A recipe line that runs a recursive make is
+ * executed even under `-n`, so the guard's shell runs and its sub-make prints the install it would
+ * run; the recipe's own text is printed too, indented, whichever branch runs.
+ */
+function guard(root) {
+  return dryRun(root, "install-if-needed");
 }
 
 /** The line the guard prints when the lockfile moved, at the start of a line, where the recipe's copy is indented. */
@@ -105,13 +114,13 @@ for (const [directory, kind] of Object.entries(DIRECTORIES)) {
     });
 
     it("leaves alone a directory installed after its lockfile last moved", () => {
-      const printed = guard(fixture(directory, { installed: true, recordAt: LATER }));
+      const printed = guard(fixture(directory, { installed: true, records: { [kind.stamp]: LATER } }));
       assert.doesNotMatch(printed, kind.install);
       assert.doesNotMatch(printed, said(kind));
     });
 
     it(`installs again, and says why, when ${kind.lock} moved after the last install`, () => {
-      const printed = guard(fixture(directory, { installed: true, recordAt: EARLIER, lockAt: LATER }));
+      const printed = guard(fixture(directory, { installed: true, records: { [kind.stamp]: EARLIER } }));
       assert.match(printed, kind.install);
       assert.match(printed, said(kind));
     });
@@ -122,36 +131,47 @@ for (const [directory, kind] of Object.entries(DIRECTORIES)) {
   });
 }
 
+describe("the JavaScript guard's two records", () => {
+  for (const directory of JAVASCRIPT_DIRECTORIES) {
+    it(`${directory}: installs when ${JAVASCRIPT.lock} moved after the stamp, though npm's record is newer`, () => {
+      // `npm install --package-lock-only` rewrites npm's record without installing anything.
+      const root = fixture(directory, { installed: true, records: { [JAVASCRIPT.stamp]: EARLIER, [JAVASCRIPT.npmRecord]: LATER } });
+      assert.match(guard(root), JAVASCRIPT.install);
+      // npm trusts its record over node_modules, so the guard removes it for npm to read the tree.
+      assert.ok(!fs.existsSync(path.join(root, JAVASCRIPT.npmRecord)));
+    });
+
+    it(`${directory}: reads npm's record where make install never ran, so a package installed over the lock stays`, () => {
+      // The CI installs with `npm ci`, then `npm install --no-save` the next SDK, then runs agent-test.
+      assert.doesNotMatch(guard(fixture(directory, { installed: true, records: { [JAVASCRIPT.npmRecord]: LATER } })), JAVASCRIPT.install);
+      assert.match(guard(fixture(directory, { installed: true, records: { [JAVASCRIPT.npmRecord]: EARLIER } })), JAVASCRIPT.install);
+    });
+  }
+});
+
 describe("the install that records itself", () => {
-  // The guard reads the record that the install leaves, so a Python install that synced .venv
-  // without touching the stamp would send every later check back to the install.
-  for (const directory of Object.keys(DIRECTORIES).filter((name) => DIRECTORIES[name] === PYTHON)) {
-    it(`${directory}'s install touches ${PYTHON.record} after uv sync`, () => {
-      const printed = spawnSync("make", ["--no-print-directory", "-n", "install"], {
-        cwd: fixture(directory),
-        encoding: "utf8",
-        env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !["MAKEFLAGS", "MAKELEVEL", "MFLAGS"].includes(name))),
-      }).stdout;
-      const sync = printed.search(PYTHON.install);
-      const touch = printed.search(/touch "?[^\n]*\.venv\/\.uv-lock-synced/);
-      assert.ok(sync >= 0 && touch > sync, printed);
+  // The guard reads the stamp the install leaves, so an install that did not touch it after the
+  // package manager ran would send the guard back to the install, or to npm's record, every time.
+  const touch = (stamp) => new RegExp(`touch "?[^\\n]*${stamp.replace(/[.]/g, "\\.")}`);
+  for (const directory of Object.keys(DIRECTORIES)) {
+    const kind = DIRECTORIES[directory];
+    it(`${directory}'s install touches ${kind.stamp} after installing`, () => {
+      const printed = dryRun(fixture(directory), "install");
+      const installs = printed.search(kind.install);
+      const touches = printed.search(touch(kind.stamp));
+      assert.ok(installs >= 0 && touches > installs, printed);
     });
   }
 });
 
 describe("make lock in the JavaScript templates", () => {
-  // `npm install --package-lock-only` rewrites npm's record of the last install without installing,
-  // so a lock regenerated there would read as installed: the target removes the record after it.
+  // The lock it writes is newer than the stamp, so the next agent target installs from it.
   for (const directory of ["starter-js", "method-apps/webapp-js"]) {
-    it(`${directory}'s lock removes ${JAVASCRIPT.record} after regenerating the lock`, () => {
-      const printed = spawnSync("make", ["--no-print-directory", "-n", "lock"], {
-        cwd: fixture(directory),
-        encoding: "utf8",
-        env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !["MAKEFLAGS", "MAKELEVEL", "MFLAGS"].includes(name))),
-      }).stdout;
-      const lock = printed.indexOf("npm install --package-lock-only");
-      const removal = printed.indexOf(`rm -f ${JAVASCRIPT.record}`);
-      assert.ok(lock >= 0 && removal > lock, printed);
+    it(`${directory}'s lock regenerates the lock and nothing else`, () => {
+      const printed = dryRun(fixture(directory), "lock");
+      assert.match(printed, /npm install --package-lock-only/);
+      assert.doesNotMatch(printed, /\brm\b|\btouch\b/);
     });
   }
 });
+

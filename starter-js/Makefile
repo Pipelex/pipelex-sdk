@@ -201,26 +201,35 @@ all: check test build ## Full validation: check + test + build (excludes e2e —
 
 install: ## Install dependencies
 	npm install
+	@touch $(INSTALL_STAMP)
 
 # The agent targets install the project first when node_modules is missing, so a fresh
 # checkout can run them directly, and again when package-lock.json moved after the last install,
-# so they never run against other versions than the lock pins. npm records every install in
-# node_modules/.package-lock.json, written after package-lock.json, so a package-lock.json newer
-# than that record moved after the last install: a merge or a pull. `npm install
-# --package-lock-only` rewrites the record without installing anything, so `make lock` removes it
-# and the guard reads the directory as never recorded. A package installed over the locked one with
-# `npm install --no-save` rewrites the record, so it stays.
+# so they never run against other versions than the lock pins. `make install` touches
+# INSTALL_STAMP once npm has installed, so a package-lock.json newer than the stamp moved after the
+# last install: a merge, a pull, a `make lock` or a bare `npm install --package-lock-only`. Where
+# `make install` never ran, as when the CI installs with `npm ci` itself, the guard reads npm's own
+# record of the last install, NPM_RECORD, instead. npm trusts that record over node_modules, and
+# `npm install --package-lock-only` rewrites it without installing anything, so the guard removes
+# it before installing again, and npm reads what node_modules actually holds. A package installed
+# over the locked one after the last install, with `npm install --no-save`, stays: only a lock that
+# moved since brings the locked versions back.
+INSTALL_STAMP := node_modules/.lock-installed
+NPM_RECORD := node_modules/.package-lock.json
 install-if-needed:
 	@if [ ! -d node_modules ]; then \
 		$(MAKE) --no-print-directory install; \
-	elif [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then \
-		echo "package-lock.json has moved since node_modules was last installed: running make install first."; \
-		$(MAKE) --no-print-directory install; \
+	else \
+		record=$(INSTALL_STAMP); [ -f "$$record" ] || record=$(NPM_RECORD); \
+		if [ ! -f "$$record" ] || [ package-lock.json -nt "$$record" ]; then \
+			echo "package-lock.json has moved since node_modules was last installed: running make install first."; \
+			rm -f $(NPM_RECORD); \
+			$(MAKE) --no-print-directory install; \
+		fi; \
 	fi
 
 lock: ## Regenerate package-lock.json without installing; the next agent target installs from it
 	npm install --package-lock-only
-	rm -f node_modules/.package-lock.json
 
 clean: ## Remove build artifacts and caches
 	rm -rf .next node_modules/.cache
