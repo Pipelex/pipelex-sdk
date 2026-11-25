@@ -405,7 +405,10 @@ describe("classifyPipelineError — the blocking path", () => {
     const result = classifyPipelineError(err, DEFAULT_ENV, { blocking: true });
     expect(result.kind).toBe("execute_timeout");
     expect(result.code).toBe("run.outcome_unknown");
+    expect(result.title).not.toMatch(/exceeded/);
     expect(result.message).toMatch(/~30s/);
+    expect(result.support).toContain("run run-9");
+    expect(result.apiMessage).toBe(problem.detail);
     expect(result.hint?.summary).toMatch(/durable/i);
     expect(result.retry?.verdict).toBe("outcome_unknown");
   });

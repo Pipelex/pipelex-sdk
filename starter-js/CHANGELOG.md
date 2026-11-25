@@ -11,7 +11,7 @@
 
 ### Fixed
 
-- **A blocking run cut off at the hosted ~30s cap reads as the cap again**: the hosted platform now answers that cut-off with a `502` problem coded `run.outcome_unknown` naming the run, which the starter showed as a generic "cannot tell whether the run started or finished" failure; in Blocking mode it now reads it as `execute_timeout`, "Pipeline exceeded the ~30s blocking limit", with its hint to switch to Durable mode, as it reads the SDK's own `client.outcome_unknown`.
+- **A blocking run cut off at the hosted ~30s cap reads as the cap again**: the hosted platform now answers that cut-off with a `502` problem coded `run.outcome_unknown` naming the run, which the starter showed as a generic "cannot tell whether the run started or finished" failure; in Blocking mode it now reads it as `execute_timeout`, "The blocking request ended without the run's result", naming the ~30s limit as the likely cause, showing the platform's own detail and hinting to switch to Durable mode, as it reads the SDK's own `client.outcome_unknown`.
 
 ## [v0.69.3] - 2026-11-18
 
