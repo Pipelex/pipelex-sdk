@@ -33,6 +33,7 @@ from scripts.codegen_shared import CodegenSource, Layout
 from scripts.create import (
     BOOTSTRAP_DIR,
     BOOTSTRAP_SCRIPT,
+    SYNC_STAMP,
     TEMPLATE_NAME,
     CreateArgs,
     CreateDeps,
@@ -541,6 +542,15 @@ class TestReadOnlyHalf:
 
 
 class TestWriteHalf:
+    async def test_records_its_sync_so_the_first_check_does_not_sync_again(self, template: Path, api: RecordedClient):
+        # The agent targets sync .venv again when uv.lock is newer than SYNC_STAMP, and the rename's sync
+        # rewrites uv.lock, so the gesture touches the stamp after it, the path the Makefile names.
+        del api
+        (template / ".venv").mkdir()
+        assert await run_create([str(RECEIPT_REVIEW_BUNDLE)], deps(template, Runner())) == 0
+        assert (template / SYNC_STAMP).is_file()
+        assert f"SYNC_STAMP := {SYNC_STAMP.as_posix()}\n" in (TEMPLATE_ROOT / "Makefile").read_text(encoding="utf-8")
+
     async def test_runs_every_step_in_order_and_removes_the_bootstrap_last(
         self, template: Path, api: RecordedClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):

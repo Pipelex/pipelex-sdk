@@ -245,8 +245,10 @@ install: ## Install dependencies
 # checkout can run them directly, and again when package-lock.json moved after the last install,
 # so they never run against other versions than the lock pins. npm records every install in
 # node_modules/.package-lock.json, written after package-lock.json, so a package-lock.json newer
-# than that record moved after the last install: a merge, a pull or a `make lock`. A package
-# installed over the locked one with `npm install --no-save` rewrites the record, so it stays.
+# than that record moved after the last install: a merge or a pull. `npm install
+# --package-lock-only` rewrites the record without installing anything, so `make lock` removes it
+# and the guard reads the directory as never recorded. A package installed over the locked one with
+# `npm install --no-save` rewrites the record, so it stays.
 install-if-needed:
 	@if [ ! -d node_modules ]; then \
 		$(MAKE) --no-print-directory install; \
@@ -255,8 +257,9 @@ install-if-needed:
 		$(MAKE) --no-print-directory install; \
 	fi
 
-lock: ## Regenerate package-lock.json without installing
+lock: ## Regenerate package-lock.json without installing; the next agent target installs from it
 	npm install --package-lock-only
+	rm -f node_modules/.package-lock.json
 
 clean: ## Remove build artifacts and caches
 	rm -rf .next node_modules/.cache

@@ -104,6 +104,10 @@ MAKE_VARIABLES = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
 #: The variables that would make `uv sync` refuse the lock file the rename leaves stale, rather than re-sync it.
 UV_LOCK_GATES = ("UV_LOCKED", "UV_FROZEN")
 
+#: The Makefile's SYNC_STAMP: touched after each sync of .venv with uv.lock, so the agent targets' guard reads
+#: the environment as current and does not sync it again on the project's first check.
+SYNC_STAMP = Path(".venv") / ".uv-lock-synced"
+
 USAGE = (
     "usage: make create METHOD=<path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] "
     "[TITLE=<title>] [DESCRIPTION=<text>] [PIPE=<pipe_code>] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] "
@@ -850,6 +854,8 @@ class WriteHalf:
         if planned.deps.run(["uv", "sync"], root, environment_without(UV_LOCK_GATES)) != 0:
             msg = f"re-syncing uv.lock failed (see above). The project is created; finish with:\n{indented(self.commands_left(4))}"
             raise CreateError(msg)
+        if (root / SYNC_STAMP).parent.is_dir():
+            (root / SYNC_STAMP).touch()
         self.completed = 4
 
         self.announce(5)

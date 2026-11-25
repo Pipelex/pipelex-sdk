@@ -80,13 +80,22 @@ function fixture(directory, { installed = false, recordAt, lockAt = EARLIER } = 
   return root;
 }
 
-/** What `make -n install-if-needed` prints in `root`: a recursive make runs, the rest is printed. */
+/**
+ * What `make -n install-if-needed` prints in `root`: a recursive make runs, the rest is printed. The
+ * recipe's own text is printed whichever branch runs, indented, so what the guard says when it runs
+ * is the line that opens with it.
+ */
 function guard(root) {
   const env = { ...process.env };
   for (const name of ["MAKEFLAGS", "MAKELEVEL", "MFLAGS", "UV_PYTHON", "PYTHON_VERSION"]) delete env[name];
   const result = spawnSync("make", ["--no-print-directory", "-n", "install-if-needed"], { cwd: root, env, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;
+}
+
+/** The line the guard prints when the lockfile moved, at the start of a line, where the recipe's copy is indented. */
+function said(kind) {
+  return new RegExp(`^${kind.lock.replace(".", "\\.")} has moved since`, "m");
 }
 
 for (const [directory, kind] of Object.entries(DIRECTORIES)) {
@@ -96,13 +105,15 @@ for (const [directory, kind] of Object.entries(DIRECTORIES)) {
     });
 
     it("leaves alone a directory installed after its lockfile last moved", () => {
-      assert.doesNotMatch(guard(fixture(directory, { installed: true, recordAt: LATER })), kind.install);
+      const printed = guard(fixture(directory, { installed: true, recordAt: LATER }));
+      assert.doesNotMatch(printed, kind.install);
+      assert.doesNotMatch(printed, said(kind));
     });
 
     it(`installs again, and says why, when ${kind.lock} moved after the last install`, () => {
       const printed = guard(fixture(directory, { installed: true, recordAt: EARLIER, lockAt: LATER }));
       assert.match(printed, kind.install);
-      assert.match(printed, new RegExp(`${kind.lock.replace(".", "\\.")} has moved since`));
+      assert.match(printed, said(kind));
     });
 
     it("installs again when no install was ever recorded", () => {
@@ -124,6 +135,23 @@ describe("the install that records itself", () => {
       const sync = printed.search(PYTHON.install);
       const touch = printed.search(/touch "?[^\n]*\.venv\/\.uv-lock-synced/);
       assert.ok(sync >= 0 && touch > sync, printed);
+    });
+  }
+});
+
+describe("make lock in the JavaScript templates", () => {
+  // `npm install --package-lock-only` rewrites npm's record of the last install without installing,
+  // so a lock regenerated there would read as installed: the target removes the record after it.
+  for (const directory of ["starter-js", "method-apps/webapp-js"]) {
+    it(`${directory}'s lock removes ${JAVASCRIPT.record} after regenerating the lock`, () => {
+      const printed = spawnSync("make", ["--no-print-directory", "-n", "lock"], {
+        cwd: fixture(directory),
+        encoding: "utf8",
+        env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !["MAKEFLAGS", "MAKELEVEL", "MFLAGS"].includes(name))),
+      }).stdout;
+      const lock = printed.indexOf("npm install --package-lock-only");
+      const removal = printed.indexOf(`rm -f ${JAVASCRIPT.record}`);
+      assert.ok(lock >= 0 && removal > lock, printed);
     });
   }
 });
