@@ -453,16 +453,34 @@ class TestStoredTextFailure:
 
     def test_is_never_the_api_out_of_reach_nor_files_that_failed_to_save(self):
         presentation = present_error(self._failure())
-        assert presentation.message.startswith("The run finished, but its result could not be loaded.")
+        assert presentation.message.startswith("The run finished, but its result could not be loaded:")
         assert "did not answer in time" not in presentation.message
         assert presentation.hint is not None
         assert "saving its files" not in presentation.hint
         assert "Where: $.summary in the result" in presentation.details
         assert "Why: timeout" in presentation.details
 
-    def test_a_durable_run_is_read_again_by_its_id(self):
+    def test_a_durable_run_is_read_again_by_its_id_when_a_second_try_can_pass(self):
         presentation = present_error(self._failure())
-        assert presentation.hint == "The run's result is kept: read it again with `widget detached wait <run id>`."
+        assert presentation.hint == (
+            "The run's result is kept, and this failure can pass on a second try: "
+            "read it again with `widget detached wait <run id>`, which does not run the method again."
+        )
+        # The read's verdict is folded into the hint, never printed as a line that would invite a second paid run.
+        assert not any(line.startswith("Retry:") for line in presentation.details)
+
+    def test_a_failure_a_second_try_meets_again_is_never_sent_round_to_another_run(self):
+        too_large = StoredTextLoadError(
+            "The stored text at $ could not be loaded: it is over the load's limit.",
+            uri="pipelex-storage://org/runs/run-9/generated/ab/value.txt",
+            path="$",
+            reason="too_large",
+        )
+        blocking = present_error(too_large, blocking=True)
+        assert blocking.hint is not None
+        assert "would meet the same failure" in blocking.hint
+        assert "widget attended" not in blocking.hint
+        assert present_error(too_large).hint == "The run's result is kept, but reading it again would meet the same failure."
 
     def test_a_blocking_run_is_run_again_since_its_result_is_kept_nowhere(self):
         presentation = present_error(self._failure(), blocking=True)

@@ -489,12 +489,29 @@ class TestBlocking:
         result = invoke(make_binding(), ["--blocking"])
         assert result.exit_code == 1
         stderr = " ".join(result.stderr.split())
-        assert "The run finished, but its result could not be loaded." in stderr
+        assert "The run finished, but its result could not be loaded: the long text at $ could not be read (resolve_failed)." in stderr
         assert "Why: resolve_failed" in stderr
         assert "kept nowhere else" in stderr
         assert "Could not reach the Pipelex API" not in stderr
         assert "may still be going" not in stderr
         assert result.stdout == ""
+        # The run was paid for and its answer is its only copy: its cost is still reported.
+        assert "No usage was reported for this run." in stderr
+
+    def test_a_ctrl_c_while_the_text_loads_says_there_is_no_id_to_resume_by(self, fake_client: FakeClient):
+        reference = {"url": "pipelex-storage://org/runs/run-1/generated/ab/value.txt", "size": 9000, "mime_type": "text/plain", "preview": "A long"}
+        fake_client.execute_answer = execute_result(reference)
+
+        async def interrupted() -> Any:
+            signal.raise_signal(signal.SIGINT)
+            await asyncio.sleep(10)
+            msg = "the load was not cancelled"
+            raise AssertionError(msg)
+
+        fake_client.resolve_failure = interrupted
+        result = invoke(make_binding(), ["--blocking"])
+        assert result.exit_code == 130
+        assert "A blocking run has no id to resume it by." in result.stderr
 
     def test_runs_in_one_request_and_prints_the_same_json(self, fake_client: FakeClient):
         fake_client.execute_answer = execute_result(TEXT_OUTPUT)

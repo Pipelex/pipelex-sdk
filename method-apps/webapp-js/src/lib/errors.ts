@@ -776,6 +776,73 @@ function classifyRunTimeout(err: ProblemError): PipelineError {
 }
 
 /**
+ * `StoredTextLoadError`: the run completed, and one of the long texts of its
+ * result, which the runtime keeps in the run's storage and answers with a
+ * reference to, could not be loaded. Read with `instanceof` for the data the
+ * class alone carries, where the text sits in the result (`path`) and why it
+ * failed (`reason`); the problem still says who must act and whether a second
+ * try can pass. The message is the app's own, since the SDK's sentence can
+ * advise reading the result again, which a blocking run cannot do; it stays in
+ * the technical details.
+ *
+ * On the blocking path the result was delivered with the answer and kept
+ * nowhere else, so the hint says that it cannot be read again, and only where
+ * the problem's verdict says a second try can pass that trying again runs the
+ * method again: a failure a second try meets again, a text over the load's
+ * caps or a link refused, is never sent round to another paid run, nor to
+ * Durable mode, which a deployment with no bulk resolve route would answer
+ * with the same failure. A durable poll drops the retry line, since the run's
+ * result stays readable by its id, and gets no hint.
+ */
+function classifyStoredTextLoad(err: StoredTextLoadError, opts: ClassifyOptions): PipelineError {
+  const parts = errorParts(err);
+  const hint = opts.blocking
+    ? {
+        summary:
+          parts.retry?.verdict === "yes"
+            ? "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again by the run's id: trying again runs the method again. A durable run keeps its result readable by its id."
+            : "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again by the run's id.",
+      }
+    : undefined;
+  return {
+    kind: "result_not_loaded",
+    title: "The run finished, but its result could not be loaded",
+    message: `The result holds a long text the platform keeps in the run's storage, and the text at ${err.path} could not be loaded (${err.reason}).`,
+    ...(hint !== undefined ? { hint } : {}),
+    ...parts,
+    details: [
+      `${err.name}: ${err.message}`,
+      `path: ${err.path}`,
+      `reason: ${err.reason}`,
+      err.status !== undefined ? `status: ${err.status}` : null,
+      err.uri ? `uri: ${describeStoredTextUri(err.uri)}` : null,
+      ...problemLines(err.problem, err.requestId),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
+/**
+ * A stored text's reference as the technical details may show it, since they
+ * reach every visitor. A `pipelex-storage://` reference is the platform's own
+ * and names no secret, so it is shown whole. Any other URL is one a method put
+ * there, which may carry credentials or a signed query, so it is cut down to
+ * its scheme and host, and a `data:` URL, which can hold the whole text, to
+ * its length.
+ */
+function describeStoredTextUri(uri: string): string {
+  if (uri.startsWith("pipelex-storage://")) return uri;
+  if (uri.startsWith("data:")) return `a data: URL of ${uri.length} characters (not shown)`;
+  try {
+    const parsed = new URL(uri);
+    return `${parsed.protocol}//${parsed.host} (the rest is not shown)`;
+  } catch {
+    return "not a URL (not shown)";
+  }
+}
+
+/**
  * `run.failed`: a run that ended without a result. Why is the run's own
  * problem, which `run.failed` nests as `run_error` (`RunFailedError.runError`),
  * and the classification reads it: its title in the headline, its detail as
@@ -791,43 +858,6 @@ function classifyRunTimeout(err: ProblemError): PipelineError {
  * nothing about whether the run would pass a second time, which nothing
  * recorded decides.
  */
-/**
- * `StoredTextLoadError`: the run completed, and one of the long texts of its
- * result, which the runtime keeps in the run's storage and answers with a
- * reference to, could not be loaded. Read with `instanceof` for the data the
- * class alone carries, where the text sits in the result (`path`) and why it
- * failed (`reason`); the problem still says who must act and whether a second
- * try can pass. On the blocking path the result was delivered with the answer
- * and kept nowhere else, so the hint says that running it again is the way to
- * it; a durable run's result stays readable by its id.
- */
-function classifyStoredTextLoad(err: StoredTextLoadError, opts: ClassifyOptions): PipelineError {
-  return {
-    kind: "result_not_loaded",
-    title: "The run finished, but its result could not be loaded",
-    message: `The result holds a long text the platform keeps in the run's storage, and loading it failed. ${err.message}`,
-    ...(opts.blocking
-      ? {
-          hint: {
-            summary:
-              "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again by the run's id: run the method again. A durable run's result stays readable by its id.",
-          },
-        }
-      : {}),
-    ...errorParts(err),
-    details: [
-      `${err.name}: ${err.message}`,
-      `path: ${err.path}`,
-      `reason: ${err.reason}`,
-      err.status !== undefined ? `status: ${err.status}` : null,
-      err.uri ? `uri: ${err.uri}` : null,
-      ...problemLines(err.problem, err.requestId),
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  };
-}
-
 function classifyRunFailed(err: ProblemError, finishedAt?: string | null): PipelineError {
   const nested = err.problem.run_error;
   const runId = runIdOf(err.problem) ?? "(unknown)";

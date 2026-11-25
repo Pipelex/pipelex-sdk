@@ -71,8 +71,8 @@ class _FakeClient:
     async def execute(self, **_kwargs: Any) -> PipelexExecuteResult:
         return self.answer
 
-    async def resolve_storage_urls(self, *args: Any, **kwargs: Any) -> Any:
-        self.resolved.append((args, kwargs))
+    async def resolve_storage_urls_bulk(self, uris: list[str]) -> Any:
+        self.resolved.append(uris)
         msg = "a data: URL is decoded where it is, never resolved"
         raise AssertionError(msg)
 
@@ -182,10 +182,13 @@ class TestBlockingCli:
         result = runner.invoke(app, ["blocking", "extract-entities", "some text"])
         assert result.exit_code == 1
         output = " ".join(result.output.split())
-        assert "The run finished, but its result could not be loaded." in output
+        assert "The run finished, but its result could not be loaded: the long text at $ could not be read (store_error)." in output
         assert "Where: $ in the result" in output
         assert "Why: store_error" in output
         assert "kept nowhere else" in output
+        # The store's 503 can pass on a second try, which the hint says runs the method again; no retry line contradicts it.
+        assert "runs the method again" in output
+        assert "Retry:" not in output
         # Never told as the ~30s cap, a run still going, or files that failed to save.
         assert "may still be going" not in output
         assert "saving its files" not in output

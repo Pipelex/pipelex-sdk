@@ -253,9 +253,9 @@ class FakeClient:
         self.uploaded: list[str] = []
         self.pipe_io_asked: list[PipeIORequest] = []
         self.prepared: list[dict[str, Any]] = []
-        #: What the bulk resolve route raises: the load of a stored text that is a reference reaches it, and a test
-        #: that serves one sets the failure it meets. A `data:` URL is decoded where it is and never reaches it.
-        self.resolve_failure: BaseException | None = None
+        #: What the bulk resolve route raises, or a coroutine to run instead: the load of a stored text that is a
+        #: reference reaches it, and a test that serves one sets what it meets. A `data:` URL never reaches it.
+        self.resolve_failure: BaseException | Callable[[], Awaitable[Any]] | None = None
         self.resolved: list[list[str]] = []
 
     async def __aenter__(self) -> "FakeClient":
@@ -276,8 +276,10 @@ class FakeClient:
     async def resolve_storage_urls_bulk(self, uris: list[str]) -> Any:
         """The bulk resolve route, which a stored text's load reads: the test's failure, else a test that forgot one."""
         self.resolved.append(uris)
-        if self.resolve_failure is not None:
+        if isinstance(self.resolve_failure, BaseException):
             raise self.resolve_failure
+        if self.resolve_failure is not None:
+            return await self.resolve_failure()
         msg = "the test set no resolve answer"
         raise AssertionError(msg)
 

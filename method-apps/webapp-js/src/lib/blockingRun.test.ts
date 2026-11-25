@@ -247,7 +247,8 @@ describe("executeBlockingRun", () => {
     expect(result.runId).toBe("run-6");
     expect(result.error.kind).toBe("result_not_loaded");
     expect(result.error.title).toBe("The run finished, but its result could not be loaded");
-    expect(result.error.hint?.summary).toMatch(/run the method again/);
+    // The resolve route out of reach can pass on a second try, which runs the method again.
+    expect(result.error.hint?.summary).toMatch(/trying again runs the method again/);
     expect(result.error.details).toContain("reason: resolve_failed");
   });
 

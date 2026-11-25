@@ -43,7 +43,7 @@ from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.artifact_models import DownloadArtifactsResult
 from pipelex_sdk.artifacts import load_stored_texts
 from pipelex_sdk.client import PipelexAPIClient
-from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, RunTimeoutError
+from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, RunTimeoutError, StoredTextLoadError
 from pipelex_sdk.execute_result import results_from_execute
 from pipelex_sdk.runs import PollInfo, RunResults, WaitForResultOptions
 from pydantic import ValidationError
@@ -104,7 +104,13 @@ async def execute_plan(plan: RunPlan, *, binding: MethodBinding, stderr: Console
                 stderr.print(f"Run {escape(run_id)} started. Collect its result with: [bold]{escape(resume_command(run_id))}[/bold]")
                 return 0
             case RunMode.BLOCKING:
-                results = await run_blocking(client, binding=binding, inputs=inputs, stderr=stderr)
+                try:
+                    results = await run_blocking(client, binding=binding, inputs=inputs, stderr=stderr)
+                except StoredTextLoadError as exc:
+                    if exc.wire_results is None:
+                        raise
+                    # The run was paid for and its answer is the only copy: its files and its cost still come out.
+                    return await deliver(client, exc.wire_results, plan=plan, binding=binding, stderr=stderr, load_failure=exc)
             case RunMode.RESUME:
                 if plan.resume_run_id is None:
                     msg = "A resumed run needs the id of the run to resume."
@@ -214,18 +220,34 @@ async def run_blocking(client: PipelexAPIClient, *, binding: MethodBinding, inpu
     value past 4 KiB in the run's storage and answers with its reference, and the load puts the value
     back, so the output model reads it whichever mode ran. The answer carries the working memory and
     the forms, so nothing is read again. A text that fails to load raises `StoredTextLoadError`, which
-    `lib/errors.py` presents as a finished run whose result could not be loaded.
+    `lib/errors.py` presents as a finished run whose result could not be loaded, carrying the lifted
+    answer on its `wire_results`: it is the run's only copy, so `execute_plan` still saves its files
+    and reports its cost from it. A Ctrl-C while the text loads says, as one during the request does,
+    that a blocking run has no id to resume it by.
     """
     with stderr.status("Running…"):
         try:
             result = await client.execute(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.kwargs())
+            lifted = results_from_execute(result)
+            try:
+                return await load_stored_texts(client, lifted)
+            except StoredTextLoadError as exc:
+                exc.wire_results = lifted
+                raise
         except asyncio.CancelledError:
             stderr.print("\nInterrupted. A blocking run has no id to resume it by.")
             raise
-        return await load_stored_texts(client, results_from_execute(result))
 
 
-async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPlan, binding: MethodBinding, stderr: Console) -> int:
+async def deliver(
+    client: PipelexAPIClient,
+    results: RunResults,
+    *,
+    plan: RunPlan,
+    binding: MethodBinding,
+    stderr: Console,
+    load_failure: StoredTextLoadError | None = None,
+) -> int:
     """Print a finished run's result on stdout, then its files and its cost on stderr; return the exit code.
 
     The result is printed first, so a failure to bring a file down never costs the reader the result
@@ -242,25 +264,30 @@ async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPla
     not printed, which a failure to save the files must never hide. A download failure that neither
     the SDK nor the CLI words, one of `UNWORDED_DOWNLOAD_FAILURES`, is worded here as an `AppError`
     whatever the result was, so that it reaches the boundary as an error and never as a traceback.
+
+    A blocking run whose stored text failed to load comes here with its answer as it arrived and the
+    failure as `load_failure`: nothing is printed on stdout, the run's files come down and its cost is
+    reported, and the failure is raised in place of a refusal, exactly as a refused result is.
     """
     exit_code = 0
-    shape_error: OutputShapeError | OutputValidationError | None = None
+    shape_error: OutputShapeError | OutputValidationError | StoredTextLoadError | None = load_failure
     try:
-        resume_hint = None if plan.mode is RunMode.BLOCKING else resume_command(results.pipeline_run_id)
-        try:
-            narrowed = narrow_output(
-                results,
-                output_model=binding.output_model,
-                output_is_list=binding.output_is_list,
-                output_optional=binding.contracts.io.output.optional,
-                resume_hint=resume_hint,
-            )
-        except (OutputShapeError, OutputValidationError) as exc:
-            shape_error = exc
-        else:
-            print_payload(narrowed.payload)
-            if narrowed.absent:
-                stderr.print(absence_note(narrowed))
+        if load_failure is None:
+            resume_hint = None if plan.mode is RunMode.BLOCKING else resume_command(results.pipeline_run_id)
+            try:
+                narrowed = narrow_output(
+                    results,
+                    output_model=binding.output_model,
+                    output_is_list=binding.output_is_list,
+                    output_optional=binding.contracts.io.output.optional,
+                    resume_hint=resume_hint,
+                )
+            except (OutputShapeError, OutputValidationError) as exc:
+                shape_error = exc
+            else:
+                print_payload(narrowed.payload)
+                if narrowed.absent:
+                    stderr.print(absence_note(narrowed))
         if plan.download:
             try:
                 downloaded = await download_produced_files(client, results, out_dir=plan.out_dir)

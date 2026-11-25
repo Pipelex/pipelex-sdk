@@ -125,25 +125,45 @@ def present_stored_text_failure(exc: StoredTextLoadError, *, mode: RunMode | Non
     """A run that finished, one of whose long texts, kept in the run's storage, could not be loaded.
 
     Read with `isinstance` for the data the class alone carries: where the text sits in the result (`path`) and why
-    it failed (`reason`). It is never a run still going nor a cut-off: the run is over. A blocking run's result
-    arrives with its answer and is kept nowhere else, so the platform answers a read of it by its id with
-    `run.results_not_stored`, and running the method again is the way to it; a durable run's result stays readable
-    by its id, which `--resume` reads again.
+    it failed (`reason`). It is never a run still going nor a cut-off: the run is over. The message is the CLI's own,
+    since the SDK's sentence can advise reading the result again, which a blocking run cannot do.
+
+    The problem's verdict judges loading the text, not running the method, so its retry line is left out and the
+    hint says what a second try means here. A blocking run's result arrives with its answer and is kept nowhere else,
+    so the platform answers a read of it by its id with `run.results_not_stored`: only where the verdict says a second
+    try can pass does the hint say that trying again runs the method again, and a failure a second try meets again, a
+    text over the load's caps or a link refused, is never sent round to another paid run, nor to a durable mode, which a
+    deployment with no bulk resolve route would answer with the same failure.
+    A durable run's result stays readable by its id, which `--resume` reads again.
     """
+    can_pass = exc.problem.effective_retry is RetryVerdict.YES
     if mode is RunMode.BLOCKING:
+        if can_pass:
+            hint = (
+                "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again. "
+                "This failure can pass on a second try, which runs the method again: "
+                "without --blocking, --resume can read its result later."
+            )
+        else:
+            hint = (
+                "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again, "
+                "and running the method again unchanged would meet the same failure."
+            )
+    elif can_pass:
         hint = (
-            "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again: "
-            "run the method again, without --blocking so that --resume can read its result later."
+            "The run's result is kept, and this failure can pass on a second try: "
+            f"read it again with {command_name()} --resume <run-id>, which does not run the method again."
         )
     else:
-        hint = f"The run's result is kept: read it again with {command_name()} --resume <run-id>, the id printed when it started."
+        hint = "The run's result is kept, but reading it again would meet the same failure."
+    lines = problem_lines(exc.problem, request_id=_request_id(exc))
     return ErrorPresentation(
-        message=f"The run finished, but its result could not be loaded. {exc}",
+        message=(f"The run finished, but its result could not be loaded: the long text at {exc.path} could not be read ({exc.reason})."),
         hint=hint,
         details=(
             f"Where: {exc.path} in the result",
             f"Why: {exc.reason}",
-            *problem_lines(exc.problem, request_id=_request_id(exc)),
+            *(line for line in lines if not line.startswith("Retry:")),
         ),
     )
 
