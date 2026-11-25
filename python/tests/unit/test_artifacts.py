@@ -554,6 +554,9 @@ class TestArtifacts:
             asyncio.run(_read())
         assert caught.value.reason == "auth.forbidden"
         assert caught.value.problem.code == problem_code
+        # The requirement stays on the error, so a caller tells the scope refusal from another `auth.forbidden` even
+        # where the problem keeps none.
+        assert caught.value.requirement == (params or {}).get("requirement")
         assert seen == []
 
     # A runner's signed download route refuses a bad or expired signature with a 403 `auth.forbidden` and a missing

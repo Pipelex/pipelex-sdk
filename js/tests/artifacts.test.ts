@@ -638,6 +638,10 @@ describe("fetchArtifact", () => {
         uri: REPORT_URI,
         code,
       });
+      // The requirement stays on the error, so a caller tells the scope refusal from another
+      // `auth.forbidden` even where the problem keeps none.
+      const error = (await failure.catch((err: unknown) => err)) as ArtifactFetchError;
+      expect(error.requirement).toBe(requirement);
       expect(spy).not.toHaveBeenCalled();
     },
   );

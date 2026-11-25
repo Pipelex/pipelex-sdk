@@ -543,6 +543,7 @@ class TestStoredTexts:
             asyncio.run(client.get_run_result(_RUN_ID))
 
         assert exc_info.value.reason == "auth.forbidden"
+        assert exc_info.value.requirement == "read_scope_under_caller"
         assert exc_info.value.problem.code == "input.reference_not_found"
 
     def test_stored_text_at_a_foreign_url_is_refused_without_a_request(self, mocker: MockerFixture) -> None:

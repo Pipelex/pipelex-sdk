@@ -657,6 +657,7 @@ describe("the result readers load stored texts", () => {
 
     expect(failure).toBeInstanceOf(StoredTextLoadError);
     expect(failure).toMatchObject({ reason: "auth.forbidden" });
+    expect((failure as StoredTextLoadError).requirement).toBe("read_scope_under_caller");
     expect((failure as StoredTextLoadError).problem.code).toBe("input.reference_not_found");
   });
 

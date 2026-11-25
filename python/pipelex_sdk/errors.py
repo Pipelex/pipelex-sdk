@@ -1253,8 +1253,10 @@ class ArtifactFetchError(ArtifactOperationError):
     `auth.forbidden` for a reference outside the caller's scope), then the fetch boundary's —
     `unsupported_url`, `plain_http_refused`, `redirect_refused`, `store_refused` (a 401/403 from the object store),
     `not_found` (404/410), `store_error` (any other non-2xx), `too_large`, `timeout`, `network`, and `unknown` for a
-    failure the SDK cannot place. `status` is the store's HTTP status when one was received. `download_artifacts`
-    never lets this escape: it becomes the item's `error`.
+    failure the SDK cannot place. `status` is the store's HTTP status when one was received, and `requirement` the
+    `requirement` the resolve route's refusal of the reference names in its `params`, when it names one: it is what
+    tells a self-hosted runner's scope refusal (`read_scope_under_caller`) from any other `auth.forbidden`, whose
+    problem keeps no `requirement`. `download_artifacts` never lets this escape: it becomes the item's `error`.
 
     Its `problem` is `problem` when given, else follows `reason`, `status` and `requirement`, the `requirement` the
     route's refusal names in its `params` (`artifact_fetch_problem`). The SDK gives
@@ -1277,6 +1279,7 @@ class ArtifactFetchError(ArtifactOperationError):
         self.uri = uri
         self.reason = reason
         self.status = status
+        self.requirement = requirement
 
 
 class StoredTextLoadError(ArtifactOperationError):
@@ -1294,7 +1297,8 @@ class StoredTextLoadError(ArtifactOperationError):
     like a stored text's reference, naming the first such value; `not_utf8` for bytes that are no UTF-8 text; and
     `not_json_object` for a stored JSON value that is no JSON object. `status` is the HTTP status received, the
     store's or the resolve route's, when one was, and `requirement` the `requirement` the route's refusal of the
-    reference names in its `params`, when it names one.
+    reference names in its `params`, when it names one: it is what tells a self-hosted runner's scope refusal
+    (`read_scope_under_caller`) from any other `auth.forbidden`, whose problem keeps no `requirement`.
 
     Its `problem` is the fetch failure's own when the bytes could not be read (`artifact_fetch_problem`), the resolve
     route's own for `resolve_failed`, `client.download_limit_exceeded` naming the cap for `too_large` and
@@ -1325,6 +1329,7 @@ class StoredTextLoadError(ArtifactOperationError):
         self.path = path
         self.reason = reason
         self.status = status
+        self.requirement = requirement
         self.wire_results = wire_results
 
 

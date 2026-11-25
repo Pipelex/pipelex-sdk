@@ -140,8 +140,12 @@ class TestSdkProblems:
     def test_gives_an_artifact_fetch_failure_its_problem(self, reason: str, status: int | None, requirement: str | None, code: str) -> None:
         uri = "pipelex-storage://org/file.pdf"
         assert artifact_fetch_problem(reason=reason, uri=uri, status=status, requirement=requirement).code == code
-        assert ArtifactFetchError("failed", uri=uri, reason=reason, status=status, requirement=requirement).problem.code == code
-        assert StoredTextLoadError("failed", uri=uri, path="$", reason=reason, status=status, requirement=requirement).problem.code == code
+        fetch_error = ArtifactFetchError("failed", uri=uri, reason=reason, status=status, requirement=requirement)
+        assert fetch_error.problem.code == code
+        assert fetch_error.requirement == requirement
+        load_error = StoredTextLoadError("failed", uri=uri, path="$", reason=reason, status=status, requirement=requirement)
+        assert load_error.problem.code == code
+        assert load_error.requirement == requirement
 
     @pytest.mark.parametrize(
         ("reason", "status", "code"), [(entry["reason"], entry["status"], entry["code"]) for entry in _CASES["method_file_transfer"]]

@@ -205,18 +205,20 @@ describe("sdk-problems.json", () => {
     (reason, status, requirement, code) => {
       const uri = "pipelex-storage://org/file.pdf";
       expect(artifactFetchProblem(reason, uri, status ?? undefined, requirement).code).toBe(code);
-      expect(
-        new ArtifactFetchError("failed", uri, reason, status ?? undefined, { requirement }).code,
-      ).toBe(code);
-      expect(
-        new StoredTextLoadError("failed", {
-          uri,
-          path: "$",
-          reason,
-          status: status ?? undefined,
-          requirement,
-        }).code,
-      ).toBe(code);
+      const fetchError = new ArtifactFetchError("failed", uri, reason, status ?? undefined, {
+        requirement,
+      });
+      expect(fetchError.code).toBe(code);
+      expect(fetchError.requirement).toBe(requirement);
+      const loadError = new StoredTextLoadError("failed", {
+        uri,
+        path: "$",
+        reason,
+        status: status ?? undefined,
+        requirement,
+      });
+      expect(loadError.code).toBe(code);
+      expect(loadError.requirement).toBe(requirement);
     },
   );
 

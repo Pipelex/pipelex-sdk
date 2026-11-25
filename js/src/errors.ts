@@ -669,8 +669,11 @@ export class ScopeUnavailableError extends ArtifactOperationError {
  * `unsupported_url`, `plain_http_refused`, `redirect_refused`, `store_refused`
  * (a 401/403 from the object store), `not_found` (404/410), `store_error`
  * (any other non-2xx), `too_large`, `timeout`, `network`, and `unknown` for a failure the SDK
- * cannot place. `status` is the store's HTTP status when one was received. `downloadArtifacts`
- * never lets this escape: it becomes the item's `error`.
+ * cannot place. `status` is the store's HTTP status when one was received, and `requirement` the
+ * `requirement` the resolve route's refusal of the reference names in its `params`, when it names
+ * one: it is what tells a self-hosted runner's scope refusal (`read_scope_under_caller`) from any
+ * other `auth.forbidden`, whose problem keeps no `requirement`. `downloadArtifacts` never lets this
+ * escape: it becomes the item's `error`.
  *
  * Its problem is `options.problem` when given, else follows `reason`, `status` and
  * `options.requirement`, the `requirement` the route's refusal names in its `params`
@@ -682,13 +685,14 @@ export class ArtifactFetchError extends ArtifactOperationError {
   public readonly uri: string;
   public readonly reason: string;
   public readonly status: number | undefined;
+  public readonly requirement: string | undefined;
 
   constructor(
     message: string,
     uri: string,
     reason: string,
     status?: number,
-    options?: { cause?: unknown; problem?: Problem; requirement?: string },
+    options?: { cause?: unknown; problem?: Problem; requirement?: string | undefined },
   ) {
     super(message, {
       cause: options?.cause,
@@ -698,6 +702,7 @@ export class ArtifactFetchError extends ArtifactOperationError {
     this.uri = uri;
     this.reason = reason;
     this.status = status;
+    this.requirement = options?.requirement;
   }
 }
 
@@ -717,7 +722,9 @@ export class ArtifactFetchError extends ArtifactOperationError {
  * naming the first such value; `not_utf8` for bytes that are no UTF-8 text; and `not_json_object`
  * for a stored JSON value that is no JSON object. `status` is the HTTP status received, the store's
  * or the resolve route's, when one was, and `requirement` the `requirement` the route's refusal of
- * the reference names in its `params`, when it names one.
+ * the reference names in its `params`, when it names one: it is what tells a self-hosted runner's
+ * scope refusal (`read_scope_under_caller`) from any other `auth.forbidden`, whose problem keeps no
+ * `requirement`.
  *
  * Its problem is the fetch failure's own when the bytes could not be read
  * (`artifactFetchProblem`), the resolve route's own for `resolve_failed`,
@@ -737,6 +744,7 @@ export class StoredTextLoadError extends ArtifactOperationError {
   public readonly path: string;
   public readonly reason: string;
   public readonly status: number | undefined;
+  public readonly requirement: string | undefined;
   public readonly wireResults: RunResults | undefined;
 
   constructor(
@@ -762,6 +770,7 @@ export class StoredTextLoadError extends ArtifactOperationError {
     this.path = details.path;
     this.reason = details.reason;
     this.status = details.status;
+    this.requirement = details.requirement;
     this.wireResults = details.wireResults;
   }
 }

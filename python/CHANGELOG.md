@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- **A self-hosted runner's refusals read as the platform's**: a reference a self-hosted runner's bulk resolve route refuses as outside the caller's scope, `auth.forbidden` whose `params.requirement` is `read_scope_under_caller`, now gives `StoredTextLoadError` and `ArtifactFetchError` the problem `input.reference_not_found`, as the platform's `pipelex.org.mismatch` does, instead of `runtime.unexpected`; an `auth.forbidden` naming any other requirement still reads as `runtime.unexpected`. `ArtifactItemError` carries the refusal's `params` and its `requirement`, on the resolve route's items and on the download verdict's, `artifact_fetch_problem` takes the `requirement`, and `ArtifactFetchError` and `StoredTextLoadError` take it beside their reason.
+- **A self-hosted runner's refusals read as the platform's**: a reference a self-hosted runner's bulk resolve route refuses as outside the caller's scope, `auth.forbidden` whose `params.requirement` is `read_scope_under_caller`, now gives `StoredTextLoadError` and `ArtifactFetchError` the problem `input.reference_not_found`, as the platform's `pipelex.org.mismatch` does, instead of `runtime.unexpected`; an `auth.forbidden` naming any other requirement still reads as `runtime.unexpected`. `ArtifactItemError` carries the refusal's `params` and its `requirement`, on the resolve route's items and on the download verdict's, `artifact_fetch_problem` takes the `requirement`, and `ArtifactFetchError` and `StoredTextLoadError` take it beside their reason and keep it as their `requirement`, `None` when the refusal names none, so a caller tells a scope refusal from another `auth.forbidden`, whose problem keeps no requirement.
 
 ## [v0.69.5] - 2026-11-20
 
