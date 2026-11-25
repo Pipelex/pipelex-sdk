@@ -55,7 +55,7 @@ from pipelex_method_cli_python.lib import client as api
 from pipelex_method_cli_python.lib.app import AppError, RunMode
 from pipelex_method_cli_python.lib.artifacts import EarlierDownload, download_produced_files, print_downloads
 from pipelex_method_cli_python.lib.binding import MethodBinding
-from pipelex_method_cli_python.lib.errors import present_error, print_error, resume_command
+from pipelex_method_cli_python.lib.errors import ErrorPresentation, present_error, print_error, resume_command
 from pipelex_method_cli_python.lib.inputs import declares_files
 from pipelex_method_cli_python.lib.narrow import NarrowedOutput, OutputValidationError, narrow_output
 from pipelex_method_cli_python.lib.output import OutputShapeError, print_payload, print_run_id
@@ -297,7 +297,7 @@ async def deliver(
             except (PipelineRequestError, AppError) as exc:
                 if shape_error is None:
                     raise
-                print_error(stderr, present_error(exc, mode=plan.mode))
+                print_error(stderr, _beside(present_error(exc, mode=plan.mode), load_failure))
                 # Raised without `from`, so the refusal keeps its own cause; the download's failure, printed above, is its context.
                 raise shape_error
             except UNWORDED_DOWNLOAD_FAILURES as exc:
@@ -310,7 +310,7 @@ async def deliver(
                 failure = AppError(f"Saving the run's files failed: {type(exc).__name__}: {exc}", hint=f"The run succeeded and {said}. {advice}")
                 if shape_error is None:
                     raise failure from exc
-                print_error(stderr, present_error(failure, mode=plan.mode))
+                print_error(stderr, _beside(present_error(failure, mode=plan.mode), load_failure))
                 raise shape_error
             print_downloads(stderr, downloaded)
             if _incomplete(downloaded):
@@ -331,6 +331,15 @@ def absence_note(narrowed: NarrowedOutput) -> str:
     """What stderr says when the method left its optional output absent, as Rich markup."""
     reason = f" ({escape(narrowed.absence_reason)})" if narrowed.absence_reason else ""
     return f"The method produced no output this time{reason}. Its output is optional, so the result is null."
+
+
+def _beside(presentation: ErrorPresentation, load_failure: StoredTextLoadError | None) -> ErrorPresentation:
+    """A download failure printed above a load failure, without the advice of its own.
+
+    The text that failed to load is among the run's files, and the load failure raised after it says what a second
+    try means; a hint to fetch the files again, or to run the method again, printed above it would contradict it.
+    """
+    return presentation if load_failure is None else presentation._replace(hint=None)
 
 
 def _incomplete(downloaded: DownloadArtifactsResult | EarlierDownload | None) -> bool:

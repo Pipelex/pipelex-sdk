@@ -519,6 +519,19 @@ class TestBlocking:
         assert "its files come down again only by running the method again" not in stderr
         assert "running the method again unchanged would meet the same failure" in stderr
 
+    def test_a_download_that_raises_beside_a_load_failure_prints_no_advice_of_its_own(self, fake_client: FakeClient, tmp_path: Path):
+        reference = {"url": "pipelex-storage://org/runs/run-1/generated/ab/value.txt", "size": 9000, "mime_type": "text/plain", "preview": "A long"}
+        fake_client.execute_answer = execute_result(reference)
+        fake_client.resolve_failure = ApiUnreachableError("unreachable", api_url="https://api.pipelex.com", network_code="ECONNRESET")
+        fake_client.download_answer = OSError("No space left on device")
+        result = invoke(make_binding(), ["--blocking", "--out", str(tmp_path)])
+        assert result.exit_code == 1
+        stderr = " ".join(result.stderr.split())
+        assert "Saving the run's files failed: OSError: No space left on device" in stderr
+        # Only the load failure, printed last, says what a second try means.
+        assert "The run succeeded and" not in stderr
+        assert stderr.count("runs the method again") == 1
+
     def test_a_ctrl_c_while_the_text_loads_says_there_is_no_id_to_resume_by(self, fake_client: FakeClient):
         reference = {"url": "pipelex-storage://org/runs/run-1/generated/ab/value.txt", "size": 9000, "mime_type": "text/plain", "preview": "A long"}
         fake_client.execute_answer = execute_result(reference)
