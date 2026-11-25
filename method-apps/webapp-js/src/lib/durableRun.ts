@@ -7,6 +7,8 @@ import { buildUsageReport, type UsageReport } from "@/lib/usageReport";
 // place of an inline bundle. See the note in `blockingRun.ts`.
 import {
   RunFailedError,
+  STORED_TEXT_CONCEPTS_MISSING,
+  StoredTextLoadError,
   isTerminalRunStatus,
   type PipelexStartOptions,
   type RunResults,
@@ -46,6 +48,19 @@ export type PollOutcome<T> =
  */
 function isTransientPollError(error: PipelineError): boolean {
   return error.retry?.verdict === "yes";
+}
+
+/**
+ * The other mid-write race, after `main_stuff` and before `output_form`: the
+ * SDK loads a completed result's stored texts as it reads it, and refuses one
+ * that does not yet say which of its values are texts (`StoredTextLoadError`,
+ * `concepts_missing`) rather than hand a reference on where a text was
+ * promised. Its problem says a second read meets it again, which is true only
+ * once the run is done writing, so the tick is transient: the client reads
+ * again within its bounded transient budget, as the SDK's own wait does.
+ */
+function isConceptsMissing(err: unknown): boolean {
+  return err instanceof StoredTextLoadError && err.reason === STORED_TEXT_CONCEPTS_MISSING;
 }
 
 /**
@@ -95,6 +110,9 @@ export async function startDurableRun(
  *    - `running`   → mid-write race (status flipped terminal but `main_stuff` /
  *                    `graph_spec` aren't written yet) → report `running` so the
  *                    client polls once more.
+ *    A completed result whose `output_form` is not written yet throws
+ *    `StoredTextLoadError` (`concepts_missing`), a transient failure (see
+ *    `isConceptsMissing`).
  * A thrown error — an SDK error carrying its problem, or a narrower throwing
  * `BadPipelineOutputError` — is classified, and
  * the failure carries a `transient` flag (see `isTransientPollError`) so the
@@ -164,7 +182,7 @@ export async function pollDurableRun<T>(
     };
   } catch (err) {
     const error = classifyPipelineError(err, readClassifyEnv());
-    const transient = isTransientPollError(error);
+    const transient = isTransientPollError(error) || isConceptsMissing(err);
     const retryAfterSeconds = error.retry?.afterSeconds ?? null;
     delete error.retry;
     return transient

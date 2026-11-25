@@ -26,8 +26,8 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@pipelex/mthds-form": "^0.23.1",
-    "@pipelex/sdk": "^0.53.0",
+    "@pipelex/mthds-form": "^0.42.2",
+    "@pipelex/sdk": "^0.69.5",
     "next": "^16.4.6",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

@@ -64,7 +64,9 @@ export async function grantFileUpload(
   try {
     const grant = await getPipelexClient().requestUploadGrant({
       filename,
-      content_type,
+      // An empty type is sent as none, and the platform types the file by its
+      // extension, as it does every file the browser misreported.
+      content_type: content_type || null,
       size,
       ...(sha256 !== undefined && { sha256 }),
     });

@@ -4,6 +4,8 @@ import {
   ApiUnreachableError,
   RequestArgumentError,
   RunLifecycleUnavailableError,
+  STORED_TEXT_CONCEPTS_MISSING,
+  StoredTextLoadError,
   buildProblem,
   type Problem,
   type RunResults,
@@ -282,6 +284,32 @@ describe("pollDurableRun", () => {
       degraded: false,
       retryAfterSeconds: 2,
     });
+  });
+
+  it("keeps polling a completed result whose stored texts' concepts are not written yet", async () => {
+    getRunStatus.mockResolvedValueOnce({ status: "COMPLETED", degraded: false });
+    getRunResult.mockRejectedValueOnce(
+      new StoredTextLoadError("The stored text at $ could not be loaded.", {
+        uri: "pipelex-storage://org/run-1/text.txt",
+        path: "$",
+        reason: STORED_TEXT_CONCEPTS_MISSING,
+      }),
+    );
+    const result = await pollDurableRun("run-1", parseFixture);
+    expect(result).toMatchObject({ ok: false, transient: true });
+  });
+
+  it("gives up on a stored text that cannot be loaded for any other reason", async () => {
+    getRunStatus.mockResolvedValueOnce({ status: "COMPLETED", degraded: false });
+    getRunResult.mockRejectedValueOnce(
+      new StoredTextLoadError("The stored text at $ is not UTF-8 text.", {
+        uri: "pipelex-storage://org/run-1/text.txt",
+        path: "$",
+        reason: "not_utf8",
+      }),
+    );
+    const result = await pollDurableRun("run-1", parseFixture);
+    expect(result).toMatchObject({ ok: false, transient: false });
   });
 
   it("classifies a narrower throw on a completed run as bad_response", async () => {

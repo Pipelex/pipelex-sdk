@@ -34,12 +34,13 @@ const DOCUMENT_INPUT = "document";
 
 /**
  * Some drag-drop sources and Windows configurations hand a valid PDF over with
- * an empty `file.type`, and the grant action would refuse that empty type. Re-wrap
- * those so the grant is asked for, and the upload signed for, `application/pdf`.
+ * an empty `file.type`. The grant action takes it by its extension; re-wrapping
+ * it means the grant is requested with `application/pdf` declared rather than
+ * with no type.
  *
  * This is a description fix, not validation: the extension test is what keeps it
- * from stamping "PDF" on something that is not one, the grant action checks the
- * type it is given, and storage holds the upload to it.
+ * from stamping "PDF" on something that is not one, the grant action judges the
+ * file as the dropzone does, and storage types the upload by its extension.
  */
 function withPdfMime(file: File): File {
   if (file.type || !file.name.toLowerCase().endsWith(".pdf")) return file;
@@ -119,7 +120,7 @@ export function PdfForm() {
           values={values}
           onValuesChange={(next) => {
             // A rejection belongs to the value that caused it. The kernel's
-            // "paste a URL instead" writes straight through this setter without
+            // "Paste a link instead" writes straight through this setter without
             // touching `acceptFile`, so without clearing here a "File is too
             // large" alert sits under a field the user has already fixed.
             clearError();
@@ -128,8 +129,8 @@ export function PdfForm() {
           disabled={running}
           // No `resolveUrl`: this app has nothing to exchange a stored
           // `pipelex-storage://` reference for, so the preview of one the
-          // control holds no local copy of (the sample's, or a pasted one) shows
-          // the kernel's placeholder. A real host would sign the URI here.
+          // control holds no local copy of (the sample's, or a pasted one) is the
+          // kernel's compact card. A real host would sign the URI here.
           env={{ onDropFile: dropFile, uploadingIds }}
         />
         {/* App chrome that writes into the field holds itself to the rule the

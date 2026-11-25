@@ -191,10 +191,10 @@ describe("PdfForm", () => {
     fireEvent.change(fileInput(), { target: { files: [huge] } });
     expect(await screen.findByText("File too large")).toBeInTheDocument();
 
-    // "paste a URL instead" writes straight through `onValuesChange`, never
+    // "Paste a link instead" writes straight through `onValuesChange`, never
     // touching the handler that set the error — so the alert outlives the value
     // that caused it unless the setter clears it.
-    fireEvent.click(screen.getByRole("button", { name: /paste a url instead/i }));
+    fireEvent.click(screen.getByRole("button", { name: /paste a link instead/i }));
     fireEvent.change(screen.getByRole("textbox", { name: /link to the file/i }), {
       target: { value: "https://example.com/ok.pdf" },
     });
@@ -267,12 +267,12 @@ describe("PdfForm", () => {
       // An accepted drop renders its filename in the kernel's file chip, and
       // its `finally` would have emptied `uploadingIds` and re-enabled submit.
       expect(screen.queryByText(/mine\.pdf/)).not.toBeInTheDocument();
-      // The third door: the kernel's `uploadingIds` shuts the "paste a URL
-      // instead" toggle and its input too, not only the dropzone — the form
+      // The third door: the kernel's `uploadingIds` shuts the "Paste a
+      // link instead" toggle and its input too, not only the dropzone — the form
       // passes plain run state as `disabled` and relies on that. Left open, a
       // URL pasted here makes the form ready mid-fetch — and the run it starts
       // is abandoned client-side when the fetch lands and calls `reset()`.
-      expect(screen.getByRole("button", { name: /paste a url instead/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /paste a link instead/i })).toBeDisabled();
       expect(screen.getByRole("button", { name: /summarize pdf/i })).toBeDisabled();
 
       release({
@@ -288,14 +288,14 @@ describe("PdfForm", () => {
   });
 
   it("settles a pasted storage URL's preview instead of spinning forever", async () => {
-    // A `pipelex-storage://…` reference pasted through "paste a URL instead" is
+    // A `pipelex-storage://…` reference pasted through "Paste a link instead" is
     // one the control holds no local copy of and cannot paint, and this form
     // passes no `resolveUrl` to exchange it for one it can. So nothing is painted,
-    // and the preview settles on the kernel's placeholder. Kernel 0.10.0 showed a
+    // and the preview settles on the kernel's compact card. Kernel 0.10.0 showed a
     // spinner forever here unless a resolver was passed, which is what this pins
     // against.
     render(<PdfForm />);
-    fireEvent.click(screen.getByRole("button", { name: /paste a url instead/i }));
+    fireEvent.click(screen.getByRole("button", { name: /paste a link instead/i }));
     fireEvent.change(screen.getByRole("textbox", { name: /link to the file/i }), {
       target: { value: "pipelex-storage://bucket/invoice.pdf" },
     });
@@ -303,11 +303,13 @@ describe("PdfForm", () => {
       expect(screen.getByRole("button", { name: /summarize pdf/i })).toBeEnabled(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-
-    // The spinner is pending until a resolution lands for this URI, so its
-    // absence, with the placeholder in its place, is the resolver having answered.
-    await waitFor(() => expect(document.querySelector(".lucide-image-off")).not.toBeNull());
+    // No click on Preview: kernel 0.39.1 opens every preview as it mounts, so a
+    // click here would fold it away. Kernel 0.42.0 draws a PDF's pages only with
+    // a pdf.js worker, which this form does not supply, so the preview settles on
+    // the kernel's compact card. The spinner is pending until a resolution lands
+    // for this URI, so its absence, with the card in its place, is the resolver
+    // having answered.
+    expect(await screen.findByText("No preview for this file.")).toBeInTheDocument();
     expect(document.querySelector(".animate-spin")).toBeNull();
     // Nothing is painted from a scheme the browser cannot fetch.
     expect(document.querySelector("object, iframe")).toBeNull();

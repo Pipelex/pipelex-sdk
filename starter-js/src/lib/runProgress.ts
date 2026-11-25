@@ -8,13 +8,14 @@ import type {
   ProgressInvocation,
   ProgressSnapshot,
 } from "@pipelex/mthds-ui/timeline";
-import type {
-  ProgressAttempt,
-  ProgressBatch,
-  ProgressCondition,
-  ProgressInvocation as SdkProgressInvocation,
-  RunDegradation,
-  RunProgress,
+import {
+  buildProblem,
+  type ProgressAttempt,
+  type ProgressBatch,
+  type ProgressCondition,
+  type ProgressInvocation as SdkProgressInvocation,
+  type RunDegradation,
+  type RunProgress,
 } from "@pipelex/sdk";
 
 /*
@@ -37,6 +38,20 @@ import type {
  * problem, by `<ErrorDisplay>`.
  */
 export const FAILURE_TEXT_SHOWN = "An attempt at this step failed.";
+
+/** The problem document the timeline types on an invocation's failure. */
+type ProgressFailureProblem = NonNullable<ProgressInvocation["last_failure"]>["problem"];
+
+/**
+ * The problem every invocation's failure is replaced by: `runtime.unexpected`,
+ * the code the platform itself serves a failure whose own text is no problem
+ * document, built here from the registry and worded with `FAILURE_TEXT_SHOWN`,
+ * so the timeline's tooltip reads the registry's title and this sentence, and
+ * nothing of the original problem, not even its code, reaches the browser.
+ */
+export function failureProblemShown(): ProgressFailureProblem {
+  return { ...buildProblem("runtime.unexpected", {}), detail: FAILURE_TEXT_SHOWN };
+}
 
 /**
  * A degradation's sentence, by its reason. The platform's own `message` is
@@ -98,7 +113,7 @@ function invocationOf(invocation: SdkProgressInvocation): ProgressInvocation {
     ...(invocation.attempts !== undefined && { attempts: invocation.attempts }),
     ...(invocation.last_failure !== undefined && {
       last_failure: {
-        message: FAILURE_TEXT_SHOWN,
+        problem: failureProblemShown(),
         ...(invocation.last_failure.at !== undefined && { at: invocation.last_failure.at }),
       },
     }),
@@ -112,7 +127,7 @@ function invocationOf(invocation: SdkProgressInvocation): ProgressInvocation {
  * The snapshot the SDK read, as it may leave the server. Every member the
  * contract names is picked, never spread, at every level, so a member a later
  * platform adds does not reach the browser unread; each failure's own text is
- * replaced by `FAILURE_TEXT_SHOWN`; and each degradation gets every member the
+ * replaced by `failureProblemShown()`; and each degradation gets every member the
  * timeline types, its sentence worded here from its reason.
  */
 export function toProgressSnapshot(progress: RunProgress): ProgressSnapshot {

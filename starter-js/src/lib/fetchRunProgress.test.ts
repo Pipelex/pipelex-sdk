@@ -170,7 +170,11 @@ describe("readProgressSnapshot", () => {
     ["a missing pipe code", { pipe_code: undefined }],
     ["a batch missing a count", { batch: { total: 3, done: 1, running: 2 } }],
     ["a condition without its outcome", { condition: {} }],
-    ["a failure without its message", { last_failure: { at: "2026-10-16T09:00:03Z" } }],
+    ["a failure without its problem", { last_failure: { at: "2026-10-16T09:00:03Z" } }],
+    [
+      "a failure whose problem lacks its next step",
+      { last_failure: { problem: { ...FAILURE_PROBLEM, next_step: undefined } } },
+    ],
     ["attempts that are not a count", { attempts: "2" }],
     ["a step count that is null", { step_count: null }],
   ])("refuses a snapshot holding an invocation with %s", (_label, change) => {

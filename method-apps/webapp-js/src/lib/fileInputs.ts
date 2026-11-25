@@ -1,4 +1,7 @@
 import type { PipelineError } from "@/lib/errors";
+// The form kernel's headless entry: no React, so the grant action reads the
+// same file rule the dropzone does.
+import { DOCUMENT_FORMATS, IMAGE_FORMATS, isAcceptedFile } from "@pipelex/mthds-form";
 // Type-only, so nothing of the SDK reaches the client bundle through this
 // module. The descriptor types are the MTHDS standard's (`mthds/protocol`),
 // re-exported by the SDK whose `prepareInputs` walks the same nodes.
@@ -16,10 +19,12 @@ import type { InputFormItem, PipeInputFormDescriptor } from "@pipelex/sdk";
  * follow:
  *
  * - `checkUploadRequest` — what a grant action accepts: a file of a media type
- *   the method takes, no larger than `MAX_FILE_BYTES`, with a well-formed
- *   SHA-256 when it states one. The grant signs the type and the size, and the
- *   bytes when the digest came with them, so storage refuses a file that
- *   differs from what was declared.
+ *   the method takes, by the form kernel's rule, so the action takes what the
+ *   dropzone took, no larger than `MAX_FILE_BYTES`, with a well-formed
+ *   SHA-256 when it states one. The grant signs the size, and the bytes when
+ *   the digest came with them, so storage refuses a file that differs from
+ *   them. The type storage records is the one the name's extension implies,
+ *   never the declared one.
  * - `checkFileInputs` — what a run action accepts at a file position: a
  *   reference in a closed set of schemes, and nothing else. The security half,
  *   because the SDK's `prepareInputs` resolves an unrecognised string as a
@@ -48,9 +53,8 @@ export type FileInputError = {
 /**
  * What the browser tells a grant action about a file it is about to upload —
  * the SDK's `UploadDescription`, which `describeUpload` reads off the `File`,
- * and the part of its `UploadGrantInput` that describes a file, with the type
- * required, since a type the method does not take is refused before any grant
- * is asked for.
+ * and the part of its `UploadGrantInput` that describes a file. The type is the
+ * browser's `File.type`, which is empty when the browser does not know it.
  */
 export interface UploadRequest {
   filename: string;
@@ -66,6 +70,35 @@ export interface UploadRequest {
    * did.
    */
   sha256?: string;
+}
+
+/** Every format the form kernel knows a file input to take. */
+const KERNEL_FORMATS = [...DOCUMENT_FORMATS, ...IMAGE_FORMATS];
+
+/**
+ * Whether a file of this name and reported type is one the method takes.
+ *
+ * The rule is the form kernel's dropzone rule, `isAcceptedFile`, over the
+ * kernel's formats among `allowedMimes`, so a grant is never refused for a file
+ * the dropzone took. A browser does not always report a file's own type: it
+ * leaves it empty, reports `application/octet-stream`, or reports one of the
+ * other types the kernel lists for a format (`alsoReportedAs`), such as
+ * `application/zip` for a `.docx` or `text/plain` for a `.csv`. The kernel
+ * then judges the file by its extension, and the platform types the stored
+ * file by its extension too. A wrong type that is present is still refused: a
+ * `.zip` reported as `application/zip`, or a `notes.pdf` reported as
+ * `text/plain`. A type in `allowedMimes` that the kernel has no format for,
+ * such as `application/json`, is taken when the browser reports exactly it.
+ * A type in `allowedMimes` is taken as reported whatever the extension, as the
+ * dropzone takes it: a real file with an unusual name (`Scan 2026.11.25`, a
+ * `.jfif` photo) uploads, and the runtime identifies every file from its
+ * bytes, so a file that is not what its type claims is refused when the run
+ * reads it, never read as the type it claimed.
+ */
+function acceptsFile(filename: string, type: string, allowedMimes: readonly string[]): boolean {
+  if (allowedMimes.includes(type)) return true;
+  const formats = KERNEL_FORMATS.filter((format) => allowedMimes.includes(format.mimeType));
+  return isAcceptedFile(formats, { name: filename, type });
 }
 
 /** A SHA-256 as the grant route takes it: 64 lowercase hexadecimal digits. */
@@ -111,7 +144,7 @@ export function checkUploadRequest(
   if (typeof filename !== "string" || filename.length === 0) {
     return { kind: "invalid_file", message: "The file has no name." };
   }
-  if (typeof type !== "string" || !opts.allowedMimes.includes(type)) {
+  if (typeof type !== "string" || !acceptsFile(filename, type, opts.allowedMimes)) {
     const stated = typeof type === "string" && type.length > 0 ? `"${type}"` : "an unknown type";
     return {
       kind: "unsupported_file_type",
@@ -149,7 +182,7 @@ export function checkUploadRequest(
  *   the browser uploads it with a grant and the form's value holds its
  *   reference. The URIs are server-generated opaque ids, so this is not
  *   guessable — and a reference obtained from an earlier run round-trips too.
- * - `https://` is the kernel's "paste a URL instead" affordance. Accepting it
+ * - `https://` is the kernel's "Paste a link instead" affordance. Accepting it
  *   means the **runner** fetches that URL server-side, which is the feature —
  *   and it is also why a host that must not reach arbitrary origins wants an
  *   allow-list here rather than a scheme test. Left open in the template

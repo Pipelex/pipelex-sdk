@@ -62,6 +62,7 @@ import {
   type PipeIOContracts,
   type ValidateMethodSelector,
 } from "@pipelex/sdk";
+import { DOCUMENT_FORMATS } from "@pipelex/mthds-form";
 
 import { assertSelectorSupport, describeRequestFailure, explainSelectorFailure } from "./api.mts";
 import {
@@ -796,11 +797,17 @@ export function fileInputsOf(descriptor: PipeInputFormDescriptor): FileInput[] {
   return files;
 }
 
-/** The media types a scaffolded action accepts, by the file kinds it declares. */
+/**
+ * The media types a scaffolded action accepts, by the file kinds it declares. A
+ * document takes every format the form kernel lists for one, which are the
+ * formats the hosted runtime reads: PDF, Word, Excel and PowerPoint files,
+ * CSV, JPG and PNG. An image takes PNG, JPEG and WebP.
+ */
 export function allowedMimesFor(files: FileInput[]): string[] {
   const mimes = new Set<string>();
   for (const field of files) {
-    if (field.kind === "document") mimes.add("application/pdf");
+    if (field.kind === "document")
+      for (const format of DOCUMENT_FORMATS) mimes.add(format.mimeType);
     else for (const mime of ["image/png", "image/jpeg", "image/webp"]) mimes.add(mime);
   }
   return [...mimes];
@@ -1075,9 +1082,10 @@ function methodReference(plan: ScaffoldPlan): {
  * A module of its own because both halves read the list and neither can hold
  * it. The upload action lives in a `"use server"` file, which may export async
  * functions only, and the form is a client component the action must not
- * import. So the action refuses a grant for any other type, the form narrows
- * each file input to these formats through `useRunInputs`, and the dropzone can
- * no longer offer a file the action would then refuse.
+ * import. So the action grants a file only in one of these types, judged by
+ * the form kernel's rule, the form narrows each file input to these formats
+ * through `useRunInputs`, and the dropzone can no longer offer a file the action
+ * would then refuse.
  */
 export function renderUploads(plan: ScaffoldPlan): string {
   return [
@@ -1086,10 +1094,12 @@ export function renderUploads(plan: ScaffoldPlan): string {
     "/**",
     " * Media types the file input(s) accept. Widen it if your method takes more.",
     " *",
-    ` * The one list both halves read: \`request${plan.names.pascal}Upload\` refuses a grant for any`,
-    " * other type, and the form narrows each file input to the formats among these,",
-    " * so the dropzone offers exactly what the action grants. The form can offer only",
-    " * a format the form kernel knows for the input's kind.",
+    ` * The one list both halves read: \`request${plan.names.pascal}Upload\` grants a file only in`,
+    " * one of these types, judged as the dropzone judges it: a type the browser left",
+    " * empty or reported as another of its format's types is read by the file's",
+    " * extension. The form narrows each file input to the formats among these, so the",
+    " * dropzone offers exactly what the action grants. The form can offer only a",
+    " * format the form kernel knows for the input's kind.",
     " */",
     `export const ALLOWED_MIMES = ${JSON.stringify(allowedMimesFor(plan.files))};`,
     "",
@@ -1220,7 +1230,7 @@ export function renderAction(plan: ScaffoldPlan): string {
       "/**",
       " * UPLOAD — a grant for the browser to store one dropped file straight in Pipelex",
       " * storage, before any run. Only the file's name, type, size and SHA-256 reach",
-      " * this action, never its bytes; it refuses a type outside `ALLOWED_MIMES`, a size",
+      " * this action, never its bytes; it refuses a file the method does not take, a size",
       " * past `MAX_FILE_BYTES` and a malformed digest, then asks the platform for a",
       " * create-only `PUT` signed for exactly that file, or learns that the organization",
       " * already holds those bytes. The form's `useFileInputs` sends the file with it,",
@@ -1560,7 +1570,7 @@ export function renderForm(plan: ScaffoldPlan): string {
         "          values={values}",
         "          onValuesChange={(next) => {",
         "            // A rejection belongs to the value that caused it: the kernel's",
-        '            // "paste a URL instead" writes straight through this setter.',
+        '            // "Paste a link instead" writes straight through this setter.',
         "            clearError();",
         "            setValues(next);",
         "          }}",
