@@ -291,7 +291,7 @@ describe("PdfForm", () => {
     // A `pipelex-storage://…` reference pasted through "Paste a link instead" is
     // one the control holds no local copy of and cannot paint, and this form
     // passes no `resolveUrl` to exchange it for one it can. So nothing is painted,
-    // and the preview settles on the kernel's placeholder. Kernel 0.10.0 showed a
+    // and the preview settles on the kernel's compact card. Kernel 0.10.0 showed a
     // spinner forever here unless a resolver was passed, which is what this pins
     // against.
     render(<PdfForm />);

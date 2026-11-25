@@ -1230,7 +1230,7 @@ export function renderAction(plan: ScaffoldPlan): string {
       "/**",
       " * UPLOAD — a grant for the browser to store one dropped file straight in Pipelex",
       " * storage, before any run. Only the file's name, type, size and SHA-256 reach",
-      " * this action, never its bytes; it refuses a type outside `ALLOWED_MIMES`, a size",
+      " * this action, never its bytes; it refuses a file the method does not take, a size",
       " * past `MAX_FILE_BYTES` and a malformed digest, then asks the platform for a",
       " * create-only `PUT` signed for exactly that file, or learns that the organization",
       " * already holds those bytes. The form's `useFileInputs` sends the file with it,",

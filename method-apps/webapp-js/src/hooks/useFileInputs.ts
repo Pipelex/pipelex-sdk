@@ -94,8 +94,8 @@ export interface UseFileInputsOptions {
    * `application/octet-stream` or reported as another type the form kernel
    * lists for the file's format needs no fix: the grant action judges those by
    * the extension, as the dropzone does. This is a description fix, not
-   * validation — the grant action checks the type it is given, and storage
-   * holds the upload to it.
+   * validation — the grant action judges the file as the dropzone does, and
+   * storage types the upload by its name's extension.
    */
   prepareFile?: (file: File) => File;
   /** The size cap, in bytes. Defaults to the platform's limit on one upload. */

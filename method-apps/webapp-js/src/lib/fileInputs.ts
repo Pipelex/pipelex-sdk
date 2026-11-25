@@ -21,9 +21,10 @@ import type { InputFormItem, PipeInputFormDescriptor } from "@pipelex/sdk";
  * - `checkUploadRequest` — what a grant action accepts: a file of a media type
  *   the method takes, by the form kernel's rule, so the action takes what the
  *   dropzone took, no larger than `MAX_FILE_BYTES`, with a well-formed
- *   SHA-256 when it states one. The grant signs the type and the size, and the
- *   bytes when the digest came with them, so storage refuses a file that
- *   differs from what was declared.
+ *   SHA-256 when it states one. The grant signs the size, and the bytes when
+ *   the digest came with them, so storage refuses a file that differs from
+ *   them. The type storage records is the one the name's extension implies,
+ *   never the declared one.
  * - `checkFileInputs` — what a run action accepts at a file position: a
  *   reference in a closed set of schemes, and nothing else. The security half,
  *   because the SDK's `prepareInputs` resolves an unrecognised string as a
@@ -88,6 +89,11 @@ const KERNEL_FORMATS = [...DOCUMENT_FORMATS, ...IMAGE_FORMATS];
  * `.zip` reported as `application/zip`, or a `notes.pdf` reported as
  * `text/plain`. A type in `allowedMimes` that the kernel has no format for,
  * such as `application/json`, is taken when the browser reports exactly it.
+ * A type in `allowedMimes` is taken as reported whatever the extension, as the
+ * dropzone takes it: a real file with an unusual name (`Scan 2026.11.25`, a
+ * `.jfif` photo) uploads, and the runtime identifies every file from its
+ * bytes, so a file that is not what its type claims is refused when the run
+ * reads it, never read as the type it claimed.
  */
 function acceptsFile(filename: string, type: string, allowedMimes: readonly string[]): boolean {
   if (allowedMimes.includes(type)) return true;

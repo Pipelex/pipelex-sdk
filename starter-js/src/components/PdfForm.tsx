@@ -39,8 +39,8 @@ const DOCUMENT_INPUT = "document";
  * with no type.
  *
  * This is a description fix, not validation: the extension test is what keeps it
- * from stamping "PDF" on something that is not one, the grant action checks the
- * type it is given, and storage holds the upload to it.
+ * from stamping "PDF" on something that is not one, the grant action judges the
+ * file as the dropzone does, and storage types the upload by its extension.
  */
 function withPdfMime(file: File): File {
   if (file.type || !file.name.toLowerCase().endsWith(".pdf")) return file;
@@ -129,8 +129,8 @@ export function PdfForm() {
           disabled={running}
           // No `resolveUrl`: this app has nothing to exchange a stored
           // `pipelex-storage://` reference for, so the preview of one the
-          // control holds no local copy of (the sample's, or a pasted one) shows
-          // the kernel's placeholder. A real host would sign the URI here.
+          // control holds no local copy of (the sample's, or a pasted one) is the
+          // kernel's compact card. A real host would sign the URI here.
           env={{ onDropFile: dropFile, uploadingIds }}
         />
         {/* App chrome that writes into the field holds itself to the rule the
