@@ -86,10 +86,10 @@ The command reads `PIPELEX_API_KEY` and `PIPELEX_BASE_URL` from the shell, or fr
 | `make format` | Sort the imports and format the code |
 | `make build` | Build the wheel and the source distribution into `dist/` |
 | `make lock` | Regenerate `uv.lock` after editing the dependencies |
-| `make agent-check`, `make agent-test` | `check` and the tests, silent on success, installing first when `.venv` is missing |
+| `make agent-check`, `make agent-test` | `check` and the tests, silent on success, installing first when `.venv` is missing or older than `uv.lock` |
 | `make use-local`, `make use-published`, `make local-status` | Switch `pipelex-sdk` and `mthds` between local checkouts and the PyPI releases (below) |
 
-Every tool runs from `.venv/bin/`, never through `uv run`, so a package installed over the locked one stays in place until you switch it back.
+Every tool runs from `.venv/bin/`, never through `uv run`, so a package installed over the locked one stays in place until you switch it back, or until `uv.lock` changes: the agent targets then sync `.venv` with the new lock before they run.
 
 The project runs on the Python that `.python-version` names, which uv installs when the machine lacks it. The next `make install` moves an environment built on another Python back to it, and `PYTHON_VERSION=<version> make install` builds it on another version that `requires-python` in `pyproject.toml` allows.
 

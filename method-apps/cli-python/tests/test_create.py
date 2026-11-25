@@ -377,8 +377,8 @@ class Runner:
 
     @staticmethod
     def label(command: list[str]) -> str:
-        if command[:2] == ["uv", "sync"]:
-            return "uv sync"
+        if command[:2] == ["make", "install"]:
+            return "make install"
         if command[:2] == ["make", "all"]:
             return "make all"
         return "bootstrap --dry-run" if "--dry-run" in command else "bootstrap"
@@ -548,10 +548,11 @@ class TestWriteHalf:
         monkeypatch.setenv("MAKEFLAGS", "METHOD=x")
         runner = Runner()
         assert await run_create([str(RECEIPT_REVIEW_BUNDLE)], deps(template, runner)) == 0
-        assert runner.labels == ["bootstrap --dry-run", "bootstrap", "uv sync", "make all"]
-        # `uv sync` must re-sync the lock the rename leaves stale, and `make all` must not read the gesture's variables.
+        assert runner.labels == ["bootstrap --dry-run", "bootstrap", "make install", "make all"]
+        # `make install` must re-sync the lock the rename leaves stale, and neither it nor `make all` may read the
+        # gesture's variables.
         uv_env, make_env = runner.environments[2], runner.environments[3]
-        assert uv_env is not None and "UV_LOCKED" not in uv_env
+        assert uv_env is not None and "UV_LOCKED" not in uv_env and "MAKEFLAGS" not in uv_env
         assert make_env is not None and "MAKEFLAGS" not in make_env
         layout = Layout(template / "src" / PACKAGE)
         assert (layout.method_dir / "main.mthds").is_file() and (layout.package_dir / BINDING_FILENAME).is_file()
@@ -588,11 +589,17 @@ class TestWriteHalf:
             (
                 "bootstrap",
                 "the bootstrap failed after the method was written",
-                [f".venv/bin/python {BOOTSTRAP_SCRIPT} --name=text-stats", "cp .env.example .env", "uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"],
+                [
+                    f".venv/bin/python {BOOTSTRAP_SCRIPT} --name=text-stats",
+                    "cp .env.example .env",
+                    "make install",
+                    "make all",
+                    f"rm -rf {BOOTSTRAP_DIR}",
+                ],
                 [],
             ),
-            ("uv sync", "re-syncing uv.lock failed", ["uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"], []),
-            ("make all", "make all is red", ["make all", f"rm -rf {BOOTSTRAP_DIR}"], ["uv sync"]),
+            ("make install", "re-syncing uv.lock failed", ["make install", "make all", f"rm -rf {BOOTSTRAP_DIR}"], []),
+            ("make all", "make all is red", ["make all", f"rm -rf {BOOTSTRAP_DIR}"], ["make install"]),
         ],
     )
     async def test_a_failure_after_the_method_is_written_names_the_commands_left(
@@ -634,12 +641,18 @@ class TestWriteHalf:
             (
                 "bootstrap",
                 "2/6",
-                [f".venv/bin/python {BOOTSTRAP_SCRIPT} --name=text-stats", "cp .env.example .env", "uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"],
+                [
+                    f".venv/bin/python {BOOTSTRAP_SCRIPT} --name=text-stats",
+                    "cp .env.example .env",
+                    "make install",
+                    "make all",
+                    f"rm -rf {BOOTSTRAP_DIR}",
+                ],
                 [],
             ),
             # `.env` is written by then, so it is never copied over.
-            ("uv sync", "4/6", ["uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"], ["cp .env.example .env"]),
-            ("make all", "5/6", ["make all", f"rm -rf {BOOTSTRAP_DIR}"], ["uv sync"]),
+            ("make install", "4/6", ["make install", "make all", f"rm -rf {BOOTSTRAP_DIR}"], ["cp .env.example .env"]),
+            ("make all", "5/6", ["make all", f"rm -rf {BOOTSTRAP_DIR}"], ["make install"]),
         ],
     )
     async def test_a_ctrl_c_after_the_method_is_written_names_the_commands_left(
@@ -774,7 +787,7 @@ class TestWriteHalf:
             template.chmod(0o755)
         err = capsys.readouterr().err
         assert "writing .env failed" in err
-        for command in ("cp .env.example .env", "uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}"):
+        for command in ("cp .env.example .env", "make install", "make all", f"rm -rf {BOOTSTRAP_DIR}"):
             assert f"\n  {command}" in err
         assert not (template / ".env").exists()
 
@@ -819,7 +832,7 @@ class TestARealCtrlC:
 
 @dataclass
 class RealBootstrap:
-    """Runs the bootstrap for real, its output on this process's own streams; `uv sync` and `make all` are not run.
+    """Runs the bootstrap for real, its output on this process's own streams; `make install` and `make all` are not run.
 
     The real run's status is the test's to choose, so that a run that wrote everything can be reported as failed.
     """
@@ -828,7 +841,7 @@ class RealBootstrap:
 
     def __call__(self, command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
         label = Runner.label(list(command))
-        if label in ("uv sync", "make all"):
+        if label in ("make install", "make all"):
             return 0
         result = subprocess.run(list(command), cwd=cwd, env=None if env is None else dict(env), capture_output=True, text=True, check=False)
         sys.stdout.write(result.stdout)

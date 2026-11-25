@@ -8,11 +8,12 @@
 # package directory, stopping at the first failure.
 #
 # Nothing here installs a package but `use-local` and `use-published`, which install into the
-# templates they switch, `use-local` installing `js/` first when it was never installed. A
-# worktree is provisioned with `make install`, which only wires the hooks, and
-# each directory's `agent-check` and `agent-test` install that directory first when its
-# node_modules or .venv is missing, so a worktree pays only for the directories its work
-# touches. The root's own targets need only Node: its scripts have no dependency. To check
+# templates they switch, `use-local` installing `js/` first when it needs it. A worktree is
+# provisioned with `make install`, which only wires the hooks, and each directory's
+# `agent-check` and `agent-test` install that directory first when its node_modules or .venv is
+# missing, so a worktree pays only for the directories its work touches, and again when its
+# lockfile moved after its last install, so a checkout that pulled a new lock never runs its gate
+# against the versions it held before. The root's own targets need only Node: its scripts have no dependency. To check
 # one directory, run its own target:
 #
 #     make -C js agent-check
@@ -44,7 +45,7 @@ help: ## Show this help
 	@echo ""
 	@echo "Package directories: $(PACKAGES). Run \`make -C <dir> <target>\` to work in one of them."
 
-install: hooks ## Wire the git hooks; each package directory installs itself the first time its checks run
+install: hooks ## Wire the git hooks; each package directory installs itself the first time its checks run, and again when its lockfile moves
 
 # Git runs the hooks in .githooks/ for every worktree of this repository. The pre-commit hook
 # runs each template's own hook from inside that template, since a template's Husky set-up
@@ -117,12 +118,12 @@ release-selection: ## Propose the units a release ships; SPRINTS=<file, or - for
 test-scripts: ## Run the tests of the root's scripts, silent on success
 	@OUTPUT=$$(node --test scripts/*.test.mjs 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
-agent-check: ## Run every package directory's agent-check, installing a directory first when it was never installed, then check the versions, the workflow twins, the shared case files and, when actionlint is installed, the workflows' lint
+agent-check: ## Run every package directory's agent-check, installing a directory first when it was never installed or is older than its lockfile, then check the versions, the workflow twins, the shared case files and, when actionlint is installed, the workflows' lint
 	$(call each,agent-check)
 	@$(MAKE) --no-print-directory check-workflows check-shared-files check-versions
 	@if command -v actionlint >/dev/null 2>&1; then $(MAKE) --no-print-directory lint-workflows; else echo "actionlint is not installed, so the workflows were not linted here; CI lints them"; fi
 
-agent-test: ## Run every package directory's agent-test, installing a directory first when it was never installed, then the root scripts' tests, all silent on success
+agent-test: ## Run every package directory's agent-test, installing a directory first when it was never installed or is older than its lockfile, then the root scripts' tests, all silent on success
 	$(call each,agent-test)
 	@$(MAKE) --no-print-directory test-scripts
 
@@ -186,8 +187,8 @@ use-local: ## Install this tree's SDK, and the workspace's mthds-form or mthds-p
 .PHONY: use-local-js
 use-local-js:
 	@[ -d "$(MTHDS_FORM_DIR)/node_modules" ] || { echo "ERROR: $(MTHDS_FORM_DIR) is not an installed mthds-form checkout. Clone Pipelex/mthds-form beside this repository and run 'npm ci' in it, or name another checkout with MTHDS_FORM_DIR=<dir>."; exit 1; }
-	@$(MAKE) --no-print-directory -C js install-if-missing
-	@set -e; for t in $(switched); do $(MAKE) --no-print-directory -C "$$t" install-if-missing; done
+	@$(MAKE) --no-print-directory -C js install-if-needed
+	@set -e; for t in $(switched); do $(MAKE) --no-print-directory -C "$$t" install-if-needed; done
 	@DEST=$$(mktemp -d) && trap 'rm -rf "$$DEST"' EXIT && \
 	for d in js "$(MTHDS_FORM_DIR)"; do \
 		echo "Building and packing $$d..." && (cd "$$d" && npm run build && npm pack --silent --ignore-scripts --pack-destination "$$DEST" >/dev/null) || exit 1; \
@@ -294,7 +295,7 @@ one_of = $(and $(filter 1,$(words $(in_dir))),$(filter $(1),$(in_dir)))
 live-starter: ## Run a starter's live checks as the registered test account, its account checked first (IN=starter-js or IN=starter-python, under test-account run)
 	@$(if $(call one_of,$(LIVE_STARTERS)),:,echo "ERROR: name the starter, IN=starter-js or IN=starter-python."; exit 2)
 	+@$(call live_account,$(LIVE_STARTER_RUN))
-	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-missing
+	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-needed
 	@$(live_base_url); \
 	if [ "$(in_dir)" = starter-js ]; then \
 		$(call live_port_free,starter-js); \
@@ -306,7 +307,7 @@ live-starter: ## Run a starter's live checks as the registered test account, its
 live-method-app: ## Run a method-app template's live checks as the registered test account, its account checked first (IN=method-apps/webapp-js, under test-account run)
 	@$(if $(call one_of,$(LIVE_METHOD_APPS)),:,echo "ERROR: name the template, IN=method-apps/webapp-js, the one method-app template with a live suite. cli-python's live proof is its create proof: make live-create IN=method-apps/cli-python."; exit 2)
 	+@$(call live_account,$(LIVE_METHOD_APP_RUN))
-	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-missing
+	@$(MAKE) --no-print-directory -C "$(in_dir)" install-if-needed
 	@$(live_base_url); \
 	$(call live_port_free,$(in_dir)); \
 	$(MAKE) --no-print-directory -C "$(in_dir)" test-e2e ALLOW_OWN=
@@ -339,7 +340,7 @@ live-codegen-verify: ## Ask the live engine whether each JavaScript template's c
 			continue; \
 		fi; \
 		echo "── $$t: make codegen-verify"; verified=$$((verified + 1)); \
-		{ $(MAKE) --no-print-directory -C "$$t" install-if-missing && $(MAKE) --no-print-directory -C "$$t" codegen-verify; } || failed=1; \
+		{ $(MAKE) --no-print-directory -C "$$t" install-if-needed && $(MAKE) --no-print-directory -C "$$t" codegen-verify; } || failed=1; \
 	done; \
 	if [ "$$verified" = 0 ]; then echo "ERROR: no template among $(live_codegen) holds a method, so nothing was verified."; exit 2; fi; \
 	exit $$failed

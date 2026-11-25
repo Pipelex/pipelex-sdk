@@ -1,4 +1,4 @@
-.PHONY: help run dev build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test agent-check install-if-missing check clean install lock all use-local use-npm ul un
+.PHONY: help run dev build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test agent-check install-if-needed install-locked check clean install lock all use-local use-npm ul un
 
 # ── Arguments ──────────────────────────────────────────────────────────────
 # A gesture takes its values as make variables (`make add-method METHOD=…
@@ -189,26 +189,60 @@ test-e2e: confirm-live-e2e port-check ## Run OPTIONAL Playwright e2e (LIVE API �
 test-e2e-ui: confirm-live-e2e port-check ## Same as test-e2e, with the Playwright UI runner
 	npm run test:e2e:ui
 
-agent-test: install-if-missing ## Run tests, silent on success, installing first when node_modules is missing (for agents)
+agent-test: install-if-needed ## Run tests, silent on success, installing first when node_modules is missing or older than package-lock.json (for agents)
 	@OUTPUT=$$(npm run test --silent 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
 check: lint format-check typecheck codegen-check ## Run lint, format check, type check, and the offline codegen check
 
-agent-check: install-if-missing ## Run check, installing first when node_modules is missing (for agents)
+agent-check: install-if-needed ## Run check, installing first when node_modules is missing or older than package-lock.json (for agents)
 	@$(MAKE) --no-print-directory check
 
 all: check test build ## Full validation: check + test + build (excludes e2e — see test-e2e)
 
 install: ## Install dependencies
 	npm install
+	@touch $(INSTALL_STAMP)
+
+install-locked: ## Install exactly what package-lock.json pins, replacing what node_modules holds (npm ci)
+	npm ci
+	@touch $(INSTALL_STAMP)
 
 # The agent targets install the project first when node_modules is missing, so a fresh
-# checkout can run them directly.
-install-if-missing:
-	@[ -d node_modules ] || $(MAKE) --no-print-directory install
+# checkout can run them directly, and again when package-lock.json moved after the last install,
+# so they never run against other versions than the lock pins. `make install` touches
+# INSTALL_STAMP once npm has installed, so a package-lock.json newer than the stamp moved after the
+# last install: a merge, a pull, a `make lock` or a bare `npm install --package-lock-only`. Where
+# `make install` never ran, as when the CI installs with `npm ci` itself, the guard reads npm's own
+# record of the last install, NPM_RECORD, instead, and when that record says the install is current
+# the guard touches the stamp, so a later lock-only install is caught from then on. npm trusts that
+# record over node_modules, and
+# `npm install --package-lock-only` rewrites it without installing anything, so a lock regenerated
+# that way reads as installed to npm itself: the guard installs again with `make install-locked`,
+# `npm ci`, which replaces node_modules with exactly what the lock pins, a local build of a locked
+# version or a git pin that moved included. A package installed over the locked one after the last
+# install, with `npm install --no-save`, stays: only a lock that moved since brings the locked
+# versions back.
+INSTALL_STAMP := node_modules/.lock-installed
+NPM_RECORD := node_modules/.package-lock.json
+install-if-needed:
+	@if [ ! -d node_modules ]; then \
+		$(MAKE) --no-print-directory install; \
+	else \
+		record=$(INSTALL_STAMP); [ -f "$$record" ] || record=$(NPM_RECORD); \
+		if [ ! -f "$$record" ] || [ package-lock.json -nt "$$record" ]; then \
+			echo "package-lock.json has moved since node_modules was last installed: running make install-locked first."; \
+			$(MAKE) --no-print-directory install-locked; \
+		elif [ "$$record" = $(NPM_RECORD) ]; then \
+			touch $(INSTALL_STAMP); \
+		fi; \
+	fi
 
-lock: ## Regenerate package-lock.json without installing
+# The lock it writes is newer than INSTALL_STAMP, so the next agent target installs from it. Where
+# `make install` never ran, the guard would read npm's record instead, which the lock-only install
+# rewrites too, so the target leaves a stamp dated long ago for the guard to read.
+lock: ## Regenerate package-lock.json without installing; the next agent target installs from it
 	npm install --package-lock-only
+	@[ ! -d node_modules ] || [ -f $(INSTALL_STAMP) ] || touch -t 200001010000 $(INSTALL_STAMP)
 
 clean: ## Remove build artifacts and caches
 	rm -rf .next node_modules/.cache
@@ -239,7 +273,7 @@ clean: ## Remove build artifacts and caches
 SDK_DIR := ../pipelex-sdk/js
 FORM_DIR := ../mthds-form
 
-use-local: ## Pack and install ../pipelex-sdk/js and ../mthds-form into node_modules for local development
+use-local: install-if-needed ## Pack and install ../pipelex-sdk/js and ../mthds-form into node_modules for local development
 	@if [ ! -d $(SDK_DIR) ]; then \
 		echo "ERROR: $(SDK_DIR) not found — expected as the js/ directory of a sibling pipelex-sdk checkout."; exit 1; \
 	fi
@@ -268,6 +302,7 @@ use-local: ## Pack and install ../pipelex-sdk/js and ../mthds-form into node_mod
 use-npm: ## Restore the latest npm-published @pipelex/sdk and @pipelex/mthds-form packages
 	rm -rf node_modules/@pipelex/sdk node_modules/@pipelex/mthds-form
 	npm install @pipelex/sdk@latest @pipelex/mthds-form@latest
+	@touch $(INSTALL_STAMP)
 	@echo "Restored npm-published @pipelex/sdk $$(node -p "require('./node_modules/@pipelex/sdk/package.json').version") and @pipelex/mthds-form $$(node -p "require('./node_modules/@pipelex/mthds-form/package.json').version"). Run 'make use-local' to switch back."
 
 ul: use-local ## Alias for use-local

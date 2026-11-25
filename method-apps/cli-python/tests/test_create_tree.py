@@ -4,7 +4,7 @@ The template ships no method, so nothing in it exercises what the gesture writes
 In its place this test copies the template to a temporary directory once per source kind, a bundle,
 a catalog id and a published address, and runs the real gesture in each copy against the API's
 recorded answers (`tests/support_create.py`), with the real bootstrap. Only the two steps that would
-reach the network or recurse are skipped: `uv sync`, whose part is played by the template's own
+reach the network or recurse are skipped: `make install`, whose part is played by the template's own
 environment, linked into each copy, and `make all`, whose checks this test then runs itself over each
 created project: ruff, pyright in strict mode, the project's own tests, the offline codegen check, and
 the created command's `--help`, which must list the method's inputs.
@@ -79,13 +79,13 @@ def fail_with(result: subprocess.CompletedProcess[str]) -> str:
 
 
 class BootstrapOnly:
-    """Runs the bootstrap for real and keeps its output; skips `uv sync` and `make all`, which this test stands in for."""
+    """Runs the bootstrap for real and keeps its output; skips `make install` and `make all`, which this test stands in for."""
 
     def __init__(self) -> None:
         self.output: list[str] = []
 
     def __call__(self, command: Sequence[str], cwd: Path, env: Mapping[str, str] | None) -> int:
-        if list(command[:2]) in (["uv", "sync"], ["make", "all"]):
+        if list(command[:2]) in (["make", "install"], ["make", "all"]):
             return 0
         result = subprocess.run(list(command), cwd=cwd, env=None if env is None else dict(env), capture_output=True, text=True, check=False)
         self.output.extend((result.stdout, result.stderr))
