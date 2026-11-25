@@ -95,8 +95,14 @@ function resolvedItem(
   };
 }
 
-function refusedItem(uri: string, code: string, detail: string): ResolvedArtifact {
-  return { uri, url: null, expires_at: null, content_type: null, error: { code, detail } };
+function refusedItem(
+  uri: string,
+  code: string,
+  detail: string,
+  params?: Record<string, unknown>,
+): ResolvedArtifact {
+  const error = params === undefined ? { code, detail } : { code, detail, params };
+  return { uri, url: null, expires_at: null, content_type: null, error };
 }
 
 /** The `ApiResponseError` of a refusal: a problem document coded `code`, or an empty body. */
@@ -606,6 +612,66 @@ describe("fetchArtifact", () => {
         code: "input.reference_not_found",
       });
       expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  // A self-hosted runner refuses a reference outside the caller's scope with `auth.forbidden`
+  // naming `read_scope_under_caller`, its equivalent of the platform's `pipelex.org.mismatch`.
+  // An `auth.forbidden` naming any other requirement, or none, is not that refusal.
+  it.each([
+    ["read_scope_under_caller", "input.reference_not_found"],
+    ["admin", "runtime.unexpected"],
+    [undefined, "runtime.unexpected"],
+  ] as const)(
+    "reads a runner's auth.forbidden refusal naming the requirement %s as %s",
+    async (requirement, code) => {
+      const params = requirement === undefined ? undefined : { requirement };
+      const client = makeClient({
+        answers: { [REPORT_URI]: refusedItem(REPORT_URI, "auth.forbidden", "refused", params) },
+      });
+      const spy = mockFetch(() => streamed([]));
+
+      const failure = fetchArtifact(client, REPORT_URI);
+
+      await expect(failure).rejects.toMatchObject({
+        reason: "auth.forbidden",
+        uri: REPORT_URI,
+        code,
+      });
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  // A runner's signed download route refuses a bad or expired signature with a 403
+  // `auth.forbidden` and a missing object with a 404 `pipelex.storage.object_missing`: read by
+  // their status alone, as a presigned link's 403 and 404 are.
+  it.each([
+    [403, "auth.forbidden", "store_refused", "client.response_unreadable"],
+    [404, "pipelex.storage.object_missing", "not_found", "input.reference_not_found"],
+  ] as const)(
+    "reads a runner download's %s %s as %s, as a presigned link's",
+    async (status, bodyCode, reason, code) => {
+      const client = makeClient({
+        originUrl: "http://localhost:8081",
+        answers: {
+          [PICTURE_URI]: resolvedItem(PICTURE_URI, {
+            url: "http://localhost:8081/v1/storage/obj?expires=1&signature=x",
+          }),
+        },
+      });
+      mockFetch(
+        () =>
+          new Response(JSON.stringify(problemDocument(bodyCode, status, { detail: "refused" })), {
+            status,
+            headers: { "content-type": "application/problem+json" },
+          }),
+      );
+
+      await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
+        reason,
+        status,
+        code,
+      });
     },
   );
 

@@ -33,6 +33,7 @@ from pipelex_sdk.errors import (
     RunStillRunningError,
     RunTimeoutError,
     ScopeUnavailableError,
+    StoredTextLoadError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
     UploadNotAllowedError,
@@ -132,11 +133,15 @@ class TestSdkProblems:
     def test_gives_an_upload_transport_failure_its_problem(self, reason: str | None, status: int | None, code: str) -> None:
         assert upload_transport_problem(reason=UploadTransportReason(reason) if reason is not None else None, status=status).code == code
 
-    @pytest.mark.parametrize(("reason", "status", "code"), [(entry["reason"], entry["status"], entry["code"]) for entry in _CASES["artifact_fetch"]])
-    def test_gives_an_artifact_fetch_failure_its_problem(self, reason: str, status: int | None, code: str) -> None:
+    @pytest.mark.parametrize(
+        ("reason", "status", "requirement", "code"),
+        [(entry["reason"], entry["status"], entry.get("requirement"), entry["code"]) for entry in _CASES["artifact_fetch"]],
+    )
+    def test_gives_an_artifact_fetch_failure_its_problem(self, reason: str, status: int | None, requirement: str | None, code: str) -> None:
         uri = "pipelex-storage://org/file.pdf"
-        assert artifact_fetch_problem(reason=reason, uri=uri, status=status).code == code
-        assert ArtifactFetchError("failed", uri=uri, reason=reason, status=status).problem.code == code
+        assert artifact_fetch_problem(reason=reason, uri=uri, status=status, requirement=requirement).code == code
+        assert ArtifactFetchError("failed", uri=uri, reason=reason, status=status, requirement=requirement).problem.code == code
+        assert StoredTextLoadError("failed", uri=uri, path="$", reason=reason, status=status, requirement=requirement).problem.code == code
 
     @pytest.mark.parametrize(
         ("reason", "status", "code"), [(entry["reason"], entry["status"], entry["code"]) for entry in _CASES["method_file_transfer"]]

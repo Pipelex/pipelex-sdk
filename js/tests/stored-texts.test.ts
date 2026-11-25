@@ -632,6 +632,34 @@ describe("the result readers load stored texts", () => {
     },
   );
 
+  it("reads a self-hosted runner's refusal of a reference outside the caller's scope as input.reference_not_found", async () => {
+    const uri = storedUri("x1");
+    mockBoundary({
+      body: results("native.Text", reference(uri), TEXT_NODE),
+      refusals: {
+        [uri]: {
+          uri,
+          url: null,
+          expires_at: null,
+          content_type: null,
+          error: {
+            code: "auth.forbidden",
+            detail: "Refused.",
+            params: { requirement: "read_scope_under_caller" },
+          },
+        },
+      },
+    });
+
+    const failure = await makeClient()
+      .getRunResult(RUN_ID)
+      .catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    expect(failure).toMatchObject({ reason: "auth.forbidden" });
+    expect((failure as StoredTextLoadError).problem.code).toBe("input.reference_not_found");
+  });
+
   it("refuses a stored text at a foreign URL without fetching it", async () => {
     const foreign = "https://10.0.0.5/admin";
     const boundary = mockBoundary({ body: results("native.Text", { url: foreign }, TEXT_NODE) });

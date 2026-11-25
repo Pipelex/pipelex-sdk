@@ -664,14 +664,16 @@ export class ScopeUnavailableError extends ArtifactOperationError {
  * One reference could not be turned into a bounded response by `fetchArtifact`.
  * `reason` says why, in a closed vocabulary the download verdict shares for its
  * per-item errors: the resolve route's own per-reference codes
- * (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`), then the fetch boundary's —
+ * (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`, and a self-hosted runner's
+ * `auth.forbidden` for a reference outside the caller's scope), then the fetch boundary's —
  * `unsupported_url`, `plain_http_refused`, `redirect_refused`, `store_refused`
  * (a 401/403 from the object store), `not_found` (404/410), `store_error`
  * (any other non-2xx), `too_large`, `timeout`, `network`, and `unknown` for a failure the SDK
  * cannot place. `status` is the store's HTTP status when one was received. `downloadArtifacts`
  * never lets this escape: it becomes the item's `error`.
  *
- * Its problem is `options.problem` when given, else follows `reason` and `status`
+ * Its problem is `options.problem` when given, else follows `reason`, `status` and
+ * `options.requirement`, the `requirement` the route's refusal names in its `params`
  * (`artifactFetchProblem`). The SDK gives `client.download_limit_exceeded` naming the cap for
  * `too_large`, `client.timeout` naming the budget for `timeout`, and `client.unreachable` naming
  * the store's origin for `network`.
@@ -686,11 +688,11 @@ export class ArtifactFetchError extends ArtifactOperationError {
     uri: string,
     reason: string,
     status?: number,
-    options?: { cause?: unknown; problem?: Problem },
+    options?: { cause?: unknown; problem?: Problem; requirement?: string },
   ) {
     super(message, {
       cause: options?.cause,
-      problem: options?.problem ?? artifactFetchProblem(reason, uri, status),
+      problem: options?.problem ?? artifactFetchProblem(reason, uri, status, options?.requirement),
     });
     this.name = "ArtifactFetchError";
     this.uri = uri;
@@ -714,7 +716,8 @@ export class ArtifactFetchError extends ArtifactOperationError {
  * no form describes) while something in `main_stuff` is shaped like a stored text's reference,
  * naming the first such value; `not_utf8` for bytes that are no UTF-8 text; and `not_json_object`
  * for a stored JSON value that is no JSON object. `status` is the HTTP status received, the store's
- * or the resolve route's, when one was.
+ * or the resolve route's, when one was, and `requirement` the `requirement` the route's refusal of
+ * the reference names in its `params`, when it names one.
  *
  * Its problem is the fetch failure's own when the bytes could not be read
  * (`artifactFetchProblem`), the resolve route's own for `resolve_failed`,
@@ -743,6 +746,7 @@ export class StoredTextLoadError extends ArtifactOperationError {
       path: string;
       reason: string;
       status?: number | undefined;
+      requirement?: string | undefined;
       wireResults?: RunResults | undefined;
     },
     options?: { cause?: unknown; problem?: Problem },
@@ -750,7 +754,8 @@ export class StoredTextLoadError extends ArtifactOperationError {
     super(message, {
       cause: options?.cause,
       problem:
-        options?.problem ?? artifactFetchProblem(details.reason, details.uri, details.status),
+        options?.problem ??
+        artifactFetchProblem(details.reason, details.uri, details.status, details.requirement),
     });
     this.name = "StoredTextLoadError";
     this.uri = details.uri;
@@ -762,9 +767,18 @@ export class StoredTextLoadError extends ArtifactOperationError {
 }
 
 /**
- * The problem of one reference's fetch failure that its raise site states none for, by its reason
- * and the store's status: `input.reference_not_found` naming the reference for the resolve route's
- * `pipelex.storage.uri_invalid` and `pipelex.org.mismatch` and for `not_found`;
+ * The `requirement` a self-hosted runner's resolve route names when it refuses a reference outside
+ * the caller's scope with `auth.forbidden`: the runner's equivalent of the platform's
+ * `pipelex.org.mismatch`.
+ */
+export const READ_SCOPE_UNDER_CALLER_REQUIREMENT = "read_scope_under_caller";
+
+/**
+ * The problem of one reference's fetch failure that its raise site states none for, by its reason,
+ * the store's status and the `requirement` the route's refusal names: `input.reference_not_found`
+ * naming the reference for the resolve route's `pipelex.storage.uri_invalid` and
+ * `pipelex.org.mismatch`, for a self-hosted runner's `auth.forbidden` whose `requirement` is
+ * `read_scope_under_caller` (a reference outside the caller's scope), and for `not_found`;
  * `client.link_refused` for
  * `unsupported_url`, `plain_http_refused` and `redirect_refused`; for `store_error` and
  * `store_refused`, the object store failing or refusing a link the platform has just signed,
@@ -772,15 +786,24 @@ export class StoredTextLoadError extends ArtifactOperationError {
  * `429` or a `5xx` other than `501`, `runtime.unsupported` for a `501`, and
  * `client.response_unreadable` naming any other status, a `401` or a `403` included), and
  * `runtime.unavailable` when no status is known; `runtime.unavailable` for `timeout` and
- * `network`; and `runtime.unexpected` otherwise, `unknown` and a reason this version does not know
- * included.
+ * `network`; and `runtime.unexpected` otherwise, `unknown`, an `auth.forbidden` naming any other
+ * requirement or none, and a reason this version does not know included.
  */
-export function artifactFetchProblem(reason: string, uri: string, status?: number): Problem {
+export function artifactFetchProblem(
+  reason: string,
+  uri: string,
+  status?: number,
+  requirement?: string,
+): Problem {
   switch (reason) {
     case "pipelex.storage.uri_invalid":
     case "pipelex.org.mismatch":
     case "not_found":
       return buildProblem("input.reference_not_found", { input: uri });
+    case "auth.forbidden":
+      return requirement === READ_SCOPE_UNDER_CALLER_REQUIREMENT
+        ? buildProblem("input.reference_not_found", { input: uri })
+        : buildProblem("runtime.unexpected", {});
     case "unsupported_url":
       return buildProblem("client.link_refused", { reason: "unsupported_scheme" });
     case "plain_http_refused":

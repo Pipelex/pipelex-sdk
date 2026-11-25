@@ -126,9 +126,12 @@ def _resolved(
     )
 
 
-def _refused(uri: str, *, code: str = "pipelex.org.mismatch", detail: str = "Another organization owns this reference.") -> ResolvedArtifact:
+def _refused(
+    uri: str, *, code: str = "pipelex.org.mismatch", detail: str = "Another organization owns this reference.", params: dict[str, Any] | None = None
+) -> ResolvedArtifact:
     """One refused item — the three link fields null, the verdict on `error`."""
-    return ResolvedArtifact(uri=uri, url=None, expires_at=None, content_type=None, error=ArtifactItemError(code=code, detail=detail))
+    error = ArtifactItemError(code=code, detail=detail, params=params)
+    return ResolvedArtifact(uri=uri, url=None, expires_at=None, content_type=None, error=error)
 
 
 def _answer(*items: ResolvedArtifact) -> BulkResolvedStorageUrls:
@@ -524,6 +527,61 @@ class TestArtifacts:
         assert caught.value.uri == _URI_PDF
         # The platform's codes for a malformed reference and another organization's both read as a missing reference.
         assert caught.value.problem.code == "input.reference_not_found"
+
+    # A self-hosted runner refuses a reference outside the caller's scope with `auth.forbidden` naming
+    # `read_scope_under_caller`, its equivalent of the platform's `pipelex.org.mismatch`. An `auth.forbidden` naming any
+    # other requirement, or none, is not that refusal.
+    @pytest.mark.parametrize(
+        ("params", "problem_code"),
+        [
+            ({"requirement": "read_scope_under_caller"}, "input.reference_not_found"),
+            ({"requirement": "admin"}, "runtime.unexpected"),
+            (None, "runtime.unexpected"),
+        ],
+        ids=["read_scope_under_caller", "another_requirement", "no_requirement"],
+    )
+    def test_reads_a_runners_out_of_scope_refusal_as_the_platforms(
+        self, mocker: MockerFixture, params: dict[str, Any] | None, problem_code: str
+    ) -> None:
+        client = _FakeClient(resolve=_resolver(_refused(_URI_PDF, code="auth.forbidden", detail="Refused.", params=params)))
+        seen = _patch_storage(mocker, _serving(_PDF_BYTES))
+
+        async def _read() -> None:
+            async with fetch_artifact(client, _URI_PDF):
+                pass
+
+        with pytest.raises(ArtifactFetchError) as caught:
+            asyncio.run(_read())
+        assert caught.value.reason == "auth.forbidden"
+        assert caught.value.problem.code == problem_code
+        assert seen == []
+
+    # A runner's signed download route refuses a bad or expired signature with a 403 `auth.forbidden` and a missing
+    # object with a 404 `pipelex.storage.object_missing`: read by their status alone, as a presigned link's are.
+    @pytest.mark.parametrize(
+        ("status", "body_code", "code", "problem_code"),
+        [
+            (403, "auth.forbidden", "store_refused", "client.response_unreadable"),
+            (404, "pipelex.storage.object_missing", "not_found", "input.reference_not_found"),
+        ],
+    )
+    def test_reads_a_runner_downloads_refusal_as_a_presigned_links(
+        self, mocker: MockerFixture, status: int, body_code: str, code: str, problem_code: str
+    ) -> None:
+        link = f"{_API_ORIGIN}/v1/storage/report.pdf?expires=1&signature=x"
+        client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url=link)))
+        body = json.dumps({"type": "about:blank", "title": "Refused", "status": status, "code": body_code, "detail": "refused"}).encode()
+        _patch_storage(mocker, _serving(body, status=status, headers={"content-type": "application/problem+json"}))
+
+        async def _read() -> None:
+            async with fetch_artifact(client, _URI_PDF):
+                pass
+
+        with pytest.raises(ArtifactFetchError) as caught:
+            asyncio.run(_read())
+        assert caught.value.reason == code
+        assert caught.value.status == status
+        assert caught.value.problem.code == problem_code
 
     def test_refuses_a_plain_http_link_by_default_and_accepts_it_on_request(self, mocker: MockerFixture) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url="http://localhost:9000/report.pdf")))

@@ -156,14 +156,23 @@ const TEXT_EXTENSION_BY_KIND: Record<StoredTextKind, string> = {
 
 /**
  * Why one reference failed — a value, never a thrown error. `code` is the
- * resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`)
- * or one of the fetch boundary's (see `ArtifactFetchError`), plus the download's
- * own `resolve_failed`, `total_limit_exceeded`, `write_failed` and `aborted`.
- * `detail` is the sentence a person reads.
+ * resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`,
+ * and a self-hosted runner's `auth.forbidden` whose `requirement` is `read_scope_under_caller` for
+ * a reference outside the caller's scope) or one of the fetch boundary's (see `ArtifactFetchError`),
+ * plus the download's own `resolve_failed`, `total_limit_exceeded`, `write_failed` and `aborted`.
+ * `detail` is the sentence a person reads, and `params` the parameters the route's code declares,
+ * when the route sent them.
  */
 export interface ArtifactItemError {
   code: string;
   detail: string;
+  params?: Record<string, unknown> | null;
+}
+
+/** The `requirement` a resolve route's refusal names in its `params`, when it names one. */
+function refusalRequirement(error: ArtifactItemError): string | undefined {
+  const requirement = error.params?.requirement;
+  return typeof requirement === "string" ? requirement : undefined;
 }
 
 /**
@@ -840,7 +849,9 @@ export async function fetchArtifact(
   const bounds = fetchBounds(options, client.originUrl);
   const [resolved] = await resolveArtifacts(client, [uri], { signal: options.signal });
   if (resolved!.error !== null) {
-    throw new ArtifactFetchError(resolved!.error.detail, uri, resolved!.error.code);
+    throw new ArtifactFetchError(resolved!.error.detail, uri, resolved!.error.code, undefined, {
+      requirement: refusalRequirement(resolved!.error),
+    });
   }
   const dispatcher = await dispatcherFor(bounds.timeoutMs);
   return fetchResolvedUrl(uri, resolved!.url, bounds, dispatcher, () => {
@@ -1755,11 +1766,11 @@ async function readStoredBytes(
   const fail = (
     reason: string,
     detail: string,
-    extra?: { cause?: unknown; problem?: Problem; status?: number },
+    extra?: { cause?: unknown; problem?: Problem; status?: number; requirement?: string },
   ): never => {
     throw new StoredTextLoadError(
       `The stored text at ${path} could not be loaded: ${detail}`,
-      { uri: site.url, path, reason, status: extra?.status },
+      { uri: site.url, path, reason, status: extra?.status, requirement: extra?.requirement },
       { cause: extra?.cause, problem: extra?.problem },
     );
   };
@@ -1774,7 +1785,11 @@ async function readStoredBytes(
   if (resolved === undefined) {
     return fail("unsupported_url", "its url was not resolved by the platform.");
   }
-  if (resolved.error !== null) return fail(resolved.error.code, resolved.error.detail);
+  if (resolved.error !== null) {
+    return fail(resolved.error.code, resolved.error.detail, {
+      requirement: refusalRequirement(resolved.error),
+    });
+  }
   const link = resolved.url;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {

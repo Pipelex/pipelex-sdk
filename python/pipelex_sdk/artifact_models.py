@@ -11,6 +11,7 @@ the shapes keeps that from being an import cycle. Mirrors the types of `pipelex-
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -91,15 +92,24 @@ class ArtifactScope(StrEnum):
 class ArtifactItemError(BaseModel):
     """Why one reference failed — a value, never a raised error.
 
-    `code` is the resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`) or one
-    of the fetch boundary's (see `ArtifactFetchError`), plus the download's own `resolve_failed`,
-    `total_limit_exceeded`, `write_failed` and `aborted`. `detail` is the sentence a person reads.
+    `code` is the resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`, and a
+    self-hosted runner's `auth.forbidden` whose `requirement` is `read_scope_under_caller` for a reference outside the
+    caller's scope) or one of the fetch boundary's (see `ArtifactFetchError`), plus the download's own
+    `resolve_failed`, `total_limit_exceeded`, `write_failed` and `aborted`. `detail` is the sentence a person reads,
+    and `params` the parameters the route's code declares, when the route sent them.
     """
 
     model_config = ConfigDict(extra="allow")
 
     code: str
     detail: str
+    params: dict[str, Any] | None = None
+
+    @property
+    def requirement(self) -> str | None:
+        """The `requirement` the route's refusal names in its `params`, when it names one."""
+        requirement = (self.params or {}).get("requirement")
+        return requirement if isinstance(requirement, str) else None
 
 
 class ResolvedArtifact(BaseModel):

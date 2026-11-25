@@ -818,7 +818,7 @@ async def _fetch_artifact(
     resolved = await resolve_artifacts(client, [uri])
     entry = resolved[0]
     if entry.error is not None:
-        raise ArtifactFetchError(entry.error.detail, uri=uri, reason=entry.error.code)
+        raise ArtifactFetchError(entry.error.detail, uri=uri, reason=entry.error.code, requirement=entry.error.requirement)
     if entry.url is None:
         msg = "The bulk resolve route answered an item with neither a link nor an error."
         raise ArtifactOperationError(msg, problem=response_unreadable_problem(status=200))
@@ -1320,7 +1320,7 @@ async def _read_stored_bytes(
         raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="unsupported_url")
     if resolved.error is not None:
         msg = f"The stored text at {site.path} could not be loaded: {resolved.error.detail}"
-        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=resolved.error.code)
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=resolved.error.code, requirement=resolved.error.requirement)
     if resolved.url is None:
         msg = f"The stored text at {site.path} could not be loaded: the bulk resolve route answered its item with neither a link nor an error."
         raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="resolve_failed", problem=response_unreadable_problem(status=200))

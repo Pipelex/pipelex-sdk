@@ -532,6 +532,19 @@ class TestStoredTexts:
         assert exc_info.value.problem.code == "input.reference_not_found"
         assert exc_info.value.wire_results is None
 
+    def test_runners_out_of_scope_stored_text_reads_as_reference_not_found(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("x1")
+        error = {"code": "auth.forbidden", "detail": "refused", "params": {"requirement": "read_scope_under_caller"}}
+        refusal = {"uri": uri, "url": None, "expires_at": None, "content_type": None, "error": error}
+        _Boundary(mocker, client, body=_results("native.Text", _reference(uri), _TEXT_NODE), refusals={uri: refusal})
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID))
+
+        assert exc_info.value.reason == "auth.forbidden"
+        assert exc_info.value.problem.code == "input.reference_not_found"
+
     def test_stored_text_at_a_foreign_url_is_refused_without_a_request(self, mocker: MockerFixture) -> None:
         client = _client()
         foreign = "https://10.0.0.5/admin"
