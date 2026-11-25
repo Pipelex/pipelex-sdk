@@ -216,7 +216,7 @@ function classifyProblem(
     return classifyUploadUnavailable(err, env);
   }
   if (opts.uploadGrant && err.code === "request.too_large") return classifyGrantTooLarge(err);
-  if (opts.blocking && err.code === "client.outcome_unknown") return classifyBlockingCutOff(err);
+  if (opts.blocking && BLOCKING_CUT_OFF_CODES.has(err.code)) return classifyBlockingCutOff(err);
   if (opts.blocking && err.code === "client.follow_failed") return classifyRunStillRunning(err);
 
   switch (err.code) {
@@ -653,12 +653,21 @@ const USE_DURABLE_RUNS_HINT: ErrorHint = {
     "Switch this example to Durable mode. It starts the run and polls for the result, so long pipelines survive the cap.",
 };
 
+/** The codes that, on the blocking path, mean the run's answer was lost: the SDK's and the platform's. */
+const BLOCKING_CUT_OFF_CODES: ReadonlySet<string> = new Set([
+  "client.outcome_unknown",
+  "run.outcome_unknown",
+]);
+
 /**
- * `client.outcome_unknown` on the blocking path: the synchronous `execute`
- * ended without the run's result, cut off at the hosted gateway's ~30s cap
- * (the SDK's `PipelineExecuteTimeoutError`, or the gateway's own `502`/`504`),
- * or a connection lost once the request had left. The run may have started and
- * still be going, which the retry line says; durable runs are the remedy.
+ * `client.outcome_unknown` or `run.outcome_unknown` on the blocking path: the
+ * synchronous `execute` ended without the run's result, cut off at the hosted
+ * ~30s cap. The SDK reads its own `PipelineExecuteTimeoutError`, a gateway's bare
+ * `502`/`504` and a connection lost once the request had left as
+ * `client.outcome_unknown`; the hosted platform answers the cap itself with a
+ * `502` problem coded `run.outcome_unknown` that names the run. Either way the
+ * run may have started and still be going, which the retry line says; durable
+ * runs are the remedy.
  */
 function classifyBlockingCutOff(err: ProblemError): PipelineError {
   const seconds =
