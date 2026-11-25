@@ -104,10 +104,11 @@ describe("TextStatsForm", () => {
     // The result is rendered from the method's own output contract, so a
     // `native.Text` result is typeset as the markdown a model actually returns:
     // the heading is a heading and the table is a table, where a JSON view
-    // printed the escapes. The header carries the stuff name this form passed.
+    // printed the escapes. The text opens with its own heading, so the kernel
+    // draws no title over it, not even the stuff name this form passed.
     expect(screen.getByRole("heading", { name: "Text statistics" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "Words" })).toBeInTheDocument();
-    expect(screen.getByText("Text stats")).toBeInTheDocument();
+    expect(screen.queryByText("Text stats")).not.toBeInTheDocument();
     // The same seam every example turns on: the action gets the schema-shaped
     // dict the contract declares, not the raw run-values the form holds.
     expect(start).toHaveBeenCalledWith({ text: { text: "Some prose." } });

@@ -117,6 +117,34 @@ class TestPresentError:
         assert presentation.hint is not None
         assert "without --blocking" in presentation.hint
 
+    def test_the_platforms_lost_answer_on_a_blocking_run_names_the_cap_as_its_likely_cause(self):
+        # The hosted platform answers a blocking run cut off at its cap itself, with a 502 problem naming the run.
+        presentation = present_error(
+            _refusal(
+                502,
+                "Bad Gateway",
+                _problem(
+                    type="https://mthds.ai/errors/run.outcome_unknown",
+                    title="The runtime cannot tell whether the run started or finished",
+                    detail="The run 'run-9' was sent on, and its answer was lost.",
+                    code="run.outcome_unknown",
+                    retry="outcome_unknown",
+                    next_step={
+                        "kind": "read_run",
+                        "detail": "Read the run 'run-9' to learn its outcome, and never send the request again automatically.",
+                    },
+                    pipeline_run_id="run-9",
+                ),
+                may_start_run=True,
+            ),
+            mode=RunMode.BLOCKING,
+        )
+        assert "about 30 seconds" in presentation.message
+        assert "may still be going" in presentation.message
+        assert presentation.hint is not None
+        assert "without --blocking" in presentation.hint
+        assert RETRY_UNKNOWN in presentation.details
+
     def test_a_start_whose_outcome_is_unknown_says_where_to_look_for_the_run(self):
         presentation = present_error(_refusal(502, "Bad Gateway", may_start_run=True), mode=RunMode.ATTENDED)
         assert presentation.message == "The API answered 502 Bad Gateway."

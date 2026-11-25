@@ -56,7 +56,7 @@ import type { GrantOutcome } from "@/lib/uploadGrant";
  *    one that fails, leaves nothing behind to submit by accident.
  *  - **Stay busy for the whole operation, not just one step.** While an id is
  *    in `uploadingIds` the kernel shuts every door into that value — the
- *    dropzone, the "paste a URL instead" toggle, the URL input behind it — and
+ *    dropzone, the "Paste a link instead" toggle, the URL input behind it — and
  *    shows a spinner. Hashing the file, the grant request and the upload are
  *    one operation: a window between them where the field is writable is a
  *    window where an older selection lands last and silently replaces the
@@ -90,9 +90,12 @@ export interface UseFileInputsOptions {
   onSelectionStart?: () => void;
   /**
    * Last chance to fix a `File` the browser described badly, before it is
-   * uploaded. For instance, re-wrap a `.pdf` whose `file.type` is empty. This is
-   * a description fix, not validation — the grant action checks the type it is
-   * given, and storage holds the upload to it.
+   * uploaded. A type the browser left empty, reported as
+   * `application/octet-stream` or reported as another type the form kernel
+   * lists for the file's format needs no fix: the grant action judges those by
+   * the extension, as the dropzone does. This is a description fix, not
+   * validation — the grant action judges the file as the dropzone does, and
+   * storage types the upload by its name's extension.
    */
   prepareFile?: (file: File) => File;
   /** The size cap, in bytes. Defaults to the platform's limit on one upload. */

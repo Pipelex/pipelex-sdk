@@ -97,11 +97,32 @@ function readCondition(value: unknown): ConditionProgress | null {
   return { selected_outcome: value.selected_outcome };
 }
 
+/**
+ * A failure's problem document, by the members the timeline shows and the
+ * protocol requires: the route sends the problem it built in place of the
+ * platform's (`failureProblemShown` in `runProgress.ts`), so a member outside
+ * these is dropped, as everywhere else here.
+ */
+function readProblem(value: unknown): InvocationFailure["problem"] | null {
+  if (!isRecord(value) || !isRecord(value.next_step)) return null;
+  const { type, title, detail, code, domain, retry } = value;
+  const { kind, detail: step } = value.next_step;
+  if (typeof type !== "string" || typeof title !== "string" || typeof detail !== "string") {
+    return null;
+  }
+  if (typeof code !== "string" || typeof domain !== "string" || typeof retry !== "string") {
+    return null;
+  }
+  if (typeof kind !== "string" || typeof step !== "string") return null;
+  return { type, title, detail, code, domain, retry, next_step: { kind, detail: step } };
+}
+
 function readFailure(value: unknown): InvocationFailure | null {
-  if (!isRecord(value) || typeof value.message !== "string") return null;
+  if (!isRecord(value)) return null;
+  const problem = readProblem(value.problem);
   const at = optional(value.at, readText);
-  if (at === null) return null;
-  return { message: value.message, ...(at !== undefined && { at }) };
+  if (problem === null || at === null) return null;
+  return { problem, ...(at !== undefined && { at }) };
 }
 
 function readAttempt(value: unknown): ExecutionAttempt | null {

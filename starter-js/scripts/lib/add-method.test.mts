@@ -596,7 +596,19 @@ describe("fileInputsOf", () => {
 
 describe("allowedMimesFor", () => {
   it("maps each file kind to the types the action accepts", () => {
-    expect(allowedMimesFor([{ path: "d", kind: "document" }])).toEqual(["application/pdf"]);
+    // A document takes the form kernel's whole list, images included.
+    expect(allowedMimesFor([{ path: "d", kind: "document" }])).toEqual([
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.ms-powerpoint",
+      "text/csv",
+      "image/jpeg",
+      "image/png",
+    ]);
     expect(allowedMimesFor([{ path: "i", kind: "image" }])).toEqual([
       "image/png",
       "image/jpeg",
@@ -607,7 +619,19 @@ describe("allowedMimesFor", () => {
         { path: "d", kind: "document" },
         { path: "shots[]", kind: "image" },
       ]),
-    ).toEqual(["application/pdf", "image/png", "image/jpeg", "image/webp"]);
+    ).toEqual([
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.ms-powerpoint",
+      "text/csv",
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ]);
   });
 });
 
@@ -894,8 +918,9 @@ describe("renderAction", () => {
 describe("renderUploads", () => {
   it("holds the media types the method's file inputs take, for both halves to import", () => {
     const source = renderUploads(DOCUMENTS_PLAN);
-    expect(source).toContain('export const ALLOWED_MIMES = ["application/pdf"];');
-    expect(source).toContain("`requestDocumentsUpload` refuses a grant for any");
+    expect(source).toContain('export const ALLOWED_MIMES = ["application/pdf",');
+    expect(source).toContain('"text/csv","image/jpeg","image/png"];');
+    expect(source).toContain("`requestDocumentsUpload` grants a file only in");
     // A plain module: the form, a client component, imports it too.
     expect(source).not.toContain("use server");
     expect(source).not.toContain("use client");
@@ -909,9 +934,7 @@ describe("renderUploads", () => {
         { path: "shots[]", kind: "image" },
       ],
     });
-    expect(source).toContain(
-      'export const ALLOWED_MIMES = ["application/pdf","image/png","image/jpeg","image/webp"];',
-    );
+    expect(source).toContain('"text/csv","image/jpeg","image/png","image/webp"];');
   });
 });
 

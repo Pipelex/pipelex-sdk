@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.70.0] - 2026-11-25
+
+### Changed
+
+- **The starter runs on `pipelex-sdk` 0.69.5, with `mthds` 0.28.0**: moved from 0.53.0 and `mthds` 0.25.0. An attended run, and a detached run's `wait` and `result`, hand back a `Text`, `Markdown`, `Html` or `JSON` output the runtime stored apart as its text, never as its `{url, size, mime_type, preview}` reference, and a text that cannot be loaded is presented from its problem like any other failure; a blocking run's output is lifted as before, without that load. A failure's title and next step read in the core error registry's new wording, written for someone following a run of a method they did not write, so `pipe.output_invalid` reads "A step's result does not have the structure the method declares", while every code stays the same. `mthds` 0.28.0 follows MTHDS standard 9.0.0, so a manifest whose `mthds_version` reads `^8.0.0` no longer passes. The SDK's other changes in between, the run history across methods, the template catalog, layouts, showcases and webhooks among them, reach nothing the starter calls.
+
+### Fixed
+
+- **A blocking run cut off at the hosted ~30s cap reads as the cap again**: the hosted platform now answers that cut-off with a `502` problem coded `run.outcome_unknown` naming the run, which the starter printed as "The API answered 502" with no next step; a blocking run now says the platform lost the run's answer, that the run may still be going and that the ~30s cut-off is the usual cause, and hints to switch to a durable run, as it does for the SDK's own `client.outcome_unknown`.
+
 ## [v0.69.0] - 2026-11-16
 
 ### Fixed

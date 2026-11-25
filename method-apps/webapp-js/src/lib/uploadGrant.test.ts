@@ -81,6 +81,20 @@ describe("grantFileUpload", () => {
     expect(requestUploadGrant).not.toHaveBeenCalled();
   });
 
+  it("sends a type the browser left empty as none, for the platform to type by extension", async () => {
+    requestUploadGrant.mockResolvedValueOnce(GRANT);
+    const outcome = await grantFileUpload({ ...REQUEST, content_type: "" }, OPTS);
+    expect(requestUploadGrant).toHaveBeenCalledWith({ ...REQUEST, content_type: null });
+    expect(outcome).toEqual({ ok: true, grant: GRANT });
+  });
+
+  it("sends a type the form kernel reads by extension as the browser reported it", async () => {
+    requestUploadGrant.mockResolvedValueOnce(GRANT);
+    const reported = { ...REQUEST, content_type: "application/octet-stream" };
+    await grantFileUpload(reported, OPTS);
+    expect(requestUploadGrant).toHaveBeenCalledWith(reported);
+  });
+
   it("refuses a type the method does not take before asking for anything", async () => {
     const outcome = await grantFileUpload({ ...REQUEST, content_type: "application/pdf" }, OPTS);
     expect(outcome).toMatchObject({ ok: false, error: { kind: "unsupported_file_type" } });

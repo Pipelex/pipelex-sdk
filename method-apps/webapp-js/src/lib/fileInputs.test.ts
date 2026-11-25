@@ -27,11 +27,56 @@ describe("checkUploadRequest", () => {
     expect(refused?.message).toContain("application/pdf");
   });
 
-  it("refuses a file the browser could not type", () => {
-    // A browser reports `file.type === ""` for a type it does not know.
-    const refused = checkUploadRequest({ ...request, content_type: "" }, opts);
+  // A browser reports `file.type === ""` for a type it does not know, and
+  // `application/octet-stream` for one it will not name: the form kernel's
+  // dropzone then judges the file by its extension, and the grant must agree.
+  it.each(["", "application/octet-stream"])(
+    "takes a file reported as %j when its extension is a type the method takes",
+    (type) => {
+      expect(checkUploadRequest({ ...request, content_type: type }, opts)).toBeNull();
+    },
+  );
+
+  it("refuses a file with no type whose extension the method does not take", () => {
+    const refused = checkUploadRequest({ ...request, filename: "cv.txt", content_type: "" }, opts);
     expect(refused?.kind).toBe("unsupported_file_type");
     expect(refused?.message).toContain("an unknown type");
+  });
+
+  describe("a type the browser reports for another format", () => {
+    const office = {
+      allowedMimes: [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/csv",
+      ],
+      maxBytes: MAX_FILE_BYTES,
+    };
+
+    it.each([
+      ["a .docx reported as a zip archive", "report.docx", "application/zip"],
+      ["a .csv reported as plain text", "rows.csv", "text/plain"],
+      ["a .csv reported as an Excel workbook", "rows.csv", "application/vnd.ms-excel"],
+    ])("takes %s, as the dropzone does", (_label, filename, type) => {
+      expect(checkUploadRequest({ ...request, filename, content_type: type }, office)).toBeNull();
+    });
+
+    it.each([
+      ["a .zip reported as a zip archive", "archive.zip", "application/zip"],
+      ["a .txt reported as plain text", "notes.txt", "text/plain"],
+      ["a .docx reported as a type of no format of it", "report.docx", "text/html"],
+    ])("refuses %s", (_label, filename, type) => {
+      const refused = checkUploadRequest({ ...request, filename, content_type: type }, office);
+      expect(refused?.kind).toBe("unsupported_file_type");
+    });
+  });
+
+  it("takes a listed type the form kernel has no format for when reported exactly", () => {
+    const data = { allowedMimes: ["application/json"], maxBytes: MAX_FILE_BYTES };
+    const exact = { filename: "rows.json", content_type: "application/json", size: 1024 };
+    expect(checkUploadRequest(exact, data)).toBeNull();
+    // With no kernel format to read the extension by, the type must be exact.
+    const untyped = { ...exact, content_type: "" };
+    expect(checkUploadRequest(untyped, data)?.kind).toBe("unsupported_file_type");
   });
 
   it("refuses a file over the cap with the shared wording", () => {

@@ -260,7 +260,7 @@ describe("pollSummarizePdfRun", () => {
 
 describe("the paste-a-URL escape hatch", () => {
   it("passes an https reference through the file gate untouched", async () => {
-    // The kernel's file control offers "paste a URL instead", so a document
+    // The kernel's file control offers "Paste a link instead", so a document
     // input can arrive as a reference nobody uploaded; resolving it is the
     // runner's job.
     prepareInputs.mockResolvedValueOnce(PREPARED);

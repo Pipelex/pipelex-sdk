@@ -159,13 +159,15 @@ export interface ClassifyEnv {
 
 export interface ClassifyOptions {
   /**
-   * Set by the blocking path (`executeBlockingRun`). Behind the hosted gateway a
-   * synchronous `execute` that overruns the ~30s cap is cut off, and the SDK
-   * reads every such ending (its own `PipelineExecuteTimeoutError`, a gateway
-   * `502`/`504` with no problem document, a connection lost after the request
-   * left) as `client.outcome_unknown`: the run may still be going. Only on the
-   * blocking path is that the cap, whose remedy is durable runs; on the durable
-   * path it is a start whose outcome is unknown, and the flag scopes the
+   * Set by the blocking path (`executeBlockingRun`). Behind the hosted platform
+   * a synchronous `execute` that overruns the ~30s cap is cut off. The platform
+   * answers it with a `502` problem coded `run.outcome_unknown` naming the run;
+   * the SDK reads its own `PipelineExecuteTimeoutError`, a gateway `502`/`504`
+   * with no problem document and a connection lost after the request left as
+   * `client.outcome_unknown`. Either way the run may still be going. Only on the
+   * blocking path is that read as the cap, whose remedy is durable runs; on the
+   * durable path `client.outcome_unknown` is a start whose outcome is unknown and
+   * `run.outcome_unknown` is shown from its own problem, and the flag scopes the
    * reading.
    */
   blocking?: boolean;
@@ -216,7 +218,7 @@ function classifyProblem(
     return classifyUploadUnavailable(err, env);
   }
   if (opts.uploadGrant && err.code === "request.too_large") return classifyGrantTooLarge(err);
-  if (opts.blocking && err.code === "client.outcome_unknown") return classifyBlockingCutOff(err);
+  if (opts.blocking && BLOCKING_CUT_OFF_CODES.has(err.code)) return classifyBlockingCutOff(err);
   if (opts.blocking && err.code === "client.follow_failed") return classifyRunStillRunning(err);
 
   switch (err.code) {
@@ -653,16 +655,43 @@ const USE_DURABLE_RUNS_HINT: ErrorHint = {
     "Switch this example to Durable mode. It starts the run and polls for the result, so long pipelines survive the cap.",
 };
 
+/** The codes that, on the blocking path, mean the run's answer was lost: the SDK's and the platform's. */
+const BLOCKING_CUT_OFF_CODES: ReadonlySet<string> = new Set([
+  "client.outcome_unknown",
+  "run.outcome_unknown",
+]);
+
 /**
- * `client.outcome_unknown` on the blocking path: the synchronous `execute`
- * ended without the run's result, cut off at the hosted gateway's ~30s cap
- * (the SDK's `PipelineExecuteTimeoutError`, or the gateway's own `502`/`504`),
- * or a connection lost once the request had left. The run may have started and
- * still be going, which the retry line says; durable runs are the remedy.
+ * `client.outcome_unknown` or `run.outcome_unknown` on the blocking path: the
+ * synchronous `execute` ended without the run's result, cut off at the hosted
+ * ~30s cap. The SDK reads its own `PipelineExecuteTimeoutError`, a gateway's bare
+ * `502`/`504` and a connection lost once the request had left as
+ * `client.outcome_unknown`; the hosted platform answers the cap itself with a
+ * `502` problem coded `run.outcome_unknown` that names the run. Either way the
+ * run may have started and still be going, which the retry line says; durable
+ * runs are the remedy.
  */
 function classifyBlockingCutOff(err: ProblemError): PipelineError {
   const seconds =
     err instanceof PipelineExecuteTimeoutError ? Math.round(err.elapsedMs / 1000) : undefined;
+  const parts = {
+    hint: USE_DURABLE_RUNS_HINT,
+    ...errorParts(err),
+    details: problemDetails(err),
+  };
+  // The platform's `run.outcome_unknown` says the run's answer was lost, which
+  // the ~30s cap is the usual cause of but not the only one, so it is worded as
+  // the likely cause, with the platform's own sentence beside it.
+  if (err.code === "run.outcome_unknown") {
+    return {
+      kind: "execute_timeout",
+      title: "The blocking request ended without the run's result",
+      message:
+        "The platform lost the run's answer, as it does when a blocking run outlasts the hosted ~30s synchronous limit. The run may still be going: look it up by its id before running it again.",
+      apiMessage: apiAnsweredProblem(err) ? nonEmpty(err.problem.detail) : undefined,
+      ...parts,
+    };
+  }
   return {
     kind: "execute_timeout",
     title: "Pipeline exceeded the ~30s blocking limit",
@@ -670,9 +699,7 @@ function classifyBlockingCutOff(err: ProblemError): PipelineError {
       seconds !== undefined
         ? `The blocking request ran for ~${seconds}s before timing out at the hosted gateway's ~30s synchronous limit. The pipeline isn't broken — it's just too long to await synchronously behind the hosted gateway, and the run may still be going.`
         : "The blocking request ended without the run's result, as it does when it outlasts the hosted gateway's ~30s synchronous limit. The pipeline isn't broken — it's just too long to await synchronously, and the run may still be going.",
-    hint: USE_DURABLE_RUNS_HINT,
-    ...errorParts(err),
-    details: problemDetails(err),
+    ...parts,
   };
 }
 
