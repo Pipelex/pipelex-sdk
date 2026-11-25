@@ -175,6 +175,12 @@ _TEXT_EXTENSION_BY_MIME_TYPE: dict[str, str] = {
 #: still encoded.
 _DECODED_CODINGS = frozenset(SUPPORTED_DECODERS) - {"identity"}
 
+#: The port each fetched scheme defaults to, so that `http://host` and `http://host:80` are one origin.
+_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
+
+#: An origin as compared: the scheme and the host lowercased, and the port with its default filled in.
+_Origin: TypeAlias = tuple[str, str, int]
+
 _SKIPPED_CREDENTIAL = "The download stopped on a credential failure before this artifact was fetched."
 
 
@@ -182,10 +188,17 @@ _SKIPPED_CREDENTIAL = "The download stopped on a credential failure before this 
 
 
 class BulkResolveClient(Protocol):
-    """The client surface the reading operations need — the raw bulk resolve call. Typed as
-    `PipelexAPIClient.resolve_storage_urls_bulk`'s own signature, so the client satisfies it
+    """The client surface the reading operations need — the raw bulk resolve call and the origin the
+    client is configured with. Typed as `PipelexAPIClient`'s own members, so the client satisfies it
     structurally and a test can inject a fake.
     """
+
+    @property
+    def origin_url(self) -> str:
+        """The origin (`scheme://host[:port]`) of the client's configured base URL. A resolved link on it
+        is fetched over plain http without `allow_http`, since the client already sends its API key there.
+        """
+        ...
 
     async def resolve_storage_urls_bulk(self, uris: list[str]) -> BulkResolvedStorageUrls: ...
 
@@ -638,6 +651,9 @@ class _FetchBounds:
     max_bytes: int
     timeout_seconds: float
     allow_http: bool
+    #: The origin of the client's configured base URL, on which a plain-http link is fetched without
+    #: `allow_http`; `None` when that base URL has no comparable origin.
+    client_origin: _Origin | None
 
 
 class ArtifactStream:
@@ -700,7 +716,7 @@ async def _stream_resolved_url(
     """The bounded fetch of an already-resolved link — the half of `fetch_artifact` that
     `download_artifacts` shares, its links coming from one bulk resolve ahead of the tasks.
     """
-    checked_url = _checked_url(uri, download_url, allow_http=bounds.allow_http)
+    checked_url = _checked_url(uri, download_url, allow_http=bounds.allow_http, client_origin=bounds.client_origin)
     try:
         async with asyncio.timeout(bounds.timeout_seconds):
             try:
@@ -797,7 +813,7 @@ async def _fetch_artifact(
     options: FetchArtifactOptions | None = None,
 ) -> AsyncGenerator[ArtifactStream, None]:
     """`fetch_artifact`'s body — resolve one reference fresh, then stream its link under the bounds."""
-    bounds = _validated_bounds(options or FetchArtifactOptions())
+    bounds = _validated_bounds(options or FetchArtifactOptions(), origin_url=client.origin_url)
     resolved = await resolve_artifacts(client, [uri])
     entry = resolved[0]
     if entry.error is not None:
@@ -813,11 +829,36 @@ async def _fetch_artifact(
         await storage_client.aclose()
 
 
-def _validated_bounds(options: FetchArtifactOptions) -> _FetchBounds:
-    """The per-file bounds, refusing nonsense before anything is resolved."""
+def _validated_bounds(options: FetchArtifactOptions, *, origin_url: str) -> _FetchBounds:
+    """The per-file bounds, refusing nonsense before anything is resolved. `origin_url` is the client's own
+    origin, the one on which a plain-http link is fetched without `allow_http`.
+    """
     _require_positive("max_bytes", options.max_bytes)
     _require_positive("timeout_seconds", options.timeout_seconds)
-    return _FetchBounds(max_bytes=options.max_bytes, timeout_seconds=options.timeout_seconds, allow_http=options.allow_http)
+    return _FetchBounds(
+        max_bytes=options.max_bytes,
+        timeout_seconds=options.timeout_seconds,
+        allow_http=options.allow_http,
+        client_origin=_origin_of(origin_url),
+    )
+
+
+def _origin_of(url: str) -> _Origin | None:
+    """The origin of an http(s) URL as compared: the scheme and the host lowercased, the port with its default
+    filled in, so `http://localhost` and `http://LOCALHOST:80/` are one origin. `None` for anything else, which
+    then matches nothing. Hosts are compared as written: `127.0.0.1` and `localhost` are two origins.
+    """
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    default_port = _DEFAULT_PORTS.get(scheme)
+    host = parsed.hostname
+    if default_port is None or not host:
+        return None
+    return scheme, host, port if port is not None else default_port
 
 
 def _require_positive(name: str, value: float) -> None:
@@ -827,8 +868,14 @@ def _require_positive(name: str, value: float) -> None:
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument=name, reason="not_positive"))
 
 
-def _checked_url(uri: str, download_url: str, *, allow_http: bool) -> str:
-    """The boundary-approved link, or the typed refusal saying why it is not fetched."""
+def _checked_url(uri: str, download_url: str, *, allow_http: bool, client_origin: _Origin | None) -> str:
+    """The boundary-approved link, or the typed refusal saying why it is not fetched.
+
+    A plain-http link is fetched when the caller opted in with `allow_http`, or when its origin is
+    `client_origin`, the origin of the client's configured base URL: the client already sends its API key
+    there, so a link to it reveals nothing the client does not already trust that server with. That is how a
+    self-hosted runner listening on plain http hands back what it stores.
+    """
     try:
         parsed = urlsplit(download_url)
     except ValueError as exc:
@@ -838,10 +885,10 @@ def _checked_url(uri: str, download_url: str, *, allow_http: bool) -> str:
         msg = "The platform resolved the reference to a link that is not a valid absolute URL."
         raise ArtifactFetchError(msg, uri=uri, reason="unsupported_url")
     scheme = parsed.scheme.lower()
-    if scheme == "http" and not allow_http:
+    if scheme == "http" and not allow_http and (client_origin is None or _origin_of(download_url) != client_origin):
         msg = (
-            "The platform resolved the reference to a plain http link, which is refused by default; "
-            "pass allow_http=True to accept it (the local stack's object store hands out such links)."
+            "The platform resolved the reference to a plain http link on an origin other than the client's own, which is "
+            "refused by default; pass allow_http=True to accept it (the local stack's object store hands out such links)."
         )
         raise ArtifactFetchError(msg, uri=uri, reason="plain_http_refused")
     if scheme not in {"http", "https"}:
@@ -1117,7 +1164,8 @@ async def _load_stored_text_values(
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument="concurrency", reason="not_positive"))
     _require_positive("max_total_bytes", options.max_total_bytes)
     bounds = _validated_bounds(
-        FetchArtifactOptions(max_bytes=options.max_bytes, timeout_seconds=options.timeout_seconds, allow_http=options.allow_http)
+        FetchArtifactOptions(max_bytes=options.max_bytes, timeout_seconds=options.timeout_seconds, allow_http=options.allow_http),
+        origin_url=client.origin_url,
     )
     max_total_bytes = options.max_total_bytes
 
@@ -1475,7 +1523,7 @@ async def download_artifacts(
     """
     opts = options or DownloadArtifactsOptions()
     scope = _require_scope(opts.scope)
-    bounds = _validated_bounds(opts)
+    bounds = _validated_bounds(opts, origin_url=client.origin_url)
     if opts.concurrency < 1:
         msg = f'"concurrency" must be a positive integer, got {opts.concurrency}.'
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument="concurrency", reason="not_positive"))

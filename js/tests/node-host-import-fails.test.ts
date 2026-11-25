@@ -37,6 +37,7 @@ const BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 /** A client resolving `URI` to a fresh link; nothing else is called. */
 function resolvingClient(): ArtifactCapableClient {
   return {
+    originUrl: "https://api.example.test",
     async resolveStorageUrls(input) {
       const items: ResolvedArtifact[] = input.uris.map((uri) => ({
         uri,

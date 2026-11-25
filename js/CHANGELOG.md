@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **A plain `http:` link on the client's own origin is fetched without `allowHttp`**: `loadStoredTexts`, the result readers that load stored texts, `fetchArtifact` and `downloadArtifacts` accept a resolved link on plain `http:` when its origin (scheme, host and port) is the origin of the client's configured base URL, so a self-hosted runner listening on plain http hands back its stored texts, images and documents with no option set; a plain `http:` link on any other origin is still refused unless `allowHttp` is set.
+- **`ArtifactCapableClient` carries `originUrl` (Breaking)**: a client handed to `loadStoredTexts`, `fetchArtifact` or `downloadArtifacts` states the origin of its configured base URL, which `PipelexApiClient` now exposes as its public `originUrl`; a fake or a wrapper implementing the interface adds the field.
+
 ## [v0.69.5] - 2026-11-20
 
 ### Added

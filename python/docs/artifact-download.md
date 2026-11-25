@@ -2,7 +2,7 @@
 
 > **Status: implemented** (`pipelex_sdk/artifacts.py`, with its shapes in `pipelex_sdk/artifact_models.py`). This is the download twin of [input preparation](./input-preparation.md): where `prepare_inputs` turns local files into `pipelex-storage://` references before a run, these operations turn the references a run produced back into bytes on disk, or into a bounded stream, afterwards. They are layered so that each is usable without the next, and they are the Python twins of `@pipelex/sdk`'s `locateArtifacts` / `collectArtifacts` / `resolveArtifacts` / `fetchArtifact` / `downloadArtifacts`.
 >
-> **They need a platform that serves the bulk resolve route.** Everything below the pure walk mints its links through `POST /v1/resolve-storage-url/bulk`, a hosted-platform route. The public bare runner (`pipelex-api`) has no resolve route at all, single or bulk, and a hosted deployment that predates the route answers a `404`; in both cases the operation raises the existing `ApiResponseError` and nothing is downloaded. `resolve_storage_url`, the single-reference primitive, stays for the callers that have one link to mint.
+> **They need a server that serves the bulk resolve route.** Everything below the pure walk mints its links through `POST /v1/resolve-storage-url/bulk`. The hosted platform serves it and, from pipelex-api 0.118.0, so does a self-hosted runner, which resolves the references under the caller's own scope to links on its own signed download route. A runner older than that has no resolve route at all, single or bulk, and a hosted deployment that predates the route answers a `404`; in both cases the operation raises the existing `ApiResponseError` and nothing is downloaded. `resolve_storage_url`, the single-reference primitive, stays for the callers that have one link to mint.
 
 ## Why this exists
 
@@ -71,7 +71,7 @@ Resolves the reference fresh and hands the object store's response over as a bou
 - **Redirects refused**: a presigned link has no reason to redirect, and one that does is refused rather than followed.
 - **The byte cap enforced mid-stream** (`max_bytes`, default 1 GiB): a declared `Content-Length` over the cap is refused before a byte is read, and a body that crosses the cap while streaming raises out of the iteration — never buffered.
 - **No credentials forwarded**: the request carries no headers of ours, and it runs on its own httpx client rather than the API client's. The link's authorization is in its query string, and nothing else may ride along to the store.
-- **Plain `http:` refused** unless `allow_http=True`. A general-purpose library does not fetch over plain http silently; the local compose stack's object store hands out such links, and that is what the option opts into.
+- **Plain `http:` refused off the client's own origin** unless `allow_http=True`. A plain `http:` link whose origin (scheme, host and port, a default port and a trailing slash making no difference) is the origin of the client's configured base URL is fetched as is: the client already sends its API key to that origin, so a link to it reveals nothing the client does not already trust that server with, and that is how a self-hosted runner listening on plain http hands back what it stores. Hosts are compared as written, so a client configured with `http://localhost:8091` refuses a link on `http://127.0.0.1:8091`. Any other plain `http:` link is refused, since a general-purpose library does not fetch over plain http silently; the local compose stack's object store hands out such links on its own origin, and that is what the option opts into. The client states its origin through the `origin_url` member of the `BulkResolveClient` protocol, which `PipelexAPIClient` derives from its base URL.
 
 It is **header-neutral**: the status and headers are the store's own. The one change is that a `Content-Encoding` the installed httpx actually decoded — `gzip` and `deflate`, plus `br` and `zstd` only when their optional packages are installed, read from httpx's own decoder table — is dropped with the encoded `Content-Length`, since the body handed on is the decoded bytes; any other coding keeps both headers beside its still-encoded body. A proxy relaying it therefore owns the response hygiene — `X-Content-Type-Options: nosniff`, a sandboxing CSP on the asset response, a controlled `Content-Disposition`, private caching — and must set them itself.
 
@@ -160,7 +160,7 @@ Everything else that can go wrong with one reference is that reference's `error`
 | `max_bytes`       | 1 GiB                    | one file, from `Content-Length` and again mid-stream                                 |
 | `timeout_seconds` | 120 s                    | one file's whole exchange, and httpx's per-operation timeout with it                 |
 | `max_total_bytes` | 4 GiB                    | the bytes the whole call saves, a file in flight counting its declared length        |
-| `allow_http`      | `False`                  | whether a plain `http:` link is fetched                                              |
+| `allow_http`      | `False`                  | whether a plain `http:` link off the client's own origin is fetched                  |
 
 The caps are accident guards against filling a disk from a runaway output, not judgments about artifact size.
 

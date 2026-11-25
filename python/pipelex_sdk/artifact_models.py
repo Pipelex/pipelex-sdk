@@ -142,9 +142,11 @@ class FetchArtifactOptions(BaseModel):
     max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES
     #: Budget for the whole exchange — connect, headers and body. Default 120 s.
     timeout_seconds: float = DEFAULT_ARTIFACT_TIMEOUT_SECONDS
-    #: Accept a plain `http:` link. Off by default: a general-purpose library does not fetch over
-    #: plain http silently. The local compose stack's object store hands out such links, which is
-    #: the case this opts into.
+    #: Accept a plain `http:` link on any origin. Off by default: a general-purpose library does not
+    #: fetch over plain http silently. A plain `http:` link on the origin of the client's configured
+    #: base URL, which a self-hosted runner hands out, is accepted without it, since the client
+    #: already sends its API key there. The local compose stack's object store hands out plain
+    #: `http:` links on another origin, which is the case this opts into.
     allow_http: bool = False
 
 
@@ -163,7 +165,8 @@ class LoadStoredTextsOptions(BaseModel):
     max_total_bytes: int = DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES
     #: Budget for each text's exchange — connect, headers and body. Default 120 s.
     timeout_seconds: float = DEFAULT_ARTIFACT_TIMEOUT_SECONDS
-    #: Accept a plain `http:` link, as the local stack's object store hands out. Off by default.
+    #: Accept a plain `http:` link on any origin, as the local stack's object store hands out. Off by default; a
+    #: plain `http:` link on the origin of the client's configured base URL is accepted without it.
     allow_http: bool = False
     #: How many texts are read at once. Default 8.
     concurrency: int = DEFAULT_STORED_TEXT_CONCURRENCY

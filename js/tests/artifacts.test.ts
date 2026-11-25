@@ -71,6 +71,8 @@ const INPUT_URI = "pipelex-storage://org/assets/brief.pdf";
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]);
 
+/** The origin the fake client is configured with, unless a case names another. */
+const API_ORIGIN = "https://api.example.test";
 const FUTURE = new Date(Date.now() + 15 * 60_000).toISOString();
 const PAST = new Date(Date.now() - 60_000).toISOString();
 
@@ -132,12 +134,15 @@ function makeClient(
     answers?: Record<string, ResolvedArtifact | Error>;
     /** Answers taken in order for successive calls, each an item map or an error to throw. */
     sequence?: (Record<string, ResolvedArtifact> | Error)[];
+    /** The origin of the client's configured base URL. Default {@link API_ORIGIN}. */
+    originUrl?: string;
   } = {},
 ): FakeClient {
   const resolveCalls: ResolveCall[] = [];
   const resultCalls: string[] = [];
   const resultOptions: (GetRunResultOptions | undefined)[] = [];
   return {
+    originUrl: options.originUrl ?? API_ORIGIN,
     resolveCalls,
     resultCalls,
     resultOptions,
@@ -619,6 +624,49 @@ describe("fetchArtifact", () => {
     const response = await fetchArtifact(client, PICTURE_URI, { allowHttp: true });
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG_BYTES);
   });
+
+  it.each([
+    ["the same origin", "http://localhost:8091", "http://localhost:8091/v1/storage/obj?sig=1"],
+    ["a trailing slash", "http://localhost:8091/", "http://localhost:8091/v1/storage/obj?sig=1"],
+    ["the default port written out", "http://localhost", "http://LOCALHOST:80/v1/storage/obj"],
+  ])(
+    "accepts a plain http link on the client's own origin without allowHttp (%s)",
+    async (_case, originUrl, link) => {
+      const client = makeClient({
+        originUrl,
+        answers: { [PICTURE_URI]: resolvedItem(PICTURE_URI, { url: link }) },
+      });
+      const spy = mockFetch(() => streamed([PNG_BYTES]));
+
+      const response = await fetchArtifact(client, PICTURE_URI);
+
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG_BYTES);
+      expect(spy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ["another host", "http://localhost:8091", "http://127.0.0.1:8091/v1/storage/obj"],
+    ["another port", "http://localhost:8091", "http://localhost:8092/v1/storage/obj"],
+    ["another scheme", "https://localhost:8091", "http://localhost:8091/v1/storage/obj"],
+  ])(
+    "refuses a plain http link on %s than the client's, and accepts it with allowHttp",
+    async (_case, originUrl, link) => {
+      const client = makeClient({
+        originUrl,
+        answers: { [PICTURE_URI]: resolvedItem(PICTURE_URI, { url: link }) },
+      });
+      const spy = mockFetch(() => streamed([PNG_BYTES]));
+
+      await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
+        reason: "plain_http_refused",
+      });
+      expect(spy).not.toHaveBeenCalled();
+
+      const response = await fetchArtifact(client, PICTURE_URI, { allowHttp: true });
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG_BYTES);
+    },
+  );
 
   it("refuses a link that is not http(s), not a URL, or carries credentials, before any request", async () => {
     const spy = mockFetch(() => streamed([]));
@@ -1255,6 +1303,30 @@ describe("downloadArtifacts", () => {
       error: { code: "pipelex.org.mismatch", detail: "another organization" },
     });
     expect(verdict.saved_paths).toEqual([join(dir, "0.png")]);
+  });
+
+  it("saves a plain http link on the client's own origin, and refuses one on another", async () => {
+    const client = makeClient({
+      originUrl: "http://localhost:8091",
+      state: completed({ main_stuff: [{ url: PICTURE_URI }, { url: REPORT_URI }] }),
+      answers: {
+        [PICTURE_URI]: resolvedItem(PICTURE_URI, { url: "http://localhost:8091/v1/storage/a" }),
+        [REPORT_URI]: resolvedItem(REPORT_URI, { url: "http://127.0.0.1:8091/v1/storage/b" }),
+      },
+    });
+    const spy = mockFetch(() => streamed([PNG_BYTES]));
+    const dir = await makeTempDir();
+
+    const verdict = await downloadArtifacts(client, { run_id: RUN_ID, dir });
+
+    expect(verdict.all_saved).toBe(false);
+    expect(verdict.saved_paths).toEqual([join(dir, "0.png")]);
+    expect(verdict.artifacts[1]).toMatchObject({
+      uri: REPORT_URI,
+      path: null,
+      error: { code: "plain_http_refused" },
+    });
+    expect((spy.mock.calls as [URL][]).map(([url]) => url.host)).toEqual(["localhost:8091"]);
   });
 
   it("re-resolves a link that has expired by the time its worker reaches it", async () => {

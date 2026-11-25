@@ -2180,7 +2180,8 @@ class PipelexAPIClient(MthdsAPIClient):
         `execute` itself cannot read (`_reading_inherited_answer`). Its stored texts are loaded unless
         `load_stored_texts` is `False`, the answer carrying every artifact the concepts are read from. A load that
         fails raises `StoredTextLoadError` with the completed result on `wire_results`: a bare runner keeps no run to
-        read again, and it serves no bulk resolve route, so any stored reference fails to load there.
+        read again, and a runner older than pipelex-api 0.118.0 serves no bulk resolve route, so any stored reference
+        fails to load there.
         """
         with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
             result = await self.execute(
@@ -3976,7 +3977,9 @@ class PipelexAPIClient(MthdsAPIClient):
         included; a refused reference is a value on its item (`error`), and the request is a `200`
         whenever every reference got a verdict. At most `BULK_RESOLVE_MAX_URIS` references per call
         (a longer list is a `422`) — `resolve_artifacts` chunks a longer set. Served by the hosted
-        platform only: a deployment without the route answers a `404` `ApiResponseError`.
+        platform and, from pipelex-api 0.118.0, a self-hosted runner, which resolves the references under
+        the caller's own scope to links on its own origin: a deployment without the route answers a `404`
+        `ApiResponseError`.
         """
         return await self._request_product("POST", "resolve-storage-url/bulk", body={"uris": uris}, read=BulkResolvedStorageUrls.model_validate)
 

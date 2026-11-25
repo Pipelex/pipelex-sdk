@@ -129,8 +129,11 @@ class _Boundary:
         objects: dict[str, bytes] | None = None,
         refusals: dict[str, dict[str, Any]] | None = None,
         expires_at: Callable[[str, int], str] | None = None,
+        link_origin: str = _STORE,
     ) -> None:
         self.body = body
+        #: The origin the resolved links, and so the store, are on.
+        self.link_origin = link_origin
         # The bodies successive reads of `main_stuff` answer, the last one answering every read past them.
         self.bodies = bodies or [body]
         self.main_reads = 0
@@ -168,7 +171,7 @@ class _Boundary:
                 self.refusals.get(uri)
                 or {
                     "uri": uri,
-                    "url": f"{_STORE}/{quote(uri, safe='')}?sig=1",
+                    "url": f"{self.link_origin}/{quote(uri, safe='')}?sig=1",
                     "expires_at": self.expires_at(uri, call) if self.expires_at else "2099-01-01T00:00:00Z",
                     "content_type": "text/plain",
                     "error": None,
@@ -606,6 +609,46 @@ class TestStoredTexts:
     def test_returns_a_result_whose_concepts_are_unknown_as_it_is_when_nothing_looks_like_a_stored_text(self) -> None:
         wire = RunResults.model_validate({"pipeline_run_id": _RUN_ID, "main_stuff": {"text": "Inline."}})
         assert asyncio.run(load_stored_texts(_client(), wire)) is wire
+
+    # ── a stored text's plain http link ──────────────────────────────
+
+    def test_reads_a_plain_http_link_on_the_clients_own_origin_without_allow_http(self, mocker: MockerFixture) -> None:
+        client = _client()
+        uri = _stored_uri("same")
+        boundary = _Boundary(
+            mocker,
+            client,
+            body=_results("native.Text", _reference(uri), _TEXT_NODE),
+            objects={uri: b"Stored by a self-hosted runner."},
+            link_origin=_BASE_URL,
+        )
+        wire = _completed(asyncio.run(client.get_run_result(_RUN_ID, load_stored_texts=False)))
+
+        loaded = asyncio.run(load_stored_texts(client, wire))
+
+        assert loaded.main_stuff == {"text": "Stored by a self-hosted runner."}
+        assert boundary.fetched == [f"{_BASE_URL}/{quote(uri, safe='')}?sig=1"]
+
+    @pytest.mark.parametrize("link_origin", ["http://127.0.0.1:8081", "http://localhost:8082"], ids=["another_host", "another_port"])
+    def test_refuses_a_plain_http_link_on_another_origin_and_reads_it_with_allow_http(self, mocker: MockerFixture, link_origin: str) -> None:
+        client = _client()
+        uri = _stored_uri("other")
+        boundary = _Boundary(
+            mocker,
+            client,
+            body=_results("native.Text", _reference(uri), _TEXT_NODE),
+            objects={uri: b"Stored elsewhere."},
+            link_origin=link_origin,
+        )
+        wire = _completed(asyncio.run(client.get_run_result(_RUN_ID, load_stored_texts=False)))
+
+        with pytest.raises(StoredTextLoadError) as exc_info:
+            asyncio.run(load_stored_texts(client, wire))
+
+        assert exc_info.value.reason == "plain_http_refused"
+        assert boundary.fetched == []
+        loaded = asyncio.run(load_stored_texts(client, wire, LoadStoredTextsOptions(allow_http=True)))
+        assert loaded.main_stuff == {"text": "Stored elsewhere."}
 
     # ── a result that does not say which values are texts ────────────
 

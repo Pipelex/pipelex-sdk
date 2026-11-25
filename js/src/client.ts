@@ -1246,8 +1246,11 @@ type HostedProtocolSurface = Omit<MTHDSProtocol<DictPipeOutput>, "validate">;
 export class PipelexApiClient implements HostedProtocolSurface {
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
-  /** Origin root derived from the base URL — `/health` lives here, not under `/v1`. */
-  private readonly originUrl: string;
+  /**
+   * The origin (`scheme://host[:port]`) of the configured base URL — `/health` lives here, not
+   * under `/v1`, and a resolved storage link on it is fetched over plain http without `allowHttp`.
+   */
+  readonly originUrl: string;
   /** Cached `/v1/version` handshake outcome — whether the durable lifecycle is served. */
   private lifecycleAvailable: boolean | undefined;
   /**
@@ -5044,7 +5047,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * and the request is a `200` whenever every reference got a verdict. At most
    * `BULK_RESOLVE_MAX_URIS` references per call (a longer list is a `422`) —
    * {@link resolveArtifacts} chunks a longer set. Served by the hosted platform
-   * only: a deployment without the route answers a `404` `ApiResponseError`.
+   * and, from pipelex-api 0.118.0, a self-hosted runner, which resolves the
+   * references under the caller's own scope to links on its own origin: a
+   * deployment without the route answers a `404` `ApiResponseError`.
    */
   async resolveStorageUrls(
     input: BulkResolveStorageUrlsInput,
@@ -6013,8 +6018,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
       return await this.withStoredTextsLoaded(results, undefined, signal);
     } catch (err) {
       if (!(err instanceof StoredTextLoadError)) throw err;
-      // The answer is the only copy of a completed run, and a bare runner serves no bulk resolve
-      // route: the error carries the result.
+      // The answer is the only copy of a completed run, and a runner older than pipelex-api 0.118.0
+      // serves no bulk resolve route: the error carries the result.
       throw new StoredTextLoadError(
         err.message,
         {

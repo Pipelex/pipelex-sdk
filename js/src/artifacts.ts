@@ -212,9 +212,12 @@ export interface FetchArtifactOptions {
    */
   timeoutMs?: number;
   /**
-   * Accept a plain `http:` link. Off by default: a general-purpose library does
-   * not fetch over plain http silently. The local compose stack's object store
-   * hands out such links, which is the case this opts into.
+   * Accept a plain `http:` link on any origin. Off by default: a general-purpose
+   * library does not fetch over plain http silently. A plain `http:` link on the
+   * origin of the client's configured base URL, which a self-hosted runner hands
+   * out, is accepted without it, since the client already sends its API key
+   * there. The local compose stack's object store hands out plain `http:` links
+   * on another origin, which is the case this opts into.
    */
   allowHttp?: boolean;
   /** Cancels the fetch; a body being read is cancelled too. */
@@ -352,11 +355,18 @@ export interface DownloadArtifactsResult {
 }
 
 /**
- * The client surface the artifact operations need: the raw bulk resolve call and
- * the single-shot result lookup. Typed as the client's own signatures so
- * `PipelexApiClient` satisfies it structurally, and so tests inject a fake.
+ * The client surface the artifact operations need: the raw bulk resolve call, the
+ * single-shot result lookup and the origin the client is configured with. Typed as
+ * the client's own members so `PipelexApiClient` satisfies it structurally, and so
+ * tests inject a fake.
  */
 export interface ArtifactCapableClient {
+  /**
+   * The origin (`scheme://host[:port]`) of the client's configured base URL. A
+   * resolved link on it is fetched over plain http without `allowHttp`, since the
+   * client already sends its API key there.
+   */
+  readonly originUrl: string;
   resolveStorageUrls(
     input: BulkResolveStorageUrlsInput,
     options?: { signal?: AbortSignal },
@@ -823,11 +833,11 @@ export async function resolveArtifacts(
  * propagate unchanged (`ApiResponseError`, `ApiUnreachableError`).
  */
 export async function fetchArtifact(
-  client: Pick<ArtifactCapableClient, "resolveStorageUrls">,
+  client: Pick<ArtifactCapableClient, "resolveStorageUrls" | "originUrl">,
   uri: string,
   options: FetchArtifactOptions = {},
 ): Promise<Response> {
-  const bounds = fetchBounds(options);
+  const bounds = fetchBounds(options, client.originUrl);
   const [resolved] = await resolveArtifacts(client, [uri], { signal: options.signal });
   if (resolved!.error !== null) {
     throw new ArtifactFetchError(resolved!.error.detail, uri, resolved!.error.code);
@@ -843,10 +853,19 @@ interface FetchBounds {
   maxBytes: number;
   timeoutMs: number;
   allowHttp: boolean;
+  /**
+   * The origin of the client's configured base URL, on which a plain-http link is
+   * fetched without `allowHttp`; null when that base URL has no comparable origin.
+   */
+  clientOrigin: string | null;
   signal: AbortSignal | undefined;
 }
 
-function fetchBounds(options: FetchArtifactOptions): FetchBounds {
+/**
+ * The bounds, defaults filled in and validated. `originUrl` is the client's own
+ * origin, the one on which a plain-http link is fetched without `allowHttp`.
+ */
+function fetchBounds(options: FetchArtifactOptions, originUrl: string): FetchBounds {
   const maxBytes = options.maxBytes ?? DEFAULT_ARTIFACT_MAX_BYTES;
   const timeoutMs = options.timeoutMs ?? DEFAULT_ARTIFACT_TIMEOUT_MS;
   requirePositive("maxBytes", maxBytes);
@@ -858,7 +877,31 @@ function fetchBounds(options: FetchArtifactOptions): FetchBounds {
       { problem: argumentInvalidProblem("timeoutMs", "not_positive") },
     );
   }
-  return { maxBytes, timeoutMs, allowHttp: options.allowHttp ?? false, signal: options.signal };
+  return {
+    maxBytes,
+    timeoutMs,
+    allowHttp: options.allowHttp ?? false,
+    clientOrigin: originOf(originUrl),
+    signal: options.signal,
+  };
+}
+
+/**
+ * The origin of an http(s) URL as compared: the WHATWG serialization, which
+ * lowercases the scheme and the host and drops a default port, so
+ * `http://localhost` and `http://LOCALHOST:80/` are one origin. Null for anything
+ * else, which then matches nothing. Hosts are compared as written: `127.0.0.1` and
+ * `localhost` are two origins.
+ */
+function originOf(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return url.origin;
 }
 
 function requirePositive(name: string, value: number): void {
@@ -888,8 +931,20 @@ async function dispatcherFor(timeoutMs: number): Promise<Dispatcher | null> {
   }
 }
 
-/** The parsed, boundary-approved URL — the object the fetch then uses verbatim. */
-function checkUrl(uri: string, downloadUrl: string, allowHttp: boolean): URL {
+/**
+ * The parsed, boundary-approved URL — the object the fetch then uses verbatim. A
+ * plain-http link is fetched when the caller opted in with `allowHttp`, or when its
+ * origin is `clientOrigin`, the origin of the client's configured base URL: the
+ * client already sends its API key there, so a link to it reveals nothing the
+ * client does not already trust that server with. That is how a self-hosted runner
+ * listening on plain http hands back what it stores.
+ */
+function checkUrl(
+  uri: string,
+  downloadUrl: string,
+  allowHttp: boolean,
+  clientOrigin: string | null,
+): URL {
   let url: URL;
   try {
     url = new URL(downloadUrl);
@@ -900,10 +955,15 @@ function checkUrl(uri: string, downloadUrl: string, allowHttp: boolean): URL {
       "unsupported_url",
     );
   }
-  if (url.protocol === "http:" && !allowHttp) {
+  if (
+    url.protocol === "http:" &&
+    !allowHttp &&
+    (clientOrigin === null || url.origin !== clientOrigin)
+  ) {
     throw new ArtifactFetchError(
-      "The platform resolved the reference to a plain http link, which is refused by default; " +
-        "pass allowHttp: true to accept it (the local stack's object store hands out such links).",
+      "The platform resolved the reference to a plain http link on an origin other than the " +
+        "client's own, which is refused by default; pass allowHttp: true to accept it (the local " +
+        "stack's object store hands out such links).",
       uri,
       "plain_http_refused",
     );
@@ -941,7 +1001,7 @@ async function fetchResolvedUrl(
 ): Promise<Response> {
   let url: URL;
   try {
-    url = checkUrl(uri, downloadUrl, bounds.allowHttp);
+    url = checkUrl(uri, downloadUrl, bounds.allowHttp, bounds.clientOrigin);
   } catch (err) {
     release();
     throw err;
@@ -1246,7 +1306,11 @@ export interface LoadStoredTextsOptions {
   maxTotalBytes?: number;
   /** Budget for each text's exchange — connect, headers and body. Default 120 s. */
   timeoutMs?: number;
-  /** Accept a plain `http:` link, as the local stack's object store hands out. Off by default. */
+  /**
+   * Accept a plain `http:` link on any origin, as the local stack's object store hands out. Off
+   * by default; a plain `http:` link on the origin of the client's configured base URL is
+   * accepted without it.
+   */
   allowHttp?: boolean;
   /** How many texts are read at once. Default 8. */
   concurrency?: number;
@@ -1301,7 +1365,7 @@ interface StoredTextSite {
  * `total_limit_exceeded`, and lets the caller's abort through.
  */
 export async function loadStoredTexts(
-  client: Pick<ArtifactCapableClient, "resolveStorageUrls">,
+  client: Pick<ArtifactCapableClient, "resolveStorageUrls" | "originUrl">,
   results: RunResults,
   options: LoadStoredTextsOptions = {},
 ): Promise<RunResults> {
@@ -1453,7 +1517,7 @@ type TakeBytes = (bytes: number) => boolean;
 
 /** `value` with its stored texts loaded, walked with `node`; `value` itself when it holds none. */
 async function loadStoredTextValues(
-  client: Pick<ArtifactCapableClient, "resolveStorageUrls">,
+  client: Pick<ArtifactCapableClient, "resolveStorageUrls" | "originUrl">,
   value: unknown,
   node: InputFormItem,
   options: LoadStoredTextsOptions,
@@ -1502,12 +1566,15 @@ async function loadStoredTextValues(
   let failed = false;
   let firstFailure: unknown;
   try {
-    const bounds = fetchBounds({
-      maxBytes,
-      timeoutMs: options.timeoutMs,
-      allowHttp: options.allowHttp,
-      signal: stopping.signal,
-    });
+    const bounds = fetchBounds(
+      {
+        maxBytes,
+        timeoutMs: options.timeoutMs,
+        allowHttp: options.allowHttp,
+        signal: stopping.signal,
+      },
+      client.originUrl,
+    );
 
     const references = urls.filter(isStorageReference);
     const resolved = new Map<string, ResolvedArtifact>();
@@ -2077,7 +2144,7 @@ export async function downloadArtifacts(
     );
   }
   requirePositive("maxTotalBytes", maxTotalBytes);
-  const bounds = fetchBounds(request);
+  const bounds = fetchBounds(request, client.originUrl);
 
   const hasRunId = typeof request.run_id === "string" && request.run_id !== "";
   const hasResults = request.results != null;
