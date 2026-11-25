@@ -37,6 +37,7 @@ from typing import NamedTuple
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.problem.models import Problem, ProblemItem, ProblemLocation
 from mthds.protocol.problem.registry import CoreCode, ProblemDomain, RetryVerdict, StepKind
+from pipelex_sdk.artifact_models import STORED_TEXT_CONCEPTS_MISSING
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -138,7 +139,10 @@ def present_stored_text_failure(exc: StoredTextLoadError, *, blocking: bool) -> 
     deployment with no bulk resolve route would answer with the same failure.
     A durable run's result stays readable by its id, which `widget detached wait` reads again.
     """
-    can_pass = exc.problem.effective_retry is RetryVerdict.YES
+    # `concepts_missing` says the result does not yet tell which of its values are texts. A blocking answer is whole,
+    # so there it never will, but a durable read can land between the run writing its output and its forms, so
+    # reading again in a moment can pass whatever the problem's verdict says.
+    can_pass = exc.problem.effective_retry is RetryVerdict.YES or (not blocking and exc.reason == STORED_TEXT_CONCEPTS_MISSING)
     if blocking:
         if can_pass:
             hint = (

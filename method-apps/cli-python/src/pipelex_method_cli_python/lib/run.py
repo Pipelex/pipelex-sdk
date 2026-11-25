@@ -314,8 +314,11 @@ async def deliver(
                 raise shape_error
             print_downloads(stderr, downloaded)
             if _incomplete(downloaded):
-                said = "its result is complete above" if shape_error is None else "its result was not printed, for the reason below"
-                stderr.print(f"[yellow]Hint:[/yellow] The run succeeded and {said}. {refetch_advice(plan.mode, results.pipeline_run_id)}")
+                # A text that failed to load is among the run's files, so its download can fail the same way: the load
+                # failure raised below says what a second try means, and a refetch hint here would contradict it.
+                if load_failure is None:
+                    said = "its result is complete above" if shape_error is None else "its result was not printed, for the reason below"
+                    stderr.print(f"[yellow]Hint:[/yellow] The run succeeded and {said}. {refetch_advice(plan.mode, results.pipeline_run_id)}")
                 exit_code = 1
     finally:
         print_cost_report(stderr, results)

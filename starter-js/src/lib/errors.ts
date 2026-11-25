@@ -791,7 +791,8 @@ function classifyRunTimeout(err: ProblemError): PipelineError {
  * method again: a failure a second try meets again, a text over the load's
  * caps or a link refused, is never sent round to another paid run, nor to
  * Durable mode, which a deployment with no bulk resolve route would answer
- * with the same failure. A durable poll drops the retry line, since the run's
+ * with the same failure. The durable poll reads the retry line to decide
+ * whether to read again and then drops it, as it does every poll error's, since the run's
  * result stays readable by its id, and gets no hint.
  */
 function classifyStoredTextLoad(err: StoredTextLoadError, opts: ClassifyOptions): PipelineError {

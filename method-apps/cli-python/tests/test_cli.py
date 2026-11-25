@@ -23,6 +23,7 @@ from pipelex_sdk.errors import (
     RunFailedError,
     RunLifecycleUnavailableError,
     RunTimeoutError,
+    StoredTextLoadError,
 )
 from pipelex_sdk.runs import PollInfo, RunResults, RunStatus, WaitForResultOptions
 from pydantic import ValidationError
@@ -497,6 +498,26 @@ class TestBlocking:
         assert result.stdout == ""
         # The run was paid for and its answer is its only copy: its cost is still reported.
         assert "No usage was reported for this run." in stderr
+
+    def test_a_text_that_failed_to_load_and_to_download_gets_no_contradicting_refetch_hint(self, fake_client: FakeClient, tmp_path: Path):
+        uri = "pipelex-storage://org/runs/run-1/generated/ab/value.txt"
+        fake_client.execute_answer = execute_result({"url": uri, "size": 9000, "mime_type": "text/plain", "preview": "A long"})
+        fake_client.resolve_failure = StoredTextLoadError(
+            "The stored text at $ could not be loaded: the reference names another organization.",
+            uri=uri,
+            path="$",
+            reason="pipelex.org.mismatch",
+        )
+        fake_client.download_answer = download_verdict(
+            downloaded_artifact(uri=uri, found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run."))
+        )
+        result = invoke(make_binding(), ["--blocking", "--out", str(tmp_path)])
+        assert result.exit_code == 1
+        stderr = " ".join(result.stderr.split())
+        # The text is among the run's files, and its download failed the same way: only the load failure says what next.
+        assert "Not your run." in stderr
+        assert "its files come down again only by running the method again" not in stderr
+        assert "running the method again unchanged would meet the same failure" in stderr
 
     def test_a_ctrl_c_while_the_text_loads_says_there_is_no_id_to_resume_by(self, fake_client: FakeClient):
         reference = {"url": "pipelex-storage://org/runs/run-1/generated/ab/value.txt", "size": 9000, "mime_type": "text/plain", "preview": "A long"}
