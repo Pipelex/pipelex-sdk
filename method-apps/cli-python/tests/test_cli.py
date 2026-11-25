@@ -473,6 +473,29 @@ class TestNoSilentDowngrade:
 
 
 class TestBlocking:
+    def test_loads_a_stored_text_of_the_result_before_it_is_printed(self, fake_client: FakeClient):
+        # The runtime answers a long text by reference; the blocking path loads it as `wait_for_result` does.
+        reference = {"url": "data:text/plain;charset=utf-8,A%20long%20essay", "size": 12, "mime_type": "text/plain", "preview": "A long"}
+        fake_client.execute_answer = execute_result(reference)
+        result = invoke(make_binding(), ["--blocking"])
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == render_json({"text": "A long essay"}) + "\n"
+        assert fake_client.resolved == []
+
+    def test_a_stored_text_that_failed_to_load_is_a_finished_run_never_a_cut_off(self, fake_client: FakeClient):
+        reference = {"url": "pipelex-storage://org/runs/run-1/generated/ab/value.txt", "size": 9000, "mime_type": "text/plain", "preview": "A long"}
+        fake_client.execute_answer = execute_result(reference)
+        fake_client.resolve_failure = ApiUnreachableError("unreachable", api_url="https://api.pipelex.com", network_code="ECONNRESET")
+        result = invoke(make_binding(), ["--blocking"])
+        assert result.exit_code == 1
+        stderr = " ".join(result.stderr.split())
+        assert "The run finished, but its result could not be loaded." in stderr
+        assert "Why: resolve_failed" in stderr
+        assert "kept nowhere else" in stderr
+        assert "Could not reach the Pipelex API" not in stderr
+        assert "may still be going" not in stderr
+        assert result.stdout == ""
+
     def test_runs_in_one_request_and_prints_the_same_json(self, fake_client: FakeClient):
         fake_client.execute_answer = execute_result(TEXT_OUTPUT)
         result = invoke(make_binding(), ["--blocking"])
@@ -618,7 +641,7 @@ class TestDownloads:
         failed = downloaded_artifact(
             uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run.")
         )
-        fake_client.execute_answer = execute_result(IMAGE_OUTPUT)
+        fake_client.execute_answer = execute_result(IMAGE_OUTPUT, concept="native.Image")
         fake_client.download_answer = download_verdict(failed)
         result = invoke(make_binding(), ["--blocking", "--out", str(tmp_path)])
         assert result.exit_code == 1

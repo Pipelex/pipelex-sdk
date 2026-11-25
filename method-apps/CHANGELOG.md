@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **A blocking run's long text arrives as its text in both templates, and a text that fails to load reads as such**: the web app's blocking path loads the stored texts of the result with `loadStoredTexts`, and the command line's `--blocking` with `load_stored_texts`, after lifting the answer, so a `Text`, `Markdown`, `Html` or `JSON` result the runtime kept apart reaches the generated schema or model as its value, where it arrived as its `{url, size, mime_type, preview}` reference and was refused. A stored text that cannot be loaded, in any mode, reads "The run finished, but its result could not be loaded", naming where the text sits and why: the web app classifies it as the new kind `result_not_loaded`, and the command line prints `Where:` and `Why:` lines, where it read as the API out of reach, the ~30s cap or files that failed to save. With a blocking run the hint says to run the method again, since its result is kept nowhere but in its answer, and the command line's durable modes say to read it again with `--resume`.
+
 ## [v0.70.0] - 2026-11-25
 
 ### Changed

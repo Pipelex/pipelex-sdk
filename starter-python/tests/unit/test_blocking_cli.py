@@ -1,10 +1,14 @@
+import asyncio
 from pathlib import Path
+from typing import Any
 
-from pipelex_sdk.errors import ApiResponseError
+from pipelex_sdk.errors import ApiResponseError, StoredTextLoadError
+from pipelex_sdk.execute_result import PipelexExecuteResult
 from pipelex_sdk.runs import RunResults
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
+from widget.blocking.cli import execute_pipe
 from widget.cli import app
 from widget.inputs import SAMPLE_ENTITIES_TEXT, SAMPLE_IMAGE_PROMPT
 
@@ -27,6 +31,50 @@ def _results(main_stuff: object) -> RunResults:
 
 
 runner = CliRunner()
+
+
+def _stored_reference(url: str) -> dict[str, Any]:
+    """A stored text's reference, as the runtime answers a `Text` value past its inline threshold."""
+    return {"url": url, "size": 4096, "mime_type": "text/plain", "preview": "The start…"}
+
+
+def _stored_text_answer(main_stuff: object) -> PipelexExecuteResult:
+    """An execute answer whose main stuff is a `native.Text` held by reference, its concept in the working memory."""
+    return PipelexExecuteResult.model_validate(
+        {
+            "pipeline_run_id": "run-4",
+            "main_stuff_name": "essay",
+            "pipe_output": {
+                "pipeline_run_id": "run-4",
+                "working_memory": {
+                    "root": {"essay": {"concept": "native.Text", "content": main_stuff}},
+                    "aliases": {"main_stuff": "essay"},
+                },
+            },
+        }
+    )
+
+
+class _FakeClient:
+    """A `PipelexAPIClient` stand-in whose `execute` answers with a given result and that resolves nothing."""
+
+    def __init__(self, answer: PipelexExecuteResult) -> None:
+        self.answer = answer
+        self.resolved: list[Any] = []
+
+    async def __aenter__(self) -> "_FakeClient":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def execute(self, **_kwargs: Any) -> PipelexExecuteResult:
+        return self.answer
+
+    async def resolve_storage_urls(self, *args: Any, **kwargs: Any) -> Any:
+        self.resolved.append((args, kwargs))
+        msg = "a data: URL is decoded where it is, never resolved"
+        raise AssertionError(msg)
 
 
 class TestBlockingCli:
@@ -113,6 +161,34 @@ class TestBlockingCli:
         assert stub_download in result.output
         assert execute_mock.await_args is not None
         assert execute_mock.await_args.kwargs["inputs"] == {"image_prompt": "a cat wearing a hat"}
+
+    def test_execute_pipe_loads_a_stored_text_of_the_result(self, mocker: MockerFixture):
+        fake = _FakeClient(_stored_text_answer(_stored_reference("data:text/plain;charset=utf-8,A%20long%20essay")))
+        mocker.patch("widget.blocking.cli.PipelexAPIClient", return_value=fake)
+        results = asyncio.run(execute_pipe(pipe_code="essay.write", inputs={}, contents={"main.mthds": "x"}))
+        # The value the generated model requires, as a durable read hands it back, not the reference.
+        assert results.main_stuff == {"text": "A long essay"}
+        assert fake.resolved == []
+
+    def test_a_stored_text_that_failed_to_load_is_a_finished_run_whose_result_could_not_be_loaded(self, mocker: MockerFixture):
+        failure = StoredTextLoadError(
+            "The stored text at $ could not be loaded: the store answered 503.",
+            uri="pipelex-storage://org/runs/run-4/generated/ab/value.txt",
+            path="$",
+            reason="store_error",
+            status=503,
+        )
+        mocker.patch("widget.blocking.cli.execute_pipe", side_effect=failure)
+        result = runner.invoke(app, ["blocking", "extract-entities", "some text"])
+        assert result.exit_code == 1
+        output = " ".join(result.output.split())
+        assert "The run finished, but its result could not be loaded." in output
+        assert "Where: $ in the result" in output
+        assert "Why: store_error" in output
+        assert "kept nowhere else" in output
+        # Never told as the ~30s cap, a run still going, or files that failed to save.
+        assert "may still be going" not in output
+        assert "saving its files" not in output
 
     def test_a_refused_execute_prints_the_reason_the_pipe_and_the_next_step(self, mocker: MockerFixture, refused_start: ApiResponseError):
         mocker.patch("widget.blocking.cli.execute_pipe", side_effect=refused_start)

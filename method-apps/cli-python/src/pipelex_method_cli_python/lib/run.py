@@ -7,7 +7,8 @@ helpers. The mode is the person's choice, made with the command's flags (`lib/ap
   one-line status on stderr fed by `on_poll`, for as long as the run takes. Ctrl-C leaves the run
   going on the server, prints the `--resume` command that reattaches to it, and the command exits
   with code 130. Losing the API mid-wait prints the same command before the error.
-- **`--blocking`**: one `execute`, lifted onto the same `RunResults` with `results_from_execute`.
+- **`--blocking`**: one `execute`, lifted onto the same `RunResults` with `results_from_execute`,
+  its stored texts then loaded with `load_stored_texts` as `wait_for_result` loads a durable run's.
   Behind the hosted gateway it is cut off at about 30 seconds, and `lib/errors.py` presents that
   with a hint to drop the flag.
 - **`--detach`**: `start`, the run id alone on stdout, and the command exits 0.
@@ -40,6 +41,7 @@ from typing import Any
 
 from mthds.protocol.exceptions import PipelineRequestError
 from pipelex_sdk.artifact_models import DownloadArtifactsResult
+from pipelex_sdk.artifacts import load_stored_texts
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ApiResponseError, ApiUnreachableError, RunTimeoutError
 from pipelex_sdk.execute_result import results_from_execute
@@ -205,14 +207,22 @@ def _is_transient(exc: PipelineRequestError) -> bool:
 
 
 async def run_blocking(client: PipelexAPIClient, *, binding: MethodBinding, inputs: dict[str, Any], stderr: Console) -> RunResults:
-    """Run the bound pipe in one request and lift the response onto `RunResults`, as a durable run returns it."""
+    """Run the bound pipe in one request and lift the response onto `RunResults`, as a durable run returns it.
+
+    The lift loads nothing, so the stored texts of `main_stuff` are loaded right after it, as
+    `wait_for_result` loads a durable run's: the runtime keeps a `Text`, `Markdown`, `Html` or `JSON`
+    value past 4 KiB in the run's storage and answers with its reference, and the load puts the value
+    back, so the output model reads it whichever mode ran. The answer carries the working memory and
+    the forms, so nothing is read again. A text that fails to load raises `StoredTextLoadError`, which
+    `lib/errors.py` presents as a finished run whose result could not be loaded.
+    """
     with stderr.status("Running…"):
         try:
             result = await client.execute(pipe_code=binding.pipe_ref, inputs=inputs, **binding.source.kwargs())
         except asyncio.CancelledError:
             stderr.print("\nInterrupted. A blocking run has no id to resume it by.")
             raise
-    return results_from_execute(result)
+        return await load_stored_texts(client, results_from_execute(result))
 
 
 async def deliver(client: PipelexAPIClient, results: RunResults, *, plan: RunPlan, binding: MethodBinding, stderr: Console) -> int:

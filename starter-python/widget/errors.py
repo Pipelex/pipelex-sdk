@@ -43,6 +43,7 @@ from pipelex_sdk.errors import (
     ArtifactOperationError,
     PipelineExecuteTimeoutError,
     RunLifecycleUnavailableError,
+    StoredTextLoadError,
     nested_run_error,
 )
 from pipelex_sdk.runs import RunStatus
@@ -95,6 +96,10 @@ def present_error(exc: PipelineRequestError, *, blocking: bool = False) -> Error
     command ran under `widget blocking`, whose cut-off at the gateway is worded as such.
     """
     problem = exc.problem
+    if isinstance(exc, StoredTextLoadError):
+        # Before the problem's code: the problem is the one of the read that failed, a timeout or the store's
+        # refusal, which would otherwise be told as the API out of reach, or as files that failed to save.
+        return present_stored_text_failure(exc, blocking=blocking)
     match problem.code:
         case CoreCode.RUN_FAILED:
             return present_failed_run(
@@ -116,6 +121,32 @@ def present_error(exc: PipelineRequestError, *, blocking: bool = False) -> Error
                 hint=_hint(exc, blocking=blocking),
                 details=problem_lines(problem, request_id=_request_id(exc)),
             )
+
+
+def present_stored_text_failure(exc: StoredTextLoadError, *, blocking: bool) -> ErrorPresentation:
+    """A run that finished, one of whose long texts, kept in the run's storage, could not be loaded.
+
+    Read with `isinstance` for the data the class alone carries: where the text sits in the result (`path`) and why
+    it failed (`reason`). A blocking run's result arrives with its answer and is kept nowhere else, so the platform
+    answers a read of it by its id with `run.results_not_stored`, and running it again is the way to it; a durable
+    run's result stays readable by its id.
+    """
+    if blocking:
+        hint = (
+            "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again: "
+            "run the command again, or with `widget attended ...`, whose result stays readable by its id."
+        )
+    else:
+        hint = "The run's result is kept: read it again with `widget detached wait <run id>`."
+    return ErrorPresentation(
+        message=f"The run finished, but its result could not be loaded. {exc}",
+        hint=hint,
+        details=(
+            f"Where: {exc.path} in the result",
+            f"Why: {exc.reason}",
+            *problem_lines(exc.problem, request_id=_request_id(exc)),
+        ),
+    )
 
 
 def present_failed_run(*, run_id: str, status: RunStatus, run_error: Problem | None, platform_message: str | None) -> ErrorPresentation:

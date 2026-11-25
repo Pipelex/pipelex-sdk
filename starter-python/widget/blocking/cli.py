@@ -16,6 +16,7 @@ from typing import Annotated, Any, Coroutine, TypeVar
 
 import typer
 from mthds.protocol.exceptions import PipelineRequestError
+from pipelex_sdk.artifacts import load_stored_texts
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.execute_result import results_from_execute
 from pipelex_sdk.runs import RunResults
@@ -64,6 +65,14 @@ async def execute_pipe(
     `results_from_execute` lifts the blocking response onto it, so `.main_stuff` (the content the
     pipe named as its result — a completed run that names none raises `MissingMainStuffError`), the
     usage pair and the produced-file references all read the same whichever mode ran.
+
+    The lift loads nothing, so the stored texts of `.main_stuff` are loaded right after it with
+    `pipelex_sdk.artifacts.load_stored_texts`, as the durable modes' readers load them: the runtime
+    keeps a `Text`, `Markdown`, `Html` or `JSON` value past 4 KiB in the run's storage and answers
+    with its reference, and the load puts the value back, so the generated model reads it whichever
+    mode ran. The answer carries the working memory and the forms, so nothing is read again. A text
+    that fails to load raises `StoredTextLoadError`, presented as a finished run whose result could
+    not be loaded: a blocking run's result arrives with its answer and is kept nowhere else.
     """
     async with PipelexAPIClient() as client:
         with progress_console.status("Running…"):
@@ -74,7 +83,7 @@ async def execute_pipe(
                 method_id=method_id,
                 method_ref=method_ref,
             )
-    return results_from_execute(result)
+            return await load_stored_texts(client, results_from_execute(result))
 
 
 @app.command(name="extract-entities")

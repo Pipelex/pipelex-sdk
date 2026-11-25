@@ -11,6 +11,7 @@ import {
   RunTimeoutError,
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,
+  StoredTextLoadError,
   UploadTransportError,
   buildProblem,
   type Problem,
@@ -392,6 +393,51 @@ describe("classifyPipelineError — BadImageOutputError", () => {
     expect(result.message).toMatch(/PIPELEX_BASE_URL/);
     expect(result.hint?.code).toContain("PIPELEX_BASE_URL=https://api.pipelex.com");
     expect(result.details).toContain("file:///tmp/storage/abc.png");
+  });
+});
+
+describe("classifyPipelineError — a stored text that failed to load", () => {
+  const URI = "pipelex-storage://org/runs/run-9/generated/ab/value.txt";
+
+  function loadFailure(problem: Problem, reason = "store_error"): StoredTextLoadError {
+    return new StoredTextLoadError(
+      "The stored text at $ could not be loaded: the store did not answer.",
+      { uri: URI, path: "$", reason },
+      { problem },
+    );
+  }
+
+  it("is a finished run's unloadable result on the blocking path, never the ~30s cap", () => {
+    // A problem the blocking path would otherwise read as the cap.
+    const result = classifyPipelineError(
+      loadFailure(buildProblem("client.outcome_unknown", {})),
+      DEFAULT_ENV,
+      { blocking: true },
+    );
+    expect(result.kind).toBe("result_not_loaded");
+    expect(result.title).toBe("The run finished, but its result could not be loaded");
+    expect(result.message).toContain("The stored text at $ could not be loaded");
+    expect(result.hint?.summary).toMatch(/cannot be read again by the run's id/);
+    expect(result.code).toBe("client.outcome_unknown");
+    expect(result.details).toContain("path: $");
+    expect(result.details).toContain(`uri: ${URI}`);
+  });
+
+  it("is never the API out of reach, whatever the read's problem says", () => {
+    const result = classifyPipelineError(
+      loadFailure(buildProblem("client.timeout", { seconds: 120 }), "timeout"),
+      OVERRIDE_ENV,
+    );
+    expect(result.kind).toBe("result_not_loaded");
+    expect(result.retry?.verdict).toBe("yes");
+  });
+
+  it("offers no re-run hint on the durable path, whose result stays readable by its id", () => {
+    const result = classifyPipelineError(
+      loadFailure(buildProblem("client.timeout", { seconds: 120 }), "timeout"),
+      DEFAULT_ENV,
+    );
+    expect(result.hint).toBeUndefined();
   });
 });
 

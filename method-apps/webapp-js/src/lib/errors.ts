@@ -12,6 +12,7 @@ import {
   PipelineExecuteTimeoutError,
   RejectedAssetError,
   RunTimeoutError,
+  StoredTextLoadError,
   UploadTransportError,
   formatItem,
   formatSuggestedFix,
@@ -53,6 +54,9 @@ export type PipelineErrorKind =
   // (`buildClientTimeoutError`).
   | "execute_timeout"
   | "run_still_running"
+  // A run that completed but one of the stored texts of its result could not
+  // be loaded (`StoredTextLoadError`), on either path.
+  | "result_not_loaded"
   | "run_failed"
   | "run_timeout"
   | "lifecycle_unavailable"
@@ -200,6 +204,10 @@ export function classifyPipelineError(
   env: ClassifyEnv,
   opts?: ClassifyOptions,
 ): PipelineError {
+  // Before the problem's code: a load failure carries the problem of the read
+  // that failed (a timeout, a store's refusal), which would otherwise be told
+  // as the API out of reach or, on the blocking path, as the ~30s cap.
+  if (err instanceof StoredTextLoadError) return classifyStoredTextLoad(err, opts ?? {});
   if (isProblemError(err)) return classifyProblem(err, env, opts ?? {});
   if (err instanceof BadPipelineOutputError) return classifyBadOutput(err);
   if (isFsNotFound(err)) return classifyBundleMissing(err);
@@ -783,6 +791,43 @@ function classifyRunTimeout(err: ProblemError): PipelineError {
  * nothing about whether the run would pass a second time, which nothing
  * recorded decides.
  */
+/**
+ * `StoredTextLoadError`: the run completed, and one of the long texts of its
+ * result, which the runtime keeps in the run's storage and answers with a
+ * reference to, could not be loaded. Read with `instanceof` for the data the
+ * class alone carries, where the text sits in the result (`path`) and why it
+ * failed (`reason`); the problem still says who must act and whether a second
+ * try can pass. On the blocking path the result was delivered with the answer
+ * and kept nowhere else, so the hint says that running it again is the way to
+ * it; a durable run's result stays readable by its id.
+ */
+function classifyStoredTextLoad(err: StoredTextLoadError, opts: ClassifyOptions): PipelineError {
+  return {
+    kind: "result_not_loaded",
+    title: "The run finished, but its result could not be loaded",
+    message: `The result holds a long text the platform keeps in the run's storage, and loading it failed. ${err.message}`,
+    ...(opts.blocking
+      ? {
+          hint: {
+            summary:
+              "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again by the run's id: run the method again. A durable run's result stays readable by its id.",
+          },
+        }
+      : {}),
+    ...errorParts(err),
+    details: [
+      `${err.name}: ${err.message}`,
+      `path: ${err.path}`,
+      `reason: ${err.reason}`,
+      err.status !== undefined ? `status: ${err.status}` : null,
+      err.uri ? `uri: ${err.uri}` : null,
+      ...problemLines(err.problem, err.requestId),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
 function classifyRunFailed(err: ProblemError, finishedAt?: string | null): PipelineError {
   const nested = err.problem.run_error;
   const runId = runIdOf(err.problem) ?? "(unknown)";

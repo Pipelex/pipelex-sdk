@@ -24,6 +24,7 @@ from pipelex_sdk.errors import (
     RunFailedError,
     RunLifecycleUnavailableError,
     RunTimeoutError,
+    StoredTextLoadError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
     run_failed_problem,
@@ -478,3 +479,37 @@ class TestPrintError:
         rendered = buffer.getvalue()
         assert "Bad value [x] in [/y]." in rendered
         assert "Reason: list [1, 2] [bold]" in rendered
+
+
+class TestStoredTextFailure:
+    """A run that finished, one of whose long texts could not be loaded from the run's storage."""
+
+    @staticmethod
+    def _failure() -> StoredTextLoadError:
+        return StoredTextLoadError(
+            "The stored text at $.summary could not be loaded: the request timed out.",
+            uri="pipelex-storage://org/runs/run-9/generated/ab/value.txt",
+            path="$.summary",
+            reason="timeout",
+        )
+
+    def test_is_never_the_api_out_of_reach_nor_files_that_failed_to_save(self):
+        presentation = present_error(self._failure(), mode=RunMode.ATTENDED)
+        assert presentation.message.startswith("The run finished, but its result could not be loaded.")
+        assert "did not answer in time" not in presentation.message
+        assert presentation.hint is not None
+        assert "saving its files" not in presentation.hint
+        assert "Where: $.summary in the result" in presentation.details
+        assert "Why: timeout" in presentation.details
+
+    def test_a_durable_run_is_read_again_with_resume(self):
+        presentation = present_error(self._failure(), mode=RunMode.ATTENDED)
+        assert presentation.hint == (
+            f"The run's result is kept: read it again with {COMMAND_NAME} --resume <run-id>, the id printed when it started."
+        )
+
+    def test_a_blocking_run_is_run_again_since_its_result_is_kept_nowhere(self):
+        presentation = present_error(self._failure(), mode=RunMode.BLOCKING)
+        assert presentation.hint is not None
+        assert "kept nowhere else" in presentation.hint
+        assert "without --blocking" in presentation.hint

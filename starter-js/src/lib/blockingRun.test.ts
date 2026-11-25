@@ -7,15 +7,19 @@ import {
 } from "@pipelex/sdk";
 
 const execute = vi.fn();
+const resolveStorageUrls = vi.fn();
 
 vi.mock("@/lib/pipelexClient", () => ({
-  getPipelexClient: () => ({ execute }),
+  getPipelexClient: () => ({ execute, resolveStorageUrls }),
 }));
 
 import { executeBlockingRun } from "./blockingRun";
 import { BadImageOutputError, BadPipelineOutputError } from "@/types/pipelineError";
 
-beforeEach(() => execute.mockReset());
+beforeEach(() => {
+  execute.mockReset();
+  resolveStorageUrls.mockReset();
+});
 afterEach(() => vi.restoreAllMocks());
 
 const OPTIONS = {
@@ -44,6 +48,37 @@ function parseImageFixture(results: RunResults): { url: string } {
     throw new BadImageOutputError("fixture image output has no url");
   }
   return stuff as { url: string };
+}
+
+/** A stored text's reference, as the runtime answers a `Text` value past its inline threshold. */
+function storedReference(url: string): Record<string, unknown> {
+  return { url, size: 4096, mime_type: "text/plain", preview: "The start…" };
+}
+
+/**
+ * An execute answer whose main stuff is a `native.Text` held by reference, its
+ * working memory naming the concept, as the hosted runner answers a long text.
+ */
+function storedTextAnswer(runId: string, mainStuff: unknown): Record<string, unknown> {
+  return {
+    pipeline_run_id: runId,
+    main_stuff: mainStuff,
+    pipe_output: {
+      pipeline_run_id: runId,
+      working_memory: {
+        root: { essay: { concept: "native.Text", content: mainStuff } },
+        aliases: { main_stuff: "essay" },
+      },
+    },
+  };
+}
+
+function parseTextFixture(results: RunResults): { text: string } {
+  const stuff = results.main_stuff as { text?: unknown } | null;
+  if (typeof stuff !== "object" || stuff === null || typeof stuff.text !== "string") {
+    throw new BadPipelineOutputError("fixture text output has no `text`");
+  }
+  return { text: stuff.text };
 }
 
 describe("executeBlockingRun", () => {
@@ -179,5 +214,85 @@ describe("executeBlockingRun", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.kind).toBe("bad_image_output");
+  });
+
+  it("loads a stored text of the result before the narrower reads it, as a durable read does", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    execute.mockResolvedValueOnce(
+      storedTextAnswer("run-4", storedReference("data:text/plain;charset=utf-8,A%20long%20essay")),
+    );
+
+    const result = await executeBlockingRun(async () => OPTIONS, parseTextFixture);
+
+    expect(result).toMatchObject({ ok: true, output: { text: "A long essay" }, runId: "run-4" });
+    // A data: URL is decoded where it is, so nothing is resolved.
+    expect(resolveStorageUrls).not.toHaveBeenCalled();
+  });
+
+  it("loads a stored text inside a plural output's items envelope", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    execute.mockResolvedValueOnce(
+      storedTextAnswer("run-5", {
+        items: [{ text: "short" }, storedReference("data:text/plain;charset=utf-8,long%20one")],
+      }),
+    );
+
+    const result = await executeBlockingRun(
+      async () => OPTIONS,
+      (results) => results.main_stuff,
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      output: { items: [{ text: "short" }, { text: "long one" }] },
+    });
+  });
+
+  it("presents a stored text that failed to load as a finished run's unloadable result, keeping its id", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    execute.mockResolvedValueOnce(
+      storedTextAnswer(
+        "run-6",
+        storedReference("pipelex-storage://org/runs/run-6/generated/ab/value.txt"),
+      ),
+    );
+    // The resolve route out of reach: its problem is `client.unreachable`,
+    // which must not be told as the API out of reach or as the ~30s cap.
+    resolveStorageUrls.mockRejectedValueOnce(
+      new ApiUnreachableError("unreachable", "https://api.pipelex.com", "ECONNRESET"),
+    );
+
+    const result = await executeBlockingRun(async () => OPTIONS, parseTextFixture);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.runId).toBe("run-6");
+    expect(result.error.kind).toBe("result_not_loaded");
+    expect(result.error.title).toBe("The run finished, but its result could not be loaded");
+    expect(result.error.hint?.summary).toMatch(/run the method again/);
+    expect(result.error.details).toContain("reason: resolve_failed");
+  });
+
+  it("fails at once on a result that cannot say which of its values are texts", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    // No working memory names the main stuff, so nothing tells a stored text
+    // from any other value; a blocking answer is whole, so this is final.
+    execute.mockResolvedValueOnce({
+      pipeline_run_id: "run-7",
+      main_stuff: storedReference("pipelex-storage://org/runs/run-7/generated/ab/value.txt"),
+      pipe_output: { pipeline_run_id: "run-7", working_memory: { root: {}, aliases: {} } },
+    });
+
+    const result = await executeBlockingRun(async () => OPTIONS, parseTextFixture);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(resolveStorageUrls).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false,
+      runId: "run-7",
+      error: { kind: "result_not_loaded" },
+    });
+    if (result.ok) return;
+    expect(result.error.details).toContain("reason: concepts_missing");
   });
 });
