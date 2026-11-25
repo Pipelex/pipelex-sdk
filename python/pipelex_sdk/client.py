@@ -62,6 +62,7 @@ from pydantic_core import InitErrorDetails, PydanticSerializationError, to_json,
 from typing_extensions import override
 
 from pipelex_sdk._answer_json import decode_json_as_written, dumps_as_javascript
+from pipelex_sdk._url_origin import DEFAULT_PORTS
 from pipelex_sdk.answer_reading import outcome_unknown_problem, read_hosted_answer, run_id_named_by
 from pipelex_sdk.artifact_models import (
     STORED_TEXT_CONCEPTS_MISSING,
@@ -2180,7 +2181,8 @@ class PipelexAPIClient(MthdsAPIClient):
         `execute` itself cannot read (`_reading_inherited_answer`). Its stored texts are loaded unless
         `load_stored_texts` is `False`, the answer carrying every artifact the concepts are read from. A load that
         fails raises `StoredTextLoadError` with the completed result on `wire_results`: a bare runner keeps no run to
-        read again, and it serves no bulk resolve route, so any stored reference fails to load there.
+        read again, and a runner older than pipelex-api 0.118.0 serves no bulk resolve route, so any stored reference
+        fails to load there.
         """
         with _creating_run(), self._reading_inherited_answer(method="POST", endpoint="execute"):
             result = await self.execute(
@@ -3966,7 +3968,12 @@ class PipelexAPIClient(MthdsAPIClient):
         await self._request_product_without_answer("POST", "onboarding/submit", body=body)
 
     async def resolve_storage_url(self, uri: str) -> ResolvedStorageUrl:
-        """Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`."""
+        """Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`.
+
+        Only the hosted platform serves this route: a self-hosted runner, from pipelex-api 0.118.0, serves
+        the bulk route alone and answers this one a `404`, so a self-hosted caller with one link to mint
+        calls `resolve_artifacts` with a one-item list.
+        """
         return await self._request_product("POST", "resolve-storage-url", body={"uri": uri}, read=ResolvedStorageUrl.model_validate)
 
     async def resolve_storage_urls_bulk(self, uris: list[str]) -> BulkResolvedStorageUrls:
@@ -3976,7 +3983,9 @@ class PipelexAPIClient(MthdsAPIClient):
         included; a refused reference is a value on its item (`error`), and the request is a `200`
         whenever every reference got a verdict. At most `BULK_RESOLVE_MAX_URIS` references per call
         (a longer list is a `422`) — `resolve_artifacts` chunks a longer set. Served by the hosted
-        platform only: a deployment without the route answers a `404` `ApiResponseError`.
+        platform and, from pipelex-api 0.118.0, a self-hosted runner, which resolves the references under
+        the caller's own scope to links on its own origin: a deployment without the route answers a `404`
+        `ApiResponseError`.
         """
         return await self._request_product("POST", "resolve-storage-url/bulk", body={"uris": uris}, read=BulkResolvedStorageUrls.model_validate)
 
@@ -6076,11 +6085,6 @@ def _is_valid_base_url(value: str) -> bool:
     return True
 
 
-# The default port of each scheme a base URL may carry, which a URL shown in a refusal leaves out,
-# as the WHATWG URL parser `@pipelex/sdk` reads the value with does.
-_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
-
-
 def _describe_refused_base_url(value: str) -> str:
     """A refused base URL as its refusal may show it: the scheme and the host, then the names of the
     parts beyond them that the URL carried, never their text.
@@ -6100,7 +6104,7 @@ def _describe_refused_base_url(value: str) -> str:
         return "(not shown: it is not an absolute URL)"
     if not parsed.scheme:
         return "(not shown: it is not an absolute URL)"
-    if parsed.scheme not in _DEFAULT_PORTS:
+    if parsed.scheme not in DEFAULT_PORTS:
         return "(not shown: it is not an http or https URL)"
     if not hostname:
         return "(not shown: it is not an absolute URL)"
@@ -6111,7 +6115,7 @@ def _describe_refused_base_url(value: str) -> str:
     except httpx.InvalidURL:
         return "(not shown: it is not an absolute URL)"
     host = f"[{hostname}]" if ":" in hostname else hostname
-    if port is not None and port != _DEFAULT_PORTS[parsed.scheme]:
+    if port is not None and port != DEFAULT_PORTS[parsed.scheme]:
         host = f"{host}:{port}"
     parts: list[str] = []
     if parsed.username or parsed.password:

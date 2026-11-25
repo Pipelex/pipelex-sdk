@@ -70,6 +70,8 @@ _URI_INPUT = "pipelex-storage://org_1/uploads/brief.pdf"
 #: A key whose last segment carries no extension, so the content type decides it.
 _URI_BARE = "pipelex-storage://org_1/runs/01J/outputs/report"
 _STORE = "https://store.example.com"
+#: The origin the fake client is configured with, unless a case names another.
+_API_ORIGIN = "https://api.example.test"
 _PDF_BYTES = b"%PDF-1.4 tiny"
 _PNG_BYTES = b"\x89PNG tiny"
 #: The verdict of an argument the artifact operations refuse.
@@ -86,7 +88,10 @@ class _FakeClient:
         *,
         resolve: Callable[[list[str]], BulkResolvedStorageUrls] | None = None,
         run_result: RunResultState | None = None,
+        origin_url: str = _API_ORIGIN,
     ) -> None:
+        #: The origin of the client's configured base URL.
+        self.origin_url = origin_url
         self._resolve = resolve
         self._run_result = run_result
         self.resolve_calls: list[list[str]] = []
@@ -121,9 +126,12 @@ def _resolved(
     )
 
 
-def _refused(uri: str, *, code: str = "pipelex.org.mismatch", detail: str = "Another organization owns this reference.") -> ResolvedArtifact:
+def _refused(
+    uri: str, *, code: str = "pipelex.org.mismatch", detail: str = "Another organization owns this reference.", params: dict[str, Any] | None = None
+) -> ResolvedArtifact:
     """One refused item — the three link fields null, the verdict on `error`."""
-    return ResolvedArtifact(uri=uri, url=None, expires_at=None, content_type=None, error=ArtifactItemError(code=code, detail=detail))
+    error = ArtifactItemError(code=code, detail=detail, params=params)
+    return ResolvedArtifact(uri=uri, url=None, expires_at=None, content_type=None, error=error)
 
 
 def _answer(*items: ResolvedArtifact) -> BulkResolvedStorageUrls:
@@ -520,8 +528,115 @@ class TestArtifacts:
         # The platform's codes for a malformed reference and another organization's both read as a missing reference.
         assert caught.value.problem.code == "input.reference_not_found"
 
+    # A self-hosted runner refuses a reference outside the caller's scope with `auth.forbidden` naming
+    # `read_scope_under_caller`, its equivalent of the platform's `pipelex.org.mismatch`. An `auth.forbidden` naming any
+    # other requirement, or none, is not that refusal.
+    @pytest.mark.parametrize(
+        ("params", "problem_code"),
+        [
+            ({"requirement": "read_scope_under_caller"}, "input.reference_not_found"),
+            ({"requirement": "admin"}, "runtime.unexpected"),
+            (None, "runtime.unexpected"),
+        ],
+        ids=["read_scope_under_caller", "another_requirement", "no_requirement"],
+    )
+    def test_reads_a_runners_out_of_scope_refusal_as_the_platforms(
+        self, mocker: MockerFixture, params: dict[str, Any] | None, problem_code: str
+    ) -> None:
+        client = _FakeClient(resolve=_resolver(_refused(_URI_PDF, code="auth.forbidden", detail="Refused.", params=params)))
+        seen = _patch_storage(mocker, _serving(_PDF_BYTES))
+
+        async def _read() -> None:
+            async with fetch_artifact(client, _URI_PDF):
+                pass
+
+        with pytest.raises(ArtifactFetchError) as caught:
+            asyncio.run(_read())
+        assert caught.value.reason == "auth.forbidden"
+        assert caught.value.problem.code == problem_code
+        # The requirement stays on the error, so a caller tells the scope refusal from another `auth.forbidden` even
+        # where the problem keeps none.
+        assert caught.value.requirement == (params or {}).get("requirement")
+        assert seen == []
+
+    # A runner's signed download route refuses a bad or expired signature with a 403 `auth.forbidden` and a missing
+    # object with a 404 `pipelex.storage.object_missing`: read by their status alone, as a presigned link's are.
+    @pytest.mark.parametrize(
+        ("status", "body_code", "code", "problem_code"),
+        [
+            (403, "auth.forbidden", "store_refused", "client.response_unreadable"),
+            (404, "pipelex.storage.object_missing", "not_found", "input.reference_not_found"),
+        ],
+    )
+    def test_reads_a_runner_downloads_refusal_as_a_presigned_links(
+        self, mocker: MockerFixture, status: int, body_code: str, code: str, problem_code: str
+    ) -> None:
+        link = f"{_API_ORIGIN}/v1/storage/report.pdf?expires=1&signature=x"
+        client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url=link)))
+        body = json.dumps({"type": "about:blank", "title": "Refused", "status": status, "code": body_code, "detail": "refused"}).encode()
+        _patch_storage(mocker, _serving(body, status=status, headers={"content-type": "application/problem+json"}))
+
+        async def _read() -> None:
+            async with fetch_artifact(client, _URI_PDF):
+                pass
+
+        with pytest.raises(ArtifactFetchError) as caught:
+            asyncio.run(_read())
+        assert caught.value.reason == code
+        assert caught.value.status == status
+        assert caught.value.problem.code == problem_code
+
     def test_refuses_a_plain_http_link_by_default_and_accepts_it_on_request(self, mocker: MockerFixture) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url="http://localhost:9000/report.pdf")))
+        seen = _patch_storage(mocker, _serving(_PDF_BYTES))
+
+        async def _read(options: FetchArtifactOptions | None) -> bytes:
+            async with fetch_artifact(client, _URI_PDF, options) as stream:
+                return await stream.read()
+
+        with pytest.raises(ArtifactFetchError) as caught:
+            asyncio.run(_read(None))
+        assert caught.value.reason == "plain_http_refused"
+        assert seen == []
+
+        assert asyncio.run(_read(FetchArtifactOptions(allow_http=True))) == _PDF_BYTES
+        assert len(seen) == 1
+
+    @pytest.mark.parametrize(
+        ("origin_url", "link"),
+        [
+            ("http://localhost:8091", "http://localhost:8091/v1/storage/report.pdf?sig=1"),
+            ("http://localhost:8091/", "http://localhost:8091/v1/storage/report.pdf?sig=1"),
+            ("http://localhost", "http://LOCALHOST:80/v1/storage/report.pdf"),
+            ("http://bücher.example:8091", "http://xn--bcher-kva.example:8091/v1/storage/report.pdf"),
+            ("http://XN--BCHER-KVA.example:8091", "http://Bücher.example:8091/v1/storage/report.pdf"),
+        ],
+        ids=["same_origin", "trailing_slash", "default_port_written_out", "idn_client_punycode_link", "punycode_client_idn_link"],
+    )
+    def test_accepts_a_plain_http_link_on_the_clients_own_origin_without_allow_http(self, mocker: MockerFixture, origin_url: str, link: str) -> None:
+        client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url=link)), origin_url=origin_url)
+        seen = _patch_storage(mocker, _serving(_PDF_BYTES))
+
+        async def _read() -> bytes:
+            async with fetch_artifact(client, _URI_PDF) as stream:
+                return await stream.read()
+
+        assert asyncio.run(_read()) == _PDF_BYTES
+        assert len(seen) == 1
+
+    @pytest.mark.parametrize(
+        ("origin_url", "link"),
+        [
+            ("http://localhost:8091", "http://127.0.0.1:8091/v1/storage/report.pdf"),
+            ("http://localhost:8091", "http://localhost:8092/v1/storage/report.pdf"),
+            ("https://localhost:8091", "http://localhost:8091/v1/storage/report.pdf"),
+            # A documented gap: httpx does not rewrite an IPv4 shorthand, so `127.1` is another host here.
+            ("http://127.0.0.1:8091", "http://127.1:8091/v1/storage/report.pdf"),
+        ],
+        ids=["another_host", "another_port", "another_scheme", "ipv4_shorthand_not_normalized"],
+    )
+    def test_refuses_a_plain_http_link_on_another_origin_and_accepts_it_on_request(self, mocker: MockerFixture, origin_url: str, link: str) -> None:
+        client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url=link)), origin_url=origin_url)
         seen = _patch_storage(mocker, _serving(_PDF_BYTES))
 
         async def _read(options: FetchArtifactOptions | None) -> bytes:
@@ -976,6 +1091,43 @@ class TestArtifacts:
         assert first.found_at == ["$.items[0].url"]
         assert verdict.artifacts[1].error is None
         assert verdict.saved_paths == [str(tmp_path / "out" / "items-1.pdf")]
+
+    def test_keeps_the_parameters_of_a_runners_refusal_on_the_items_error(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        params = {"requirement": "read_scope_under_caller"}
+        client = _FakeClient(resolve=_resolver(_refused(_URI_PNG, code="auth.forbidden", detail="outside", params=params), _resolved(_URI_PDF)))
+        _patch_storage(mocker, _serving(_PDF_BYTES))
+        verdict = asyncio.run(
+            download_artifacts(client, dir_path=tmp_path / "out", results=_results({"items": [_content(_URI_PNG), _content(_URI_PDF)]}))
+        )
+
+        first = verdict.artifacts[0]
+        assert first.error is not None
+        assert first.error.code == "auth.forbidden"
+        assert first.error.params == params
+        assert first.error.requirement == "read_scope_under_caller"
+        assert verdict.artifacts[1].error is None
+
+    def test_saves_a_plain_http_link_on_the_clients_own_origin_and_refuses_one_on_another(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        client = _FakeClient(
+            resolve=_resolver(
+                _resolved(_URI_PNG, url="http://localhost:8091/v1/storage/illustration.png", content_type="image/png"),
+                _resolved(_URI_PDF, url="http://127.0.0.1:8091/v1/storage/report.pdf"),
+            ),
+            origin_url="http://localhost:8091",
+        )
+        seen = _patch_storage(mocker, _serving(_PNG_BYTES, headers={"content-type": "image/png"}))
+        verdict = asyncio.run(
+            download_artifacts(client, dir_path=tmp_path / "out", results=_results({"items": [_content(_URI_PNG), _content(_URI_PDF)]}))
+        )
+
+        assert verdict.all_saved is False
+        assert verdict.artifacts[0].error is None
+        assert verdict.saved_paths == [str(tmp_path / "out" / "items-0.png")]
+        second = verdict.artifacts[1]
+        assert second.error is not None
+        assert second.error.code == "plain_http_refused"
+        assert second.path is None
+        assert [request.url.host for request in seen] == ["localhost"]
 
     def test_re_resolves_a_link_that_has_expired_by_the_time_its_task_reaches_it(self, mocker: MockerFixture, tmp_path: Path) -> None:
         answers = [

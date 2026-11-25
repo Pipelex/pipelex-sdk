@@ -11,6 +11,7 @@ the shapes keeps that from being an import cycle. Mirrors the types of `pipelex-
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,9 +24,9 @@ from pipelex_sdk.stored_texts import StoredTextKind
 #: The scheme of a durable storage reference.
 PIPELEX_STORAGE_SCHEME = "pipelex-storage://"
 
-#: How many references one bulk resolve request takes — the route's bound, fixed by the platform
-#: contract rather than configured per deployment. A longer list is a `422`, so `resolve_artifacts`
-#: chunks at this size.
+#: How many references one bulk resolve request takes — the route's bound, fixed by the route's
+#: contract, the same on the platform and a self-hosted runner, rather than configured per
+#: deployment. A longer list is a `422`, so `resolve_artifacts` chunks at this size.
 BULK_RESOLVE_MAX_URIS = 100
 
 #: The per-file byte cap. An accident guard against filling a disk from a runaway output, not a
@@ -91,15 +92,24 @@ class ArtifactScope(StrEnum):
 class ArtifactItemError(BaseModel):
     """Why one reference failed — a value, never a raised error.
 
-    `code` is the resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`) or one
-    of the fetch boundary's (see `ArtifactFetchError`), plus the download's own `resolve_failed`,
-    `total_limit_exceeded`, `write_failed` and `aborted`. `detail` is the sentence a person reads.
+    `code` is the resolve route's own per-reference code (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`, and a
+    self-hosted runner's `auth.forbidden` whose `requirement` is `read_scope_under_caller` for a reference outside the
+    caller's scope) or one of the fetch boundary's (see `ArtifactFetchError`), plus the download's own
+    `resolve_failed`, `total_limit_exceeded`, `write_failed` and `aborted`. `detail` is the sentence a person reads,
+    and `params` the parameters the route's code declares, when the route sent them.
     """
 
     model_config = ConfigDict(extra="allow")
 
     code: str
     detail: str
+    params: dict[str, Any] | None = None
+
+    @property
+    def requirement(self) -> str | None:
+        """The `requirement` the route's refusal names in its `params`, when it names one."""
+        requirement = (self.params or {}).get("requirement")
+        return requirement if isinstance(requirement, str) else None
 
 
 class ResolvedArtifact(BaseModel):
@@ -114,11 +124,13 @@ class ResolvedArtifact(BaseModel):
 
     #: The reference exactly as sent.
     uri: str
-    #: A presigned link, fetchable now and for about fifteen minutes.
+    #: A short-lived signed link, fetchable now and until `expires_at`, whose lifetime the server sets: the hosted
+    #: platform's presigned link lasts about fifteen minutes, and a self-hosted runner's link to its own download route
+    #: lasts its `STORAGE_LINK_TTL_SECONDS`.
     url: str | None = None
     #: UTC expiry of the link, ISO 8601.
     expires_at: str | None = None
-    #: The platform's content-type guess from the reference's extension; `None` when it has none.
+    #: The server's content-type guess from the reference's extension; `None` when it has none.
     content_type: str | None = None
     error: ArtifactItemError | None = None
 
@@ -142,9 +154,11 @@ class FetchArtifactOptions(BaseModel):
     max_bytes: int = DEFAULT_ARTIFACT_MAX_BYTES
     #: Budget for the whole exchange — connect, headers and body. Default 120 s.
     timeout_seconds: float = DEFAULT_ARTIFACT_TIMEOUT_SECONDS
-    #: Accept a plain `http:` link. Off by default: a general-purpose library does not fetch over
-    #: plain http silently. The local compose stack's object store hands out such links, which is
-    #: the case this opts into.
+    #: Accept a plain `http:` link on any origin. Off by default: a general-purpose library does not
+    #: fetch over plain http silently. A plain `http:` link on the origin of the client's configured
+    #: base URL, which a self-hosted runner hands out, is accepted without it, since the client
+    #: already sends its API key there. The local compose stack's object store hands out plain
+    #: `http:` links on another origin, which is the case this opts into.
     allow_http: bool = False
 
 
@@ -163,7 +177,8 @@ class LoadStoredTextsOptions(BaseModel):
     max_total_bytes: int = DEFAULT_STORED_TEXT_MAX_TOTAL_BYTES
     #: Budget for each text's exchange — connect, headers and body. Default 120 s.
     timeout_seconds: float = DEFAULT_ARTIFACT_TIMEOUT_SECONDS
-    #: Accept a plain `http:` link, as the local stack's object store hands out. Off by default.
+    #: Accept a plain `http:` link on any origin, as the local stack's object store hands out. Off by default; a
+    #: plain `http:` link on the origin of the client's configured base URL is accepted without it.
     allow_http: bool = False
     #: How many texts are read at once. Default 8.
     concurrency: int = DEFAULT_STORED_TEXT_CONCURRENCY
@@ -245,7 +260,7 @@ class DownloadedArtifact(ArtifactLocation):
     """One reference's outcome in a download verdict — one shape with nullable fields, like
     `ResolvedArtifact`: either `path` and `size` are set and `error` is `None`, or `error` is set and
     both are `None`. `found_at` says where the reference sits in the walked scope, the first path
-    being the one that named the file, and `content_type` is the platform's guess from the
+    being the one that named the file, and `content_type` is the server's guess from the
     reference's extension, known before the fetch; both are on both arms, so an item that was not
     saved still says which field it would have filled.
 

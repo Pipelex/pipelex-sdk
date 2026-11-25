@@ -4,7 +4,7 @@ usable without the next:
 - `locate_artifacts(value)` — a pure walk of any JSON-shaped value for the strings that ARE
   `pipelex-storage://` references, each with every `$`-rooted path it sits at. `collect_artifacts`
   is the same walk's bare references. No network, no key.
-- `resolve_artifacts(client, uris)` — the platform's bulk resolve route over a whole list,
+- `resolve_artifacts(client, uris)` — the server's bulk resolve route over a whole list,
   chunked at the route's bound, one verdict per reference.
 - `fetch_artifact(client, uri)` — an async context manager yielding a bounded stream for one
   reference: resolved fresh, timed out, redirects refused, the byte cap enforced mid-stream, no
@@ -14,8 +14,9 @@ usable without the next:
 
 A produced file is never embedded in a run's results: the content carries its durable
 `pipelex-storage://` reference beside a signed `public_url` that expires on the provider's
-schedule. Nothing here reads that embedded link — every link is minted fresh by the platform, and
-re-minted when it has expired by the time a task reaches it. See `docs/artifact-download.md`.
+schedule. Nothing here reads that embedded link — every link is minted fresh by the server's bulk resolve route (the
+hosted platform's presigned link, or a self-hosted runner's own signed link), and re-minted when it has expired by the
+time a task reaches it. See `docs/artifact-download.md`.
 
 Python counterpart of `pipelex-sdk-js`'s `src/artifacts.ts`, with the idiomatic ports the SDK
 already makes elsewhere: seconds instead of milliseconds, an `asyncio.Semaphore` instead of a
@@ -52,6 +53,7 @@ from mthds.runners.api.problem import transport_failure_problem
 from pydantic import BaseModel, ValidationError
 
 from pipelex_sdk._answer_json import dumps_as_javascript
+from pipelex_sdk._url_origin import ComparableOrigin, comparable_origin
 from pipelex_sdk.artifact_models import (
     BULK_RESOLVE_MAX_URIS,
     PIPELEX_STORAGE_SCHEME,
@@ -108,9 +110,9 @@ if TYPE_CHECKING:
 
 # ── Constants ────────────────────────────────────────────────────────
 
-#: A link this close to its `expires_at` is re-resolved rather than fetched: the object store checks
-#: the signature when the request arrives, and a few seconds of clock skew between the platform and
-#: this process must not turn a link the platform still considers live into a `403`.
+#: A link this close to its `expires_at` is re-resolved rather than fetched: the store checks the
+#: signature when the request arrives, and a few seconds of clock skew between the server that signed
+#: it and this process must not turn a link the server still considers live into a `403`.
 _EXPIRY_MARGIN_SECONDS = 10.0
 
 #: Longest filename `download_artifacts` writes, extension included.
@@ -182,7 +184,7 @@ _SKIPPED_CREDENTIAL = "The download stopped on a credential failure before this 
 
 
 class BulkResolveClient(Protocol):
-    """The client surface the reading operations need — the raw bulk resolve call. Typed as
+    """The client surface `resolve_artifacts` needs — the raw bulk resolve call. Typed as
     `PipelexAPIClient.resolve_storage_urls_bulk`'s own signature, so the client satisfies it
     structurally and a test can inject a fake.
     """
@@ -190,7 +192,20 @@ class BulkResolveClient(Protocol):
     async def resolve_storage_urls_bulk(self, uris: list[str]) -> BulkResolvedStorageUrls: ...
 
 
-class ArtifactCapableClient(BulkResolveClient, Protocol):
+class ArtifactFetchClient(BulkResolveClient, Protocol):
+    """What the operations that fetch a resolved link need on top — `fetch_artifact` and `load_stored_texts`: the
+    origin the client is configured with, the one on which a plain-http link is fetched without `allow_http`.
+    """
+
+    @property
+    def origin_url(self) -> str:
+        """The origin (`scheme://host[:port]`) of the client's configured base URL. A resolved link on it
+        is fetched over plain http without `allow_http`, since the client already sends its API key there.
+        """
+        ...
+
+
+class ArtifactCapableClient(ArtifactFetchClient, Protocol):
     """What `download_artifacts` needs on top: the single-shot result lookup, for the `run_id` arm and for
     the concepts that tell a stored text from a file.
     """
@@ -231,7 +246,7 @@ def is_storage_reference(value: str) -> bool:
 
 
 def is_loadable_stored_text_url(url: str) -> bool:
-    """A `url` a stored text may be loaded from: a `pipelex-storage://` reference, resolved through the platform's bulk
+    """A `url` a stored text may be loaded from: a `pipelex-storage://` reference, resolved through the server's bulk
     route to a link it signs, or a `data:` URL, decoded where it is. A stored text at any other URL is never fetched, so a
     method cannot have the SDK read a host the caller did not choose: the loader refuses it as `unsupported_url`.
 
@@ -638,6 +653,9 @@ class _FetchBounds:
     max_bytes: int
     timeout_seconds: float
     allow_http: bool
+    #: The origin of the client's configured base URL, on which a plain-http link is fetched without
+    #: `allow_http`; `None` when that base URL has no comparable origin.
+    client_origin: ComparableOrigin | None
 
 
 class ArtifactStream:
@@ -700,7 +718,7 @@ async def _stream_resolved_url(
     """The bounded fetch of an already-resolved link — the half of `fetch_artifact` that
     `download_artifacts` shares, its links coming from one bulk resolve ahead of the tasks.
     """
-    checked_url = _checked_url(uri, download_url, allow_http=bounds.allow_http)
+    checked_url = _checked_url(uri, download_url, allow_http=bounds.allow_http, client_origin=bounds.client_origin)
     try:
         async with asyncio.timeout(bounds.timeout_seconds):
             try:
@@ -717,7 +735,7 @@ async def _stream_resolved_url(
                     yield ArtifactStream(uri, response, bounds.max_bytes)
             except httpx.InvalidURL as exc:
                 # Not an `HTTPError`: httpx refuses the link at request build, before any transport.
-                msg = "The platform resolved the reference to a link that is not a valid absolute URL."
+                msg = "The server resolved the reference to a link that is not a valid absolute URL."
                 raise ArtifactFetchError(msg, uri=uri, reason="unsupported_url") from exc
             except httpx.TimeoutException as exc:
                 msg = f"Fetching the artifact timed out after {bounds.timeout_seconds}s."
@@ -763,13 +781,13 @@ def _os_error_reason(exc: OSError) -> str:
 
 
 def fetch_artifact(
-    client: BulkResolveClient,
+    client: ArtifactFetchClient,
     uri: str,
     options: FetchArtifactOptions | None = None,
 ) -> AbstractAsyncContextManager[ArtifactStream]:
     """A bounded stream for one reference, as an async context manager.
 
-    The link is minted fresh through the bulk route, then fetched with redirects refused (a presigned
+    The link is minted fresh through the bulk route, then fetched with redirects refused (a signed
     link has no reason to redirect, and one that does is refused rather than followed), no headers of
     ours (the link carries its own authorization in the query string, and nothing must ride along to
     the object store), a budget covering the headers and the body, and a byte cap checked against
@@ -792,16 +810,16 @@ def fetch_artifact(
 
 @asynccontextmanager
 async def _fetch_artifact(
-    client: BulkResolveClient,
+    client: ArtifactFetchClient,
     uri: str,
     options: FetchArtifactOptions | None = None,
 ) -> AsyncGenerator[ArtifactStream, None]:
     """`fetch_artifact`'s body — resolve one reference fresh, then stream its link under the bounds."""
-    bounds = _validated_bounds(options or FetchArtifactOptions())
+    bounds = _validated_bounds(options or FetchArtifactOptions(), origin_url=client.origin_url)
     resolved = await resolve_artifacts(client, [uri])
     entry = resolved[0]
     if entry.error is not None:
-        raise ArtifactFetchError(entry.error.detail, uri=uri, reason=entry.error.code)
+        raise ArtifactFetchError(entry.error.detail, uri=uri, reason=entry.error.code, requirement=entry.error.requirement)
     if entry.url is None:
         msg = "The bulk resolve route answered an item with neither a link nor an error."
         raise ArtifactOperationError(msg, problem=response_unreadable_problem(status=200))
@@ -813,11 +831,18 @@ async def _fetch_artifact(
         await storage_client.aclose()
 
 
-def _validated_bounds(options: FetchArtifactOptions) -> _FetchBounds:
-    """The per-file bounds, refusing nonsense before anything is resolved."""
+def _validated_bounds(options: FetchArtifactOptions, *, origin_url: str) -> _FetchBounds:
+    """The per-file bounds, refusing nonsense before anything is resolved. `origin_url` is the client's own
+    origin, the one on which a plain-http link is fetched without `allow_http`.
+    """
     _require_positive("max_bytes", options.max_bytes)
     _require_positive("timeout_seconds", options.timeout_seconds)
-    return _FetchBounds(max_bytes=options.max_bytes, timeout_seconds=options.timeout_seconds, allow_http=options.allow_http)
+    return _FetchBounds(
+        max_bytes=options.max_bytes,
+        timeout_seconds=options.timeout_seconds,
+        allow_http=options.allow_http,
+        client_origin=comparable_origin(origin_url),
+    )
 
 
 def _require_positive(name: str, value: float) -> None:
@@ -827,28 +852,35 @@ def _require_positive(name: str, value: float) -> None:
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument=name, reason="not_positive"))
 
 
-def _checked_url(uri: str, download_url: str, *, allow_http: bool) -> str:
-    """The boundary-approved link, or the typed refusal saying why it is not fetched."""
+def _checked_url(uri: str, download_url: str, *, allow_http: bool, client_origin: ComparableOrigin | None) -> str:
+    """The boundary-approved link, or the typed refusal saying why it is not fetched.
+
+    A plain-http link is fetched when the caller opted in with `allow_http`, or when its origin is
+    `client_origin`, the origin of the client's configured base URL: the client already sends its API key
+    there, so a link to it reveals nothing the client does not already trust that server with. That is how a
+    self-hosted runner listening on plain http hands back what it stores. Both origins are compared in
+    `comparable_origin`'s form.
+    """
     try:
         parsed = urlsplit(download_url)
     except ValueError as exc:
-        msg = "The platform resolved the reference to a link that is not a valid absolute URL."
+        msg = "The server resolved the reference to a link that is not a valid absolute URL."
         raise ArtifactFetchError(msg, uri=uri, reason="unsupported_url") from exc
     if not parsed.scheme or not parsed.netloc:
-        msg = "The platform resolved the reference to a link that is not a valid absolute URL."
+        msg = "The server resolved the reference to a link that is not a valid absolute URL."
         raise ArtifactFetchError(msg, uri=uri, reason="unsupported_url")
     scheme = parsed.scheme.lower()
-    if scheme == "http" and not allow_http:
+    if scheme == "http" and not allow_http and (client_origin is None or comparable_origin(download_url) != client_origin):
         msg = (
-            "The platform resolved the reference to a plain http link, which is refused by default; "
-            "pass allow_http=True to accept it (the local stack's object store hands out such links)."
+            "The server resolved the reference to a plain http link on an origin other than the client's own, which is "
+            "refused by default; pass allow_http=True to accept it (the local stack's object store hands out such links)."
         )
         raise ArtifactFetchError(msg, uri=uri, reason="plain_http_refused")
     if scheme not in {"http", "https"}:
-        msg = f'The platform resolved the reference to a "{scheme}" link, which is not fetched; only http(s) links are.'
+        msg = f'The server resolved the reference to a "{scheme}" link, which is not fetched; only http(s) links are.'
         raise ArtifactFetchError(msg, uri=uri, reason="unsupported_url")
     if parsed.username or parsed.password:
-        msg = "The platform resolved the reference to a link carrying credentials, which is not fetched."
+        msg = "The server resolved the reference to a link carrying credentials, which is not fetched."
         raise ArtifactFetchError(msg, uri=uri, reason="unsupported_url")
     return download_url
 
@@ -931,7 +963,7 @@ class _StoredTextSite:
 
 
 async def load_stored_texts(
-    client: BulkResolveClient,
+    client: ArtifactFetchClient,
     results: RunResults,
     options: LoadStoredTextsOptions | None = None,
 ) -> RunResults:
@@ -950,7 +982,7 @@ async def load_stored_texts(
     on where a text is promised (`lacks_stored_text_concepts`). The runtime writes `output_form` after `main_stuff`, so
     a read can land in between: `wait_for_result` keeps polling through that window for a few polls before it raises.
 
-    A `pipelex-storage://` reference is resolved through the platform's bulk route, at most `BULK_RESOLVE_MAX_URIS` per
+    A `pipelex-storage://` reference is resolved through the server's bulk route, at most `BULK_RESOLVE_MAX_URIS` per
     request, and its signed link fetched under the same bounds as `fetch_artifact`; a link within ten seconds of its
     `expires_at` when its read is about to start, having waited behind the other reads, is resolved again first. A
     `data:` URL is decoded, its size bounded from its length before it is. A stored text under any other URL
@@ -1101,7 +1133,7 @@ _TakeBytes: TypeAlias = Callable[[int], bool]
 
 
 async def _load_stored_text_values(
-    client: BulkResolveClient,
+    client: ArtifactFetchClient,
     value: Any,
     node: InputFormItem,
     options: LoadStoredTextsOptions,
@@ -1117,7 +1149,8 @@ async def _load_stored_text_values(
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument="concurrency", reason="not_positive"))
     _require_positive("max_total_bytes", options.max_total_bytes)
     bounds = _validated_bounds(
-        FetchArtifactOptions(max_bytes=options.max_bytes, timeout_seconds=options.timeout_seconds, allow_http=options.allow_http)
+        FetchArtifactOptions(max_bytes=options.max_bytes, timeout_seconds=options.timeout_seconds, allow_http=options.allow_http),
+        origin_url=client.origin_url,
     )
     max_total_bytes = options.max_total_bytes
 
@@ -1208,7 +1241,7 @@ async def _resolve_for_texts(client: BulkResolveClient, references: list[str], f
     except (ApiResponseError, ApiUnreachableError, ArtifactOperationError) as exc:
         site = first_site[references[0]]
         status = exc.status if isinstance(exc, ApiResponseError) else None
-        msg = f"The stored text at {site.path} could not be loaded: the platform's bulk resolve route failed: {exc}"
+        msg = f"The stored text at {site.path} could not be loaded: the bulk resolve route failed: {exc}"
         raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="resolve_failed", status=status, problem=exc.problem) from exc
 
 
@@ -1284,11 +1317,11 @@ async def _read_stored_bytes(
                 return decoded
     if resolved is None:
         # Unreachable: the walk admits only a reference or a data: URL, and every reference is resolved first.
-        msg = f"The stored text at {site.path} could not be loaded: its url was not resolved by the platform."
+        msg = f"The stored text at {site.path} could not be loaded: its url was not resolved by the bulk resolve route."
         raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="unsupported_url")
     if resolved.error is not None:
         msg = f"The stored text at {site.path} could not be loaded: {resolved.error.detail}"
-        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=resolved.error.code)
+        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=resolved.error.code, requirement=resolved.error.requirement)
     if resolved.url is None:
         msg = f"The stored text at {site.path} could not be loaded: the bulk resolve route answered its item with neither a link nor an error."
         raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason="resolve_failed", problem=response_unreadable_problem(status=200))
@@ -1301,7 +1334,9 @@ async def _read_stored_bytes(
                 parts.append(chunk)
     except ArtifactFetchError as exc:
         msg = f"The stored text at {site.path} could not be loaded: {exc}"
-        raise StoredTextLoadError(msg, uri=site.url, path=site.path, reason=exc.reason, status=exc.status, problem=exc.problem) from exc
+        raise StoredTextLoadError(
+            msg, uri=site.url, path=site.path, reason=exc.reason, status=exc.status, requirement=exc.requirement, problem=exc.problem
+        ) from exc
     return b"".join(parts)
 
 
@@ -1475,7 +1510,7 @@ async def download_artifacts(
     """
     opts = options or DownloadArtifactsOptions()
     scope = _require_scope(opts.scope)
-    bounds = _validated_bounds(opts)
+    bounds = _validated_bounds(opts, origin_url=client.origin_url)
     if opts.concurrency < 1:
         msg = f'"concurrency" must be a positive integer, got {opts.concurrency}.'
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument="concurrency", reason="not_positive"))
@@ -1613,7 +1648,7 @@ class _DownloadLocation(ArtifactLocation):
     stated_mime_type: str | None = None
 
     def content_type(self, resolved: str | None) -> str | None:
-        """A stored text's MIME type is its reference's; otherwise the platform's guess from the key."""
+        """A stored text's MIME type is its reference's; otherwise the server's guess from the key."""
         return self.stated_mime_type or resolved
 
 
@@ -1630,8 +1665,12 @@ def _download_location(located: _LocatedReference) -> _DownloadLocation:
     )
 
 
-def _item_error(location: _DownloadLocation, content_type: str | None, code: str, detail: str) -> DownloadedArtifact:
-    """One reference's failure, as a value on the verdict — still saying where the reference sits."""
+def _item_error(
+    location: _DownloadLocation, content_type: str | None, code: str, detail: str, params: dict[str, Any] | None = None
+) -> DownloadedArtifact:
+    """One reference's failure, as a value on the verdict — still saying where the reference sits, and the parameters
+    the resolve route's refusal declares when it is one.
+    """
     return DownloadedArtifact(
         uri=location.uri,
         kind=location.kind,
@@ -1639,7 +1678,7 @@ def _item_error(location: _DownloadLocation, content_type: str | None, code: str
         path=None,
         content_type=content_type,
         size=None,
-        error=ArtifactItemError(code=code, detail=detail),
+        error=ArtifactItemError(code=code, detail=detail, params=params),
     )
 
 
@@ -1693,7 +1732,7 @@ async def _process_one(
                 msg = f"The expired link could not be re-resolved: {exc}."
                 return _item_error(location, location.content_type(entry.content_type), "resolve_failed", msg)
         if entry.error is not None:
-            return _item_error(location, location.content_type(None), entry.error.code, entry.error.detail)
+            return _item_error(location, location.content_type(None), entry.error.code, entry.error.detail, entry.error.params)
         content_type = location.content_type(entry.content_type)
         if entry.url is None:
             msg = "The bulk resolve route answered an item with neither a link nor an error."
