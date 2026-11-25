@@ -1,4 +1,4 @@
-.PHONY: help run dev serve stop build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test agent-check install-if-missing check clean install lock all use-local use-local-form use-published use-published-form local-status ul un
+.PHONY: help run dev serve stop build start port-check lint format format-check typecheck codegen codegen-check codegen-verify add-method test test-watch test-e2e test-e2e-ui confirm-live-e2e agent-test agent-check install-if-needed check clean install lock all use-local use-local-form use-published use-published-form local-status ul un
 
 # ── Arguments ──────────────────────────────────────────────────────────────
 # The gestures take their values as make variables (`make add-method
@@ -228,12 +228,12 @@ test-e2e: confirm-live-e2e port-check ## Run OPTIONAL Playwright e2e (LIVE API �
 test-e2e-ui: confirm-live-e2e port-check ## Same as test-e2e, with the Playwright UI runner
 	npm run test:e2e:ui
 
-agent-test: install-if-missing ## Run tests, silent on success, installing first when node_modules is missing (for agents)
+agent-test: install-if-needed ## Run tests, silent on success, installing first when node_modules is missing or older than package-lock.json (for agents)
 	@OUTPUT=$$(npm run test --silent 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
 check: lint format-check typecheck codegen-check ## Run lint, format check, type check, and the offline codegen check
 
-agent-check: install-if-missing ## Run check, installing first when node_modules is missing (for agents)
+agent-check: install-if-needed ## Run check, installing first when node_modules is missing or older than package-lock.json (for agents)
 	@$(MAKE) --no-print-directory check
 
 all: check test build ## Full validation: check + test + build (excludes e2e — see test-e2e)
@@ -242,9 +242,18 @@ install: ## Install dependencies
 	npm install
 
 # The agent targets install the project first when node_modules is missing, so a fresh
-# checkout can run them directly.
-install-if-missing:
-	@[ -d node_modules ] || $(MAKE) --no-print-directory install
+# checkout can run them directly, and again when package-lock.json moved after the last install,
+# so they never run against other versions than the lock pins. npm records every install in
+# node_modules/.package-lock.json, written after package-lock.json, so a package-lock.json newer
+# than that record moved after the last install: a merge, a pull or a `make lock`. A package
+# installed over the locked one with `npm install --no-save` rewrites the record, so it stays.
+install-if-needed:
+	@if [ ! -d node_modules ]; then \
+		$(MAKE) --no-print-directory install; \
+	elif [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then \
+		echo "package-lock.json has moved since node_modules was last installed: running make install first."; \
+		$(MAKE) --no-print-directory install; \
+	fi
 
 lock: ## Regenerate package-lock.json without installing
 	npm install --package-lock-only

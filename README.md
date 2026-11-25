@@ -14,7 +14,7 @@ Each directory's `README.md` is the guide for using it.
 
 ## Contributing
 
-Pull requests target `dev`. Each package directory is a project of its own, with its own `Makefile`, manifest and lockfile, and it installs itself the first time its checks run:
+Pull requests target `dev`. Each package directory is a project of its own, with its own `Makefile`, manifest and lockfile, and it installs itself the first time its checks run, and again when its lockfile has moved since:
 
 ```bash
 make install                 # wire the git hooks; installs no package

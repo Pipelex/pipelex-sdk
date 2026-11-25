@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-if-missing check check-lock c test t test-e2e te test-pack clean build rebuild dev pack all depcruise agent-check agent-test use-local use-npm ul un
+.PHONY: help install install-if-needed check check-lock c test t test-e2e te test-pack clean build rebuild dev pack all depcruise agent-check agent-test use-local use-npm ul un
 
 # The workspace's mthds-js checkout, for live mthds development (see use-local / use-npm). It
 # sits beside this repository's root, the main checkout or a worktree alike, two levels up.
@@ -33,8 +33,8 @@ make check-lock - Fail when package-lock.json is not a valid install tree
 make test       - Run the test suite
 make test-e2e   - Run e2e tests against a live pipelex-api [PIPELEX_E2E_BASE_URL=...]
 make test-pack  - Pack the package and run its pipelex-sdk command from the tarball through npx
-make agent-check - Run the quality checks, installing first when node_modules is missing
-make agent-test - Run the test suite, silent on success, installing first when node_modules is missing
+make agent-check - Run the quality checks, installing first when node_modules is missing or older than package-lock.json
+make agent-test - Run the test suite, silent on success, installing first when node_modules is missing or older than package-lock.json
 make dev        - Watch mode: auto rebuild on changes
 
 make build      - Build the project
@@ -69,9 +69,18 @@ install:
 	@echo "$(GREEN)✓ Installation complete$(NC)"
 
 # The agent targets install the package first when node_modules is missing, so a fresh
-# checkout can run them directly.
-install-if-missing:
-	@[ -d node_modules ] || $(MAKE) --no-print-directory install
+# checkout can run them directly, and again when package-lock.json moved after the last install,
+# so they never run against other versions than the lock pins. npm records every install in
+# node_modules/.package-lock.json, written after package-lock.json, so a package-lock.json newer
+# than that record moved after the last install: a merge, a pull or a `make lock`. A package
+# installed over the locked one with `npm install --no-save` rewrites the record, so it stays.
+install-if-needed:
+	@if [ ! -d node_modules ]; then \
+		$(MAKE) --no-print-directory install; \
+	elif [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then \
+		echo "package-lock.json has moved since node_modules was last installed: running make install first."; \
+		$(MAKE) --no-print-directory install; \
+	fi
 
 build:
 	$(call PRINT_TITLE,"Building Project")
@@ -170,11 +179,11 @@ check: check-lock
 
 c: check
 
-agent-check: install-if-missing check-lock
+agent-check: install-if-needed check-lock
 	@npm run check
 	@echo "$(GREEN)✓ All checks passed$(NC)"
 
-agent-test: install-if-missing
+agent-test: install-if-needed
 	@OUTPUT=$$(npx vitest run 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 	@echo "• All tests passed."
 

@@ -320,26 +320,26 @@ Enforced via Husky + lint-staged on commit.
 
 ## Scripts (via Make)
 
-| Target                | Purpose                                                                                        |
-| --------------------- | ---------------------------------------------------------------------------------------------- |
-| `make dev`            | Start the Next.js dev server                                                                   |
-| `make build`          | Production build                                                                               |
-| `make lint`           | ESLint                                                                                         |
-| `make format`         | Prettier write                                                                                 |
-| `make format-check`   | Prettier check (CI)                                                                            |
-| `make typecheck`      | `tsc --noEmit` (app) + `tsc -p tsconfig.e2e.json` (e2e) + `tsc -p tsconfig.scripts.json`       |
-| `make codegen`        | Regenerate `src/generated/` from `methods/` (needs `PIPELEX_API_KEY`; **not** in `make all`)   |
-| `make codegen-check`  | Prove `src/generated/` is current — offline, no key. Part of `make check`                      |
-| `make codegen-verify` | Ask the engine whether the committed crates are still current (needs a key; not in `make all`) |
-| `make add-method`     | Scaffold a method into a new tab — `METHOD=<path \| mt_… \| address>` (needs a key)            |
-| `make test`           | Vitest single pass                                                                             |
-| `make agent-test`     | Vitest, silent on success (preferred for AI agents)                                            |
-| `make agent-check`    | `check`, installing first when `node_modules` is missing (for AI agents)                       |
-| `make test-e2e`       | Optional Playwright e2e (live API, costs an LLM call; prompts first, auto-skips without a key) |
-| `make check`          | lint + format-check + typecheck + codegen-check                                                |
-| `make all`            | check + test + build (does **not** include e2e, `codegen`, or `codegen-verify`)                |
-| `make use-local`      | Pack and install siblings `../pipelex-sdk/js` + `../mthds-form` (alias: `ul`)                  |
-| `make use-npm`        | Restore the latest npm-published `@pipelex/sdk` + `@pipelex/mthds-form` (alias: `un`)          |
+| Target                | Purpose                                                                                                    |
+| --------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `make dev`            | Start the Next.js dev server                                                                               |
+| `make build`          | Production build                                                                                           |
+| `make lint`           | ESLint                                                                                                     |
+| `make format`         | Prettier write                                                                                             |
+| `make format-check`   | Prettier check (CI)                                                                                        |
+| `make typecheck`      | `tsc --noEmit` (app) + `tsc -p tsconfig.e2e.json` (e2e) + `tsc -p tsconfig.scripts.json`                   |
+| `make codegen`        | Regenerate `src/generated/` from `methods/` (needs `PIPELEX_API_KEY`; **not** in `make all`)               |
+| `make codegen-check`  | Prove `src/generated/` is current — offline, no key. Part of `make check`                                  |
+| `make codegen-verify` | Ask the engine whether the committed crates are still current (needs a key; not in `make all`)             |
+| `make add-method`     | Scaffold a method into a new tab — `METHOD=<path \| mt_… \| address>` (needs a key)                        |
+| `make test`           | Vitest single pass                                                                                         |
+| `make agent-test`     | Vitest, silent on success (preferred for AI agents)                                                        |
+| `make agent-check`    | `check`, installing first when `node_modules` is missing or older than `package-lock.json` (for AI agents) |
+| `make test-e2e`       | Optional Playwright e2e (live API, costs an LLM call; prompts first, auto-skips without a key)             |
+| `make check`          | lint + format-check + typecheck + codegen-check                                                            |
+| `make all`            | check + test + build (does **not** include e2e, `codegen`, or `codegen-verify`)                            |
+| `make use-local`      | Pack and install siblings `../pipelex-sdk/js` + `../mthds-form` (alias: `ul`)                              |
+| `make use-npm`        | Restore the latest npm-published `@pipelex/sdk` + `@pipelex/mthds-form` (alias: `un`)                      |
 
 ## Local package development (`use-local`)
 

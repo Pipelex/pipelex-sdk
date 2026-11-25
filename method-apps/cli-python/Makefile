@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-if-missing lock lint format format-check typecheck codegen codegen-check codegen-verify check test agent-check agent-test build all clean use-local use-published local-status ul un
+.PHONY: help install install-if-needed lock lint format format-check typecheck codegen codegen-check codegen-verify check test agent-check agent-test build all clean use-local use-published local-status ul un
 
 # The interpreter is the one .python-version names, unless PYTHON_VERSION or UV_PYTHON asks for another.
 # Exporting it hands the same version to every uv command, so `uv sync` never rebuilds .venv on the pin.
@@ -41,15 +41,31 @@ help: ## Show this help
 # as uv.lock pins them. With UV_LOCKED=1 in the environment, as the CI sets it,
 # it refuses a uv.lock that pyproject.toml has moved away from instead of
 # rewriting it, which makes the install the lock file's gate.
+#
+# Every target that syncs .venv with uv.lock touches SYNC_STAMP after the sync
+# succeeds, so a uv.lock newer than the stamp is one that moved after the last
+# sync: a merge, a pull or a `make lock` brought other versions than .venv holds.
+SYNC_STAMP := .venv/.uv-lock-synced
+
 install: ## Install the project and its development tools into .venv, as uv.lock pins them
 	@command -v uv >/dev/null 2>&1 || { echo "uv is not installed: see https://docs.astral.sh/uv/getting-started/installation/"; exit 1; }
 	uv sync
+	@touch $(SYNC_STAMP)
 
 # The agent targets install the project first when it was never installed, so a
-# fresh copy can run them directly. The test reads a tool rather than the
-# virtual environment, because an interrupted sync leaves an empty one.
-install-if-missing:
-	@[ -x $(PYTEST) ] || $(MAKE) --no-print-directory install
+# fresh copy can run them directly, and again when uv.lock moved after the last
+# sync, so they never run against other versions than the lock pins. The first
+# test reads a tool rather than the virtual environment, because an interrupted
+# sync leaves an empty one. A package installed over the locked one after the
+# sync, as `make use-local` does, stays: only a lock that moved since brings the
+# locked versions back.
+install-if-needed:
+	@if [ ! -x $(PYTEST) ]; then \
+		$(MAKE) --no-print-directory install; \
+	elif [ ! -f $(SYNC_STAMP) ] || [ uv.lock -nt $(SYNC_STAMP) ]; then \
+		echo "uv.lock has moved since .venv was last synced with it, or that sync was never recorded: running make install first."; \
+		$(MAKE) --no-print-directory install; \
+	fi
 
 lock: ## Regenerate uv.lock without installing
 	uv lock
@@ -88,10 +104,10 @@ check: lint format-check typecheck codegen-check ## Run lint, format check, type
 test: ## Run the tests
 	$(PYTEST)
 
-agent-check: install-if-missing ## Run check, silent on success, installing first when .venv is missing (for agents)
+agent-check: install-if-needed ## Run check, silent on success, installing first when .venv is missing or older than uv.lock (for agents)
 	@OUTPUT=$$($(MAKE) --no-print-directory check 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
-agent-test: install-if-missing ## Run the tests, silent on success, installing first when .venv is missing (for agents)
+agent-test: install-if-needed ## Run the tests, silent on success, installing first when .venv is missing or older than uv.lock (for agents)
 	@OUTPUT=$$($(PYTEST) -q 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
 build: ## Build the wheel and the source distribution into dist/
@@ -153,7 +169,7 @@ SDK_CHECKOUT = $(call shq,$(or $(call given,SDK_DIR),$(SIBLINGS)/pipelex-sdk/pyt
 MTHDS_CHECKOUT = $(call shq,$(or $(call given,MTHDS_DIR),$(SIBLINGS)/mthds-python))
 LOCAL_PACKAGES := pipelex-sdk mthds
 
-use-local: install-if-missing ## Install the sibling pipelex-sdk (its python/) and mthds-python checkouts as editable packages (from .., or SIBLINGS_DIR=<dir>)
+use-local: install-if-needed ## Install the sibling pipelex-sdk (its python/) and mthds-python checkouts as editable packages (from .., or SIBLINGS_DIR=<dir>)
 	@sdk=$(SDK_CHECKOUT); mthds=$(MTHDS_CHECKOUT); \
 	if [ ! -d "$$sdk" ]; then echo "ERROR: $$sdk not found: expected the python/ directory of a pipelex-sdk checkout (SIBLINGS_DIR=<dir> or SDK_DIR=<dir> says where)."; exit 1; fi; \
 	if [ -d "$$mthds" ]; then \
@@ -168,7 +184,7 @@ use-local: install-if-missing ## Install the sibling pipelex-sdk (its python/) a
 
 use-published: ## Restore the pipelex-sdk and mthds versions uv.lock pins
 	@if [ ! -x $(PYTHON) ]; then echo "Not installed, so there is nothing to restore."; exit 0; fi; \
-	uv sync --quiet $(foreach p,$(LOCAL_PACKAGES),--reinstall-package $(p)) && $(PYTHON) scripts/local_status.py $(LOCAL_PACKAGES)
+	uv sync --quiet $(foreach p,$(LOCAL_PACKAGES),--reinstall-package $(p)) && touch $(SYNC_STAMP) && $(PYTHON) scripts/local_status.py $(LOCAL_PACKAGES)
 
 local-status: ## Say whether pipelex-sdk and mthds come from a local checkout or from PyPI
 	@if [ -x $(PYTHON) ]; then $(PYTHON) scripts/local_status.py $(LOCAL_PACKAGES); else for p in $(LOCAL_PACKAGES); do echo "$$p missing"; done; fi
