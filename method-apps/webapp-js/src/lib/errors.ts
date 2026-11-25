@@ -12,6 +12,7 @@ import {
   PipelineExecuteTimeoutError,
   RejectedAssetError,
   RunTimeoutError,
+  StoredTextLoadError,
   UploadTransportError,
   formatItem,
   formatSuggestedFix,
@@ -53,6 +54,9 @@ export type PipelineErrorKind =
   // (`buildClientTimeoutError`).
   | "execute_timeout"
   | "run_still_running"
+  // A run that completed but one of the stored texts of its result could not
+  // be loaded (`StoredTextLoadError`), on either path.
+  | "result_not_loaded"
   | "run_failed"
   | "run_timeout"
   | "lifecycle_unavailable"
@@ -200,6 +204,10 @@ export function classifyPipelineError(
   env: ClassifyEnv,
   opts?: ClassifyOptions,
 ): PipelineError {
+  // Before the problem's code: a load failure carries the problem of the read
+  // that failed (a timeout, a store's refusal), which would otherwise be told
+  // as the API out of reach or, on the blocking path, as the ~30s cap.
+  if (err instanceof StoredTextLoadError) return classifyStoredTextLoad(err, opts ?? {});
   if (isProblemError(err)) return classifyProblem(err, env, opts ?? {});
   if (err instanceof BadPipelineOutputError) return classifyBadOutput(err);
   if (isFsNotFound(err)) return classifyBundleMissing(err);
@@ -765,6 +773,74 @@ function classifyRunTimeout(err: ProblemError): PipelineError {
     ...errorParts(err),
     details: problemDetails(err),
   };
+}
+
+/**
+ * `StoredTextLoadError`: the run completed, and one of the long texts of its
+ * result, which the runtime keeps in the run's storage and answers with a
+ * reference to, could not be loaded. Read with `instanceof` for the data the
+ * class alone carries, where the text sits in the result (`path`) and why it
+ * failed (`reason`); the problem still says who must act and whether a second
+ * try can pass. The message is the app's own, since the SDK's sentence can
+ * advise reading the result again, which a blocking run cannot do; it stays in
+ * the technical details.
+ *
+ * On the blocking path the result was delivered with the answer and kept
+ * nowhere else, so the hint says that it cannot be read again, and only where
+ * the problem's verdict says a second try can pass that trying again runs the
+ * method again: a failure a second try meets again, a text over the load's
+ * caps or a link refused, is never sent round to another paid run, nor to
+ * Durable mode, which a deployment with no bulk resolve route would answer
+ * with the same failure. The durable poll reads the retry line to decide
+ * whether to read again and then drops it, as it does every poll error's, since the run's
+ * result stays readable by its id, and gets no hint.
+ */
+function classifyStoredTextLoad(err: StoredTextLoadError, opts: ClassifyOptions): PipelineError {
+  const parts = errorParts(err);
+  const hint = opts.blocking
+    ? {
+        summary:
+          parts.retry?.verdict === "yes"
+            ? "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again by the run's id: trying again runs the method again. A durable run keeps its result readable by its id."
+            : "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again by the run's id.",
+      }
+    : undefined;
+  return {
+    kind: "result_not_loaded",
+    title: "The run finished, but its result could not be loaded",
+    message: `The result holds a long text the platform keeps in the run's storage, and the text at ${err.path} could not be loaded (${err.reason}).`,
+    ...(hint !== undefined ? { hint } : {}),
+    ...parts,
+    details: [
+      `${err.name}: ${err.message}`,
+      `path: ${err.path}`,
+      `reason: ${err.reason}`,
+      err.status !== undefined ? `status: ${err.status}` : null,
+      err.uri ? `uri: ${describeStoredTextUri(err.uri)}` : null,
+      ...problemLines(err.problem, err.requestId),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
+/**
+ * A stored text's reference as the technical details may show it, since they
+ * reach every visitor. A `pipelex-storage://` reference is the platform's own
+ * and names no secret, so it is shown whole. Any other URL is one a method put
+ * there, which may carry credentials or a signed query, so it is cut down to
+ * its scheme and host, and a `data:` URL, which can hold the whole text, to
+ * its length.
+ */
+function describeStoredTextUri(uri: string): string {
+  if (uri.startsWith("pipelex-storage://")) return uri;
+  if (uri.startsWith("data:")) return `a data: URL of ${uri.length} characters (not shown)`;
+  try {
+    const parsed = new URL(uri);
+    return `${parsed.protocol}//${parsed.host} (the rest is not shown)`;
+  } catch {
+    return "not a URL (not shown)";
+  }
 }
 
 /**

@@ -23,6 +23,7 @@ from pipelex_sdk.errors import (
     RunFailedError,
     RunLifecycleUnavailableError,
     RunTimeoutError,
+    StoredTextLoadError,
 )
 from pipelex_sdk.runs import PollInfo, RunResults, RunStatus, WaitForResultOptions
 from pydantic import ValidationError
@@ -473,6 +474,79 @@ class TestNoSilentDowngrade:
 
 
 class TestBlocking:
+    def test_loads_a_stored_text_of_the_result_before_it_is_printed(self, fake_client: FakeClient):
+        # The runtime answers a long text by reference; the blocking path loads it as `wait_for_result` does.
+        reference = {"url": "data:text/plain;charset=utf-8,A%20long%20essay", "size": 12, "mime_type": "text/plain", "preview": "A long"}
+        fake_client.execute_answer = execute_result(reference)
+        result = invoke(make_binding(), ["--blocking"])
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == render_json({"text": "A long essay"}) + "\n"
+        assert fake_client.resolved == []
+
+    def test_a_stored_text_that_failed_to_load_is_a_finished_run_never_a_cut_off(self, fake_client: FakeClient):
+        reference = {"url": "pipelex-storage://org/runs/run-1/generated/ab/value.txt", "size": 9000, "mime_type": "text/plain", "preview": "A long"}
+        fake_client.execute_answer = execute_result(reference)
+        fake_client.resolve_failure = ApiUnreachableError("unreachable", api_url="https://api.pipelex.com", network_code="ECONNRESET")
+        result = invoke(make_binding(), ["--blocking"])
+        assert result.exit_code == 1
+        stderr = " ".join(result.stderr.split())
+        assert "The run finished, but its result could not be loaded: the long text at $ could not be read (resolve_failed)." in stderr
+        assert "Why: resolve_failed" in stderr
+        assert "kept nowhere else" in stderr
+        assert "Could not reach the Pipelex API" not in stderr
+        assert "may still be going" not in stderr
+        assert result.stdout == ""
+        # The run was paid for and its answer is its only copy: its cost is still reported.
+        assert "No usage was reported for this run." in stderr
+
+    def test_a_text_that_failed_to_load_and_to_download_gets_no_contradicting_refetch_hint(self, fake_client: FakeClient, tmp_path: Path):
+        uri = "pipelex-storage://org/runs/run-1/generated/ab/value.txt"
+        fake_client.execute_answer = execute_result({"url": uri, "size": 9000, "mime_type": "text/plain", "preview": "A long"})
+        fake_client.resolve_failure = StoredTextLoadError(
+            "The stored text at $ could not be loaded: the reference names another organization.",
+            uri=uri,
+            path="$",
+            reason="pipelex.org.mismatch",
+        )
+        fake_client.download_answer = download_verdict(
+            downloaded_artifact(uri=uri, found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run."))
+        )
+        result = invoke(make_binding(), ["--blocking", "--out", str(tmp_path)])
+        assert result.exit_code == 1
+        stderr = " ".join(result.stderr.split())
+        # The text is among the run's files, and its download failed the same way: only the load failure says what next.
+        assert "Not your run." in stderr
+        assert "its files come down again only by running the method again" not in stderr
+        assert "running the method again unchanged would meet the same failure" in stderr
+
+    def test_a_download_that_raises_beside_a_load_failure_prints_no_advice_of_its_own(self, fake_client: FakeClient, tmp_path: Path):
+        reference = {"url": "pipelex-storage://org/runs/run-1/generated/ab/value.txt", "size": 9000, "mime_type": "text/plain", "preview": "A long"}
+        fake_client.execute_answer = execute_result(reference)
+        fake_client.resolve_failure = ApiUnreachableError("unreachable", api_url="https://api.pipelex.com", network_code="ECONNRESET")
+        fake_client.download_answer = OSError("No space left on device")
+        result = invoke(make_binding(), ["--blocking", "--out", str(tmp_path)])
+        assert result.exit_code == 1
+        stderr = " ".join(result.stderr.split())
+        assert "Saving the run's files failed: OSError: No space left on device" in stderr
+        # Only the load failure, printed last, says what a second try means.
+        assert "The run succeeded and" not in stderr
+        assert stderr.count("runs the method again") == 1
+
+    def test_a_ctrl_c_while_the_text_loads_says_there_is_no_id_to_resume_by(self, fake_client: FakeClient):
+        reference = {"url": "pipelex-storage://org/runs/run-1/generated/ab/value.txt", "size": 9000, "mime_type": "text/plain", "preview": "A long"}
+        fake_client.execute_answer = execute_result(reference)
+
+        async def interrupted() -> Any:
+            signal.raise_signal(signal.SIGINT)
+            await asyncio.sleep(10)
+            msg = "the load was not cancelled"
+            raise AssertionError(msg)
+
+        fake_client.resolve_failure = interrupted
+        result = invoke(make_binding(), ["--blocking"])
+        assert result.exit_code == 130
+        assert "A blocking run has no id to resume it by." in result.stderr
+
     def test_runs_in_one_request_and_prints_the_same_json(self, fake_client: FakeClient):
         fake_client.execute_answer = execute_result(TEXT_OUTPUT)
         result = invoke(make_binding(), ["--blocking"])
@@ -618,7 +692,7 @@ class TestDownloads:
         failed = downloaded_artifact(
             uri=IMAGE_OUTPUT["url"], found_at=["$.url"], error=ArtifactItemError(code="pipelex.org.mismatch", detail="Not your run.")
         )
-        fake_client.execute_answer = execute_result(IMAGE_OUTPUT)
+        fake_client.execute_answer = execute_result(IMAGE_OUTPUT, concept="native.Image")
         fake_client.download_answer = download_verdict(failed)
         result = invoke(make_binding(), ["--blocking", "--out", str(tmp_path)])
         assert result.exit_code == 1

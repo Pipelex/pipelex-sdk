@@ -32,12 +32,14 @@ from typing import NamedTuple
 from mthds.protocol.exceptions import PipelineRequestError
 from mthds.protocol.problem.models import Problem, ProblemItem, ProblemLocation
 from mthds.protocol.problem.registry import CoreCode, ProblemDomain, RetryVerdict, StepKind
+from pipelex_sdk.artifact_models import STORED_TEXT_CONCEPTS_MISSING
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
     ArtifactOperationError,
     PipelineExecuteTimeoutError,
     RunLifecycleUnavailableError,
+    StoredTextLoadError,
     nested_run_error,
 )
 from pipelex_sdk.runs import RunStatus
@@ -97,6 +99,10 @@ def present_error(exc: PipelineRequestError | AppError, *, mode: RunMode | None 
     """
     if isinstance(exc, AppError):
         return ErrorPresentation(message=exc.message, hint=exc.hint, details=exc.details)
+    if isinstance(exc, StoredTextLoadError):
+        # Before the problem's code: the problem is the one of the read that failed, a timeout or the store's
+        # refusal, which would otherwise be told as the API out of reach, or as files that failed to save.
+        return present_stored_text_failure(exc, mode=mode)
     problem = exc.problem
     match problem.code:
         case CoreCode.RUN_FAILED:
@@ -114,6 +120,56 @@ def present_error(exc: PipelineRequestError | AppError, *, mode: RunMode | None 
                 hint=_hint(exc, mode=mode),
                 details=problem_lines(problem, request_id=_request_id(exc)),
             )
+
+
+def present_stored_text_failure(exc: StoredTextLoadError, *, mode: RunMode | None) -> ErrorPresentation:
+    """A run that finished, one of whose long texts, kept in the run's storage, could not be loaded.
+
+    Read with `isinstance` for the data the class alone carries: where the text sits in the result (`path`) and why
+    it failed (`reason`). It is never a run still going nor a cut-off: the run is over. The message is the CLI's own,
+    since the SDK's sentence can advise reading the result again, which a blocking run cannot do.
+
+    The problem's verdict judges loading the text, not running the method, so its retry line is left out and the
+    hint says what a second try means here. A blocking run's result arrives with its answer and is kept nowhere else,
+    so the platform answers a read of it by its id with `run.results_not_stored`: only where the verdict says a second
+    try can pass does the hint say that trying again runs the method again, and a failure a second try meets again, a
+    text over the load's caps or a link refused, is never sent round to another paid run, nor to a durable mode, which a
+    deployment with no bulk resolve route would answer with the same failure.
+    A durable run's result stays readable by its id, which `--resume` reads again.
+    """
+    # `concepts_missing` says the result does not yet tell which of its values are texts. A blocking answer is whole,
+    # so there it never will, but a durable read can land between the run writing its output and its forms, so
+    # reading again in a moment can pass whatever the problem's verdict says.
+    can_pass = exc.problem.effective_retry is RetryVerdict.YES or (mode is not RunMode.BLOCKING and exc.reason == STORED_TEXT_CONCEPTS_MISSING)
+    if mode is RunMode.BLOCKING:
+        if can_pass:
+            hint = (
+                "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again. "
+                "This failure can pass on a second try, which runs the method again: "
+                "without --blocking, --resume can read its result later."
+            )
+        else:
+            hint = (
+                "A blocking run's result arrives with its answer and is kept nowhere else, so it cannot be read again, "
+                "and running the method again unchanged would meet the same failure."
+            )
+    elif can_pass:
+        hint = (
+            "The run's result is kept, and this failure can pass on a second try: "
+            f"read it again with {command_name()} --resume <run-id>, which does not run the method again."
+        )
+    else:
+        hint = "The run's result is kept, but reading it again would meet the same failure."
+    lines = problem_lines(exc.problem, request_id=_request_id(exc))
+    return ErrorPresentation(
+        message=(f"The run finished, but its result could not be loaded: the long text at {exc.path} could not be read ({exc.reason})."),
+        hint=hint,
+        details=(
+            f"Where: {exc.path} in the result",
+            f"Why: {exc.reason}",
+            *(line for line in lines if not line.startswith("Retry:")),
+        ),
+    )
 
 
 def present_failed_run(*, run_id: str, status: RunStatus, run_error: Problem | None, platform_message: str | None) -> ErrorPresentation:
