@@ -142,8 +142,15 @@ describe("the JavaScript guard's two records", () => {
 
     it(`${directory}: reads npm's record where make install never ran, so a package installed over the lock stays`, () => {
       // The CI installs with `npm ci`, then `npm install --no-save` the next SDK, then runs agent-test.
-      assert.doesNotMatch(guard(fixture(directory, { installed: true, records: { [JAVASCRIPT.npmRecord]: LATER } })), JAVASCRIPT.install);
+      const current = fixture(directory, { installed: true, records: { [JAVASCRIPT.npmRecord]: LATER } });
+      assert.doesNotMatch(guard(current), JAVASCRIPT.install);
       assert.match(guard(fixture(directory, { installed: true, records: { [JAVASCRIPT.npmRecord]: EARLIER } })), JAVASCRIPT.install);
+      // Found current on npm's record, the install is stamped, so a later lock-only install, which
+      // rewrites npm's record too, is caught from then on.
+      assert.ok(fs.existsSync(path.join(current, JAVASCRIPT.stamp)));
+      write(current, JAVASCRIPT.lock, "{}\n", new Date(Date.now() + 60_000));
+      write(current, JAVASCRIPT.npmRecord, "", new Date(Date.now() + 120_000));
+      assert.match(guard(current), JAVASCRIPT.install);
     });
   }
 });
@@ -191,17 +198,33 @@ describe("make lock in the JavaScript templates", () => {
 
 describe("use-local runs the guard first", () => {
   // A local build installed over a stale tree would be replaced by the next agent target's install.
-  for (const [directory, targets] of [
-    ["starter-js", ["use-local"]],
-    ["method-apps/webapp-js", ["use-local", "use-local-form"]],
-    ["method-apps/cli-python", ["use-local"]],
+  for (const [directory, target] of [
+    ["starter-js", "use-local"],
+    ["method-apps/webapp-js", "use-local"],
+    ["method-apps/cli-python", "use-local"],
   ]) {
-    for (const target of targets) {
-      it(`${directory}'s ${target} depends on install-if-needed`, () => {
-        const makefile = fs.readFileSync(path.join(ROOT, directory, "Makefile"), "utf8");
-        assert.match(makefile, new RegExp(`^${target}: install-if-needed\\b`, "m"));
-      });
-    }
+    it(`${directory}'s ${target} depends on install-if-needed`, () => {
+      const makefile = fs.readFileSync(path.join(ROOT, directory, "Makefile"), "utf8");
+      assert.match(makefile, new RegExp(`^${target}: install-if-needed\\b`, "m"));
+    });
   }
+
+  it("method-apps/webapp-js's use-local-form refuses to replace a local SDK before it runs the guard", () => {
+    // The guard's npm ci would put the registry's SDK back, and the refusal would then pass.
+    const makefile = fs.readFileSync(path.join(ROOT, "method-apps/webapp-js", "Makefile"), "utf8");
+    const recipe = makefile.slice(makefile.search(/^use-local-form:/m)).split("\n\n")[0];
+    assert.doesNotMatch(recipe.split("\n")[0], /install-if-needed/);
+    const refusal = recipe.indexOf("refuse_while_sdk_local");
+    const guardRun = recipe.indexOf("$(MAKE) --no-print-directory install-if-needed");
+    assert.ok(refusal >= 0 && guardRun > refusal, recipe);
+  });
+});
+
+describe("the other installs that record themselves", () => {
+  it("starter-js's use-npm touches the stamp after installing the latest packages", () => {
+    const printed = dryRun(fixture("starter-js"), "use-npm");
+    const installs = printed.search(/^npm install @pipelex\/sdk@latest/m);
+    assert.ok(installs >= 0 && printed.indexOf(`touch ${JAVASCRIPT.stamp}`) > installs, printed);
+  });
 });
 

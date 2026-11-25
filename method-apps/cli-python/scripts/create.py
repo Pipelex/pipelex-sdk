@@ -17,8 +17,8 @@ The order is the safety story:
    gesture will write with the rest of the tree. `--dry-run` stops here, having written nothing.
 2. **Write.** The method first, `method/`, `generated/` and `binding.py`, which are removed again if
    writing them fails, so that the template is as it was and the gesture can run again. Then the
-   bootstrap with `--clean`, the env file, `uv sync` to re-sync `uv.lock` and the environment with
-   the renamed project, `make all`, and last the bootstrap skill's own removal, once the checks are
+   bootstrap with `--clean`, the env file, `make install`, whose `uv sync` re-syncs `uv.lock` and the
+   environment with the renamed project and whose stamp records the sync, `make all`, and last the bootstrap skill's own removal, once the checks are
    green. A failure after the method is written names the ordinary commands left to run, never a
    traceback, and so does a Ctrl-C, which exits 130.
 
@@ -104,9 +104,6 @@ MAKE_VARIABLES = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES")
 #: The variables that would make `uv sync` refuse the lock file the rename leaves stale, rather than re-sync it.
 UV_LOCK_GATES = ("UV_LOCKED", "UV_FROZEN")
 
-#: The Makefile's SYNC_STAMP: touched after each sync of .venv with uv.lock, so the agent targets' guard reads
-#: the environment as current and does not sync it again on the project's first check.
-SYNC_STAMP = Path(".venv") / ".uv-lock-synced"
 
 USAGE = (
     "usage: make create METHOD=<path/to/bundle | mt_…[@<version>|@draft] | github.com/owner/repo[/pkg][@tag]> [NAME=<package>] "
@@ -703,7 +700,7 @@ def finish_create(planned: Planned) -> int:
         f"write the method ({package}/method/, {package}/generated/ and {package}/binding.py)",
         "run the bootstrap with the values above",
         env_step[env_plan.action],
-        "re-sync uv.lock and the environment with the renamed project (uv sync)",
+        "re-sync uv.lock and the environment with the renamed project (make install)",
         "run make all",
         f"remove {BOOTSTRAP_DIR}/ once make all is green",
     )
@@ -851,11 +848,10 @@ class WriteHalf:
         self.completed = 3
 
         self.announce(4)
-        if planned.deps.run(["uv", "sync"], root, environment_without(UV_LOCK_GATES)) != 0:
+        # `make install` syncs, then touches the stamp the agent targets read, so a project's first check does not sync again.
+        if planned.deps.run(["make", "install"], root, environment_without((*UV_LOCK_GATES, *MAKE_VARIABLES))) != 0:
             msg = f"re-syncing uv.lock failed (see above). The project is created; finish with:\n{indented(self.commands_left(4))}"
             raise CreateError(msg)
-        if (root / SYNC_STAMP).parent.is_dir():
-            (root / SYNC_STAMP).touch()
         self.completed = 4
 
         self.announce(5)
@@ -906,7 +902,7 @@ class WriteHalf:
 
 
 #: The ordinary commands that finish a project once the bootstrap has run.
-REMAINING = ("uv sync", "make all", f"rm -rf {BOOTSTRAP_DIR}   # once make all is green")
+REMAINING = ("make install", "make all", f"rm -rf {BOOTSTRAP_DIR}   # once make all is green")
 
 
 def indented(lines: Sequence[str]) -> str:

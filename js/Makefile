@@ -75,7 +75,9 @@ install:
 # INSTALL_STAMP once npm has installed, so a package-lock.json newer than the stamp moved after the
 # last install: a merge, a pull or a bare `npm install --package-lock-only`. Where
 # `make install` never ran, as when the CI installs with `npm ci` itself, the guard reads npm's own
-# record of the last install, NPM_RECORD, instead. npm trusts that record over node_modules, and
+# record of the last install, NPM_RECORD, instead, and when that record says the install is current
+# the guard touches the stamp, so a later lock-only install is caught from then on. npm trusts that
+# record over node_modules, and
 # `npm install --package-lock-only` rewrites it without installing anything, so a lock regenerated
 # that way reads as installed to npm itself: `make install` is `npm ci`, which replaces node_modules
 # with exactly what the lock pins. A package installed over the locked one after the last install,
@@ -90,6 +92,8 @@ install-if-needed:
 		if [ ! -f "$$record" ] || [ package-lock.json -nt "$$record" ]; then \
 			echo "package-lock.json has moved since node_modules was last installed: running make install first."; \
 			$(MAKE) --no-print-directory install; \
+		elif [ "$$record" = $(NPM_RECORD) ]; then \
+			touch $(INSTALL_STAMP); \
 		fi; \
 	fi
 
