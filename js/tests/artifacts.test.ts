@@ -629,6 +629,12 @@ describe("fetchArtifact", () => {
     ["the same origin", "http://localhost:8091", "http://localhost:8091/v1/storage/obj?sig=1"],
     ["a trailing slash", "http://localhost:8091/", "http://localhost:8091/v1/storage/obj?sig=1"],
     ["the default port written out", "http://localhost", "http://LOCALHOST:80/v1/storage/obj"],
+    [
+      "an IDN host",
+      "http://bücher.example:8091",
+      "http://xn--bcher-kva.example:8091/v1/storage/obj",
+    ],
+    ["an IPv4 shorthand", "http://127.0.0.1:8091", "http://127.1:8091/v1/storage/obj"],
   ])(
     "accepts a plain http link on the client's own origin without allowHttp (%s)",
     async (_case, originUrl, link) => {

@@ -888,10 +888,12 @@ function fetchBounds(options: FetchArtifactOptions, originUrl: string): FetchBou
 
 /**
  * The origin of an http(s) URL as compared: the WHATWG serialization, which
- * lowercases the scheme and the host and drops a default port, so
- * `http://localhost` and `http://LOCALHOST:80/` are one origin. Null for anything
- * else, which then matches nothing. Hosts are compared as written: `127.0.0.1` and
- * `localhost` are two origins.
+ * lowercases the scheme and the host, encodes an internationalized name as IDNA,
+ * rewrites an IPv4 or IPv6 address in its canonical form (`127.1` is
+ * `127.0.0.1`) and drops a default port, so `http://localhost` and
+ * `http://LOCALHOST:80/` are one origin. Null for anything else, which then
+ * matches nothing. A name is never resolved: `127.0.0.1` and `localhost` are two
+ * origins.
  */
 function originOf(value: string): string | null {
   let url: URL;

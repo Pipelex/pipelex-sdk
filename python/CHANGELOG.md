@@ -5,7 +5,7 @@
 ### Changed
 
 - **A plain `http:` link on the client's own origin is fetched without `allow_http`**: `load_stored_texts`, the result readers that load stored texts, `fetch_artifact` and `download_artifacts` accept a resolved link on plain `http:` when its origin (scheme, host and port) is the origin of the client's configured base URL, so a self-hosted runner listening on plain http hands back its stored texts, images and documents with no option set; a plain `http:` link on any other origin is still refused unless `allow_http` is set.
-- **`BulkResolveClient` carries `origin_url` (Breaking)**: a client handed to `load_stored_texts`, `fetch_artifact` or `download_artifacts` states the origin of its configured base URL, as `PipelexAPIClient.origin_url` already does; a fake or a wrapper implementing the protocol adds the member.
+- **`fetch_artifact`, `load_stored_texts` and `download_artifacts` take a client carrying `origin_url` (Breaking)**: the client handed to them states the origin of its configured base URL, as `PipelexAPIClient.origin_url` already does, through the new `ArtifactFetchClient` protocol, which `ArtifactCapableClient` now extends; a fake or a wrapper passed to them adds the member. `resolve_artifacts` still takes a `BulkResolveClient`, which only resolves.
 
 ## [v0.69.5] - 2026-11-20
 

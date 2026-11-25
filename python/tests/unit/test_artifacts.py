@@ -547,8 +547,10 @@ class TestArtifacts:
             ("http://localhost:8091", "http://localhost:8091/v1/storage/report.pdf?sig=1"),
             ("http://localhost:8091/", "http://localhost:8091/v1/storage/report.pdf?sig=1"),
             ("http://localhost", "http://LOCALHOST:80/v1/storage/report.pdf"),
+            ("http://bücher.example:8091", "http://xn--bcher-kva.example:8091/v1/storage/report.pdf"),
+            ("http://XN--BCHER-KVA.example:8091", "http://Bücher.example:8091/v1/storage/report.pdf"),
         ],
-        ids=["same_origin", "trailing_slash", "default_port_written_out"],
+        ids=["same_origin", "trailing_slash", "default_port_written_out", "idn_client_punycode_link", "punycode_client_idn_link"],
     )
     def test_accepts_a_plain_http_link_on_the_clients_own_origin_without_allow_http(self, mocker: MockerFixture, origin_url: str, link: str) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url=link)), origin_url=origin_url)
@@ -567,8 +569,10 @@ class TestArtifacts:
             ("http://localhost:8091", "http://127.0.0.1:8091/v1/storage/report.pdf"),
             ("http://localhost:8091", "http://localhost:8092/v1/storage/report.pdf"),
             ("https://localhost:8091", "http://localhost:8091/v1/storage/report.pdf"),
+            # A documented gap: httpx does not rewrite an IPv4 shorthand, so `127.1` is another host here.
+            ("http://127.0.0.1:8091", "http://127.1:8091/v1/storage/report.pdf"),
         ],
-        ids=["another_host", "another_port", "another_scheme"],
+        ids=["another_host", "another_port", "another_scheme", "ipv4_shorthand_not_normalized"],
     )
     def test_refuses_a_plain_http_link_on_another_origin_and_accepts_it_on_request(self, mocker: MockerFixture, origin_url: str, link: str) -> None:
         client = _FakeClient(resolve=_resolver(_resolved(_URI_PDF, url=link)), origin_url=origin_url)

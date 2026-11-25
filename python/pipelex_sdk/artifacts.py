@@ -52,6 +52,7 @@ from mthds.runners.api.problem import transport_failure_problem
 from pydantic import BaseModel, ValidationError
 
 from pipelex_sdk._answer_json import dumps_as_javascript
+from pipelex_sdk._url_origin import ComparableOrigin, comparable_origin
 from pipelex_sdk.artifact_models import (
     BULK_RESOLVE_MAX_URIS,
     PIPELEX_STORAGE_SCHEME,
@@ -175,12 +176,6 @@ _TEXT_EXTENSION_BY_MIME_TYPE: dict[str, str] = {
 #: still encoded.
 _DECODED_CODINGS = frozenset(SUPPORTED_DECODERS) - {"identity"}
 
-#: The port each fetched scheme defaults to, so that `http://host` and `http://host:80` are one origin.
-_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
-
-#: An origin as compared: the scheme and the host lowercased, and the port with its default filled in.
-_Origin: TypeAlias = tuple[str, str, int]
-
 _SKIPPED_CREDENTIAL = "The download stopped on a credential failure before this artifact was fetched."
 
 
@@ -188,9 +183,17 @@ _SKIPPED_CREDENTIAL = "The download stopped on a credential failure before this 
 
 
 class BulkResolveClient(Protocol):
-    """The client surface the reading operations need — the raw bulk resolve call and the origin the
-    client is configured with. Typed as `PipelexAPIClient`'s own members, so the client satisfies it
+    """The client surface `resolve_artifacts` needs — the raw bulk resolve call. Typed as
+    `PipelexAPIClient.resolve_storage_urls_bulk`'s own signature, so the client satisfies it
     structurally and a test can inject a fake.
+    """
+
+    async def resolve_storage_urls_bulk(self, uris: list[str]) -> BulkResolvedStorageUrls: ...
+
+
+class ArtifactFetchClient(BulkResolveClient, Protocol):
+    """What the operations that fetch a resolved link need on top — `fetch_artifact` and `load_stored_texts`: the
+    origin the client is configured with, the one on which a plain-http link is fetched without `allow_http`.
     """
 
     @property
@@ -200,10 +203,8 @@ class BulkResolveClient(Protocol):
         """
         ...
 
-    async def resolve_storage_urls_bulk(self, uris: list[str]) -> BulkResolvedStorageUrls: ...
 
-
-class ArtifactCapableClient(BulkResolveClient, Protocol):
+class ArtifactCapableClient(ArtifactFetchClient, Protocol):
     """What `download_artifacts` needs on top: the single-shot result lookup, for the `run_id` arm and for
     the concepts that tell a stored text from a file.
     """
@@ -653,7 +654,7 @@ class _FetchBounds:
     allow_http: bool
     #: The origin of the client's configured base URL, on which a plain-http link is fetched without
     #: `allow_http`; `None` when that base URL has no comparable origin.
-    client_origin: _Origin | None
+    client_origin: ComparableOrigin | None
 
 
 class ArtifactStream:
@@ -779,7 +780,7 @@ def _os_error_reason(exc: OSError) -> str:
 
 
 def fetch_artifact(
-    client: BulkResolveClient,
+    client: ArtifactFetchClient,
     uri: str,
     options: FetchArtifactOptions | None = None,
 ) -> AbstractAsyncContextManager[ArtifactStream]:
@@ -808,7 +809,7 @@ def fetch_artifact(
 
 @asynccontextmanager
 async def _fetch_artifact(
-    client: BulkResolveClient,
+    client: ArtifactFetchClient,
     uri: str,
     options: FetchArtifactOptions | None = None,
 ) -> AsyncGenerator[ArtifactStream, None]:
@@ -839,26 +840,8 @@ def _validated_bounds(options: FetchArtifactOptions, *, origin_url: str) -> _Fet
         max_bytes=options.max_bytes,
         timeout_seconds=options.timeout_seconds,
         allow_http=options.allow_http,
-        client_origin=_origin_of(origin_url),
+        client_origin=comparable_origin(origin_url),
     )
-
-
-def _origin_of(url: str) -> _Origin | None:
-    """The origin of an http(s) URL as compared: the scheme and the host lowercased, the port with its default
-    filled in, so `http://localhost` and `http://LOCALHOST:80/` are one origin. `None` for anything else, which
-    then matches nothing. Hosts are compared as written: `127.0.0.1` and `localhost` are two origins.
-    """
-    try:
-        parsed = urlsplit(url)
-        port = parsed.port
-    except ValueError:
-        return None
-    scheme = parsed.scheme.lower()
-    default_port = _DEFAULT_PORTS.get(scheme)
-    host = parsed.hostname
-    if default_port is None or not host:
-        return None
-    return scheme, host, port if port is not None else default_port
 
 
 def _require_positive(name: str, value: float) -> None:
@@ -868,13 +851,14 @@ def _require_positive(name: str, value: float) -> None:
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument=name, reason="not_positive"))
 
 
-def _checked_url(uri: str, download_url: str, *, allow_http: bool, client_origin: _Origin | None) -> str:
+def _checked_url(uri: str, download_url: str, *, allow_http: bool, client_origin: ComparableOrigin | None) -> str:
     """The boundary-approved link, or the typed refusal saying why it is not fetched.
 
     A plain-http link is fetched when the caller opted in with `allow_http`, or when its origin is
     `client_origin`, the origin of the client's configured base URL: the client already sends its API key
     there, so a link to it reveals nothing the client does not already trust that server with. That is how a
-    self-hosted runner listening on plain http hands back what it stores.
+    self-hosted runner listening on plain http hands back what it stores. Both origins are compared in
+    `comparable_origin`'s form.
     """
     try:
         parsed = urlsplit(download_url)
@@ -885,7 +869,7 @@ def _checked_url(uri: str, download_url: str, *, allow_http: bool, client_origin
         msg = "The platform resolved the reference to a link that is not a valid absolute URL."
         raise ArtifactFetchError(msg, uri=uri, reason="unsupported_url")
     scheme = parsed.scheme.lower()
-    if scheme == "http" and not allow_http and (client_origin is None or _origin_of(download_url) != client_origin):
+    if scheme == "http" and not allow_http and (client_origin is None or comparable_origin(download_url) != client_origin):
         msg = (
             "The platform resolved the reference to a plain http link on an origin other than the client's own, which is "
             "refused by default; pass allow_http=True to accept it (the local stack's object store hands out such links)."
@@ -978,7 +962,7 @@ class _StoredTextSite:
 
 
 async def load_stored_texts(
-    client: BulkResolveClient,
+    client: ArtifactFetchClient,
     results: RunResults,
     options: LoadStoredTextsOptions | None = None,
 ) -> RunResults:
@@ -1148,7 +1132,7 @@ _TakeBytes: TypeAlias = Callable[[int], bool]
 
 
 async def _load_stored_text_values(
-    client: BulkResolveClient,
+    client: ArtifactFetchClient,
     value: Any,
     node: InputFormItem,
     options: LoadStoredTextsOptions,
