@@ -61,6 +61,8 @@ class _FakeClient:
     def __init__(self, answer: PipelexExecuteResult) -> None:
         self.answer = answer
         self.resolved: list[Any] = []
+        #: The origin of the client's base URL, on which the SDK fetches a plain-http resolved link without `allow_http`.
+        self.origin_url = "https://api.pipelex.com"
 
     async def __aenter__(self) -> "_FakeClient":
         return self

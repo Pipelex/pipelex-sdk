@@ -108,8 +108,11 @@ function mockBoundary(options: {
   stallStore?: boolean;
   /** The `expires_at` of each resolved link, by reference and the resolve call it is in (from 0). */
   expiresAt?: (uri: string, call: number) => string;
+  /** The origin the resolved links, and so the store, are on. Default {@link STORE}. */
+  linkOrigin?: string;
 }): Boundary {
   const boundary: Boundary = { resolved: [], reads: [], fetched: [] };
+  const linkOrigin = options.linkOrigin ?? STORE;
   let mainReads = 0;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
@@ -135,7 +138,7 @@ function mockBoundary(options: {
         (uri) =>
           options.refusals?.[uri] ?? {
             uri,
-            url: `${STORE}/${encodeURIComponent(uri)}?sig=1`,
+            url: `${linkOrigin}/${encodeURIComponent(uri)}?sig=1`,
             expires_at:
               options.expiresAt?.(uri, call) ?? new Date(Date.now() + 900_000).toISOString(),
             content_type: "text/plain",
@@ -144,7 +147,7 @@ function mockBoundary(options: {
       );
       return jsonResponse(200, { items });
     }
-    if (url.origin === STORE) {
+    if (url.origin === new URL(linkOrigin).origin) {
       boundary.fetched.push(url.href);
       if (options.stallStore === true) {
         const signal = init?.signal;
@@ -406,6 +409,61 @@ describe("the result readers load stored texts", () => {
     expect(wireResults?.main_stuff).toEqual(stored);
   });
 
+  it("startAndWaitForResult's blocking fallback keeps a runner's scope refusal whole", async () => {
+    const uri = storedUri("b2");
+    const stored = reference(uri);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      switch (url.pathname) {
+        case "/v1/version":
+          return jsonResponse(200, { protocol_version: "0.6.0", runner_version: "9.9.9" });
+        case "/v1/start":
+          return jsonResponse(404, { detail: "Not Found" });
+        case "/v1/execute":
+          return jsonResponse(200, {
+            pipeline_run_id: RUN_ID,
+            created_at: "t0",
+            state: "COMPLETED",
+            main_stuff_name: "summary",
+            pipe_output: {
+              working_memory: memory("native.Text", stored),
+              pipeline_run_id: RUN_ID,
+            },
+          });
+        case "/v1/resolve-storage-url/bulk":
+          return jsonResponse(200, {
+            items: [
+              {
+                uri,
+                url: null,
+                expires_at: null,
+                content_type: null,
+                error: {
+                  code: "auth.forbidden",
+                  detail: "Refused.",
+                  params: { requirement: "read_scope_under_caller" },
+                },
+              },
+            ],
+          });
+        default:
+          throw new Error(`unexpected fetch ${url.href}`);
+      }
+    });
+
+    const failure = await makeClient()
+      .startAndWaitForResult({ pipe_code: "p", files: { "main.mthds": "x" } })
+      .catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    const error = failure as StoredTextLoadError;
+    expect(error).toMatchObject({ reason: "auth.forbidden", path: "$", uri });
+    expect(error.requirement).toBe("read_scope_under_caller");
+    expect(error.problem.code).toBe("input.reference_not_found");
+    expect(error.wireResults?.pipeline_run_id).toBe(RUN_ID);
+    expect(error.wireResults?.main_stuff).toEqual(stored);
+  });
+
   it("passes the opt-out through waitForResult", async () => {
     const uri = storedUri("a");
     const boundary = mockBoundary({ body: results("native.Text", reference(uri), TEXT_NODE) });
@@ -629,6 +687,35 @@ describe("the result readers load stored texts", () => {
     },
   );
 
+  it("reads a self-hosted runner's refusal of a reference outside the caller's scope as input.reference_not_found", async () => {
+    const uri = storedUri("x1");
+    mockBoundary({
+      body: results("native.Text", reference(uri), TEXT_NODE),
+      refusals: {
+        [uri]: {
+          uri,
+          url: null,
+          expires_at: null,
+          content_type: null,
+          error: {
+            code: "auth.forbidden",
+            detail: "Refused.",
+            params: { requirement: "read_scope_under_caller" },
+          },
+        },
+      },
+    });
+
+    const failure = await makeClient()
+      .getRunResult(RUN_ID)
+      .catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(StoredTextLoadError);
+    expect(failure).toMatchObject({ reason: "auth.forbidden" });
+    expect((failure as StoredTextLoadError).requirement).toBe("read_scope_under_caller");
+    expect((failure as StoredTextLoadError).problem.code).toBe("input.reference_not_found");
+  });
+
   it("refuses a stored text at a foreign URL without fetching it", async () => {
     const foreign = "https://10.0.0.5/admin";
     const boundary = mockBoundary({ body: results("native.Text", { url: foreign }, TEXT_NODE) });
@@ -744,6 +831,46 @@ describe("loadStoredTexts", () => {
   it("returns a result whose concepts are unknown as it is when nothing in it looks like a stored text", async () => {
     const wire = { pipeline_run_id: RUN_ID, main_stuff: { text: "Inline." } };
     expect(await loadStoredTexts(makeClient(), wire)).toBe(wire);
+  });
+});
+
+describe("a stored text's plain http link", () => {
+  it("is read without allowHttp when it is on the client's own origin, as a self-hosted runner's is", async () => {
+    const uri = storedUri("same");
+    const boundary = mockBoundary({
+      body: results("native.Text", reference(uri), TEXT_NODE),
+      objects: { [uri]: "Stored by a self-hosted runner." },
+      linkOrigin: BASE_URL,
+    });
+    const client = makeClient();
+    const wire = await completedResult(client.getRunResult(RUN_ID, { loadStoredTexts: false }));
+
+    const loaded = await loadStoredTexts(client, wire);
+
+    expect(loaded.main_stuff).toEqual({ text: "Stored by a self-hosted runner." });
+    expect(boundary.fetched).toEqual([`${BASE_URL}/${encodeURIComponent(uri)}?sig=1`]);
+  });
+
+  it.each([
+    ["another host", "http://127.0.0.1:8081"],
+    ["another port", "http://localhost:8082"],
+  ])("is refused on %s, and read with allowHttp", async (_case, linkOrigin) => {
+    const uri = storedUri("other");
+    const boundary = mockBoundary({
+      body: results("native.Text", reference(uri), TEXT_NODE),
+      objects: { [uri]: "Stored elsewhere." },
+      linkOrigin,
+    });
+    const client = makeClient();
+    const wire = await completedResult(client.getRunResult(RUN_ID, { loadStoredTexts: false }));
+
+    const failure = await loadStoredTexts(client, wire).catch((err: unknown) => err);
+
+    expect(failure).toMatchObject({ name: "StoredTextLoadError", reason: "plain_http_refused" });
+    expect(boundary.fetched).toEqual([]);
+
+    const loaded = await loadStoredTexts(client, wire, { allowHttp: true });
+    expect(loaded.main_stuff).toEqual({ text: "Stored elsewhere." });
   });
 });
 

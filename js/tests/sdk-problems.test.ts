@@ -29,6 +29,7 @@ import {
   RunStillRunningError,
   RunTimeoutError,
   ScopeUnavailableError,
+  StoredTextLoadError,
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,
   UploadNotAllowedError,
@@ -72,7 +73,7 @@ interface CaseFile {
   answers: AnswerCase[];
   storage_statuses: { status: number; code: string }[];
   upload_transport: { reason: UploadTransportReason | null; status: number | null; code: string }[];
-  artifact_fetch: { reason: string; status: number | null; code: string }[];
+  artifact_fetch: { reason: string; status: number | null; requirement?: string; code: string }[];
   method_file_transfer: {
     reason: MethodFileTransferReason;
     status: number | null;
@@ -195,12 +196,29 @@ describe("sdk-problems.json", () => {
     },
   );
 
-  it.each(CASES.artifact_fetch.map((entry) => [entry.reason, entry.status, entry.code] as const))(
-    "an artifact fetch failure %s with the status %s carries %s",
-    (reason, status, code) => {
+  it.each(
+    CASES.artifact_fetch.map(
+      (entry) => [entry.reason, entry.status, entry.requirement, entry.code] as const,
+    ),
+  )(
+    "an artifact fetch failure %s with the status %s and the requirement %s carries %s",
+    (reason, status, requirement, code) => {
       const uri = "pipelex-storage://org/file.pdf";
-      expect(artifactFetchProblem(reason, uri, status ?? undefined).code).toBe(code);
-      expect(new ArtifactFetchError("failed", uri, reason, status ?? undefined).code).toBe(code);
+      expect(artifactFetchProblem(reason, uri, status ?? undefined, requirement).code).toBe(code);
+      const fetchError = new ArtifactFetchError("failed", uri, reason, status ?? undefined, {
+        requirement,
+      });
+      expect(fetchError.code).toBe(code);
+      expect(fetchError.requirement).toBe(requirement);
+      const loadError = new StoredTextLoadError("failed", {
+        uri,
+        path: "$",
+        reason,
+        status: status ?? undefined,
+        requirement,
+      });
+      expect(loadError.code).toBe(code);
+      expect(loadError.requirement).toBe(requirement);
     },
   );
 

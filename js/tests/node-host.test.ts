@@ -26,6 +26,7 @@ import { readLocalPath } from "../src/upload.js";
 
 /** A client the refusals must never reach. */
 const UNREACHED: ArtifactCapableClient = {
+  originUrl: "https://api.example.test",
   resolveStorageUrls: () => Promise.reject(new Error("the client was reached")),
   getRunResult: () => Promise.reject(new Error("the client was reached")),
 };

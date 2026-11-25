@@ -1246,8 +1246,11 @@ type HostedProtocolSurface = Omit<MTHDSProtocol<DictPipeOutput>, "validate">;
 export class PipelexApiClient implements HostedProtocolSurface {
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
-  /** Origin root derived from the base URL — `/health` lives here, not under `/v1`. */
-  private readonly originUrl: string;
+  /**
+   * The origin (`scheme://host[:port]`) of the configured base URL — `/health` lives here, not
+   * under `/v1`, and a resolved storage link on it is fetched over plain http without `allowHttp`.
+   */
+  readonly originUrl: string;
   /** Cached `/v1/version` handshake outcome — whether the durable lifecycle is served. */
   private lifecycleAvailable: boolean | undefined;
   /**
@@ -5032,7 +5035,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
     await this.requestProduct("POST", "onboarding/submit", input);
   }
 
-  /** Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`. */
+  /**
+   * Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`.
+   * Only the hosted platform serves this route: a self-hosted runner, from
+   * pipelex-api 0.118.0, serves the bulk route alone and answers this one a
+   * `404`, so a self-hosted caller with one link to mint calls
+   * {@link resolveArtifacts} with a one-item list.
+   */
   async resolveStorageUrl(input: { uri: string }): Promise<ResolvedStorageUrl> {
     return this.requestProduct("POST", "resolve-storage-url", input);
   }
@@ -5044,7 +5053,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * and the request is a `200` whenever every reference got a verdict. At most
    * `BULK_RESOLVE_MAX_URIS` references per call (a longer list is a `422`) —
    * {@link resolveArtifacts} chunks a longer set. Served by the hosted platform
-   * only: a deployment without the route answers a `404` `ApiResponseError`.
+   * and, from pipelex-api 0.118.0, a self-hosted runner, which resolves the
+   * references under the caller's own scope to links on its own origin: a
+   * deployment without the route answers a `404` `ApiResponseError`.
    */
   async resolveStorageUrls(
     input: BulkResolveStorageUrlsInput,
@@ -6013,19 +6024,11 @@ export class PipelexApiClient implements HostedProtocolSurface {
       return await this.withStoredTextsLoaded(results, undefined, signal);
     } catch (err) {
       if (!(err instanceof StoredTextLoadError)) throw err;
-      // The answer is the only copy of a completed run, and a bare runner serves no bulk resolve
-      // route: the error carries the result.
-      throw new StoredTextLoadError(
-        err.message,
-        {
-          uri: err.uri,
-          path: err.path,
-          reason: err.reason,
-          status: err.status,
-          wireResults: results,
-        },
-        { cause: err.cause, problem: err.problem },
-      );
+      // The answer is the only copy of a completed run, and a runner older than pipelex-api 0.118.0
+      // serves no bulk resolve route: the error carries the result. It is set on the load's own
+      // error, rethrown, so its every other member, `requirement` included, stays as it was.
+      err.wireResults = results;
+      throw err;
     }
   }
 }

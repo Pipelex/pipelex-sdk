@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **A plain `http:` link on the client's own origin is fetched without `allow_http`**: `load_stored_texts`, the result readers that load stored texts, `fetch_artifact` and `download_artifacts` accept a resolved link on plain `http:` when its origin (scheme, host and port) is the origin of the client's configured base URL, so a self-hosted runner listening on plain http hands back its stored texts, images and documents with no option set; a plain `http:` link on any other origin is still refused unless `allow_http` is set.
+- **`fetch_artifact`, `load_stored_texts` and `download_artifacts` take a client carrying `origin_url` (Breaking)**: the client handed to them states the origin of its configured base URL, as `PipelexAPIClient.origin_url` already does, through the new `ArtifactFetchClient` protocol, which `ArtifactCapableClient` now extends; a fake or a wrapper passed to them adds the member. `resolve_artifacts` still takes a `BulkResolveClient`, which only resolves.
+
+### Fixed
+
+- **A self-hosted runner's refusals read as the platform's**: a reference a self-hosted runner's bulk resolve route refuses as outside the caller's scope, `auth.forbidden` whose `params.requirement` is `read_scope_under_caller`, now gives `StoredTextLoadError` and `ArtifactFetchError` the problem `input.reference_not_found`, as the platform's `pipelex.org.mismatch` does, instead of `runtime.unexpected`; an `auth.forbidden` naming any other requirement still reads as `runtime.unexpected`. `ArtifactItemError` carries the refusal's `params` and its `requirement`, on the resolve route's items and on the download verdict's, `artifact_fetch_problem` takes the `requirement`, and `ArtifactFetchError` and `StoredTextLoadError` take it beside their reason and keep it as their `requirement`, `None` when the refusal names none, so a caller tells a scope refusal from another `auth.forbidden`, whose problem keeps no requirement.
+
 ## [v0.69.5] - 2026-11-20
 
 ### Added

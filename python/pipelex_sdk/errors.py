@@ -1249,23 +1249,37 @@ class ArtifactFetchError(ArtifactOperationError):
     """One reference could not be turned into a bounded stream by `fetch_artifact`.
 
     `reason` says why, in a closed vocabulary the download verdict shares for its per-item errors: the resolve
-    route's own per-reference codes (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`), then the fetch boundary's —
+    route's own per-reference codes (`pipelex.storage.uri_invalid`, `pipelex.org.mismatch`, and a self-hosted runner's
+    `auth.forbidden` for a reference outside the caller's scope), then the fetch boundary's —
     `unsupported_url`, `plain_http_refused`, `redirect_refused`, `store_refused` (a 401/403 from the object store),
     `not_found` (404/410), `store_error` (any other non-2xx), `too_large`, `timeout`, `network`, and `unknown` for a
-    failure the SDK cannot place. `status` is the store's HTTP status when one was received. `download_artifacts`
-    never lets this escape: it becomes the item's `error`.
+    failure the SDK cannot place. `status` is the store's HTTP status when one was received, and `requirement` the
+    `requirement` the resolve route's refusal of the reference names in its `params`, when it names one: it is what
+    tells a self-hosted runner's scope refusal (`read_scope_under_caller`) from any other `auth.forbidden`, whose
+    problem keeps no `requirement`. `download_artifacts` never lets this escape: it becomes the item's `error`.
 
-    Its `problem` is `problem` when given, else follows `reason` and `status` (`artifact_fetch_problem`). The SDK gives
+    Its `problem` is `problem` when given, else follows `reason`, `status` and `requirement`, the `requirement` the
+    route's refusal names in its `params` (`artifact_fetch_problem`). The SDK gives
     `client.download_limit_exceeded` naming the cap for `too_large`, `client.timeout` naming the budget for
     `timeout`, and `client.unreachable` naming the store's origin for a `network` failure that is one of a
     transport.
     """
 
-    def __init__(self, message: str, uri: str, reason: str, status: int | None = None, *, problem: Problem | None = None) -> None:
-        super().__init__(message, problem=problem or artifact_fetch_problem(reason=reason, uri=uri, status=status))
+    def __init__(
+        self,
+        message: str,
+        uri: str,
+        reason: str,
+        status: int | None = None,
+        *,
+        problem: Problem | None = None,
+        requirement: str | None = None,
+    ) -> None:
+        super().__init__(message, problem=problem or artifact_fetch_problem(reason=reason, uri=uri, status=status, requirement=requirement))
         self.uri = uri
         self.reason = reason
         self.status = status
+        self.requirement = requirement
 
 
 class StoredTextLoadError(ArtifactOperationError):
@@ -1282,7 +1296,9 @@ class StoredTextLoadError(ArtifactOperationError):
     the main stuff, or a concept of the method's own that no form describes) while something in `main_stuff` is shaped
     like a stored text's reference, naming the first such value; `not_utf8` for bytes that are no UTF-8 text; and
     `not_json_object` for a stored JSON value that is no JSON object. `status` is the HTTP status received, the
-    store's or the resolve route's, when one was.
+    store's or the resolve route's, when one was, and `requirement` the `requirement` the route's refusal of the
+    reference names in its `params`, when it names one: it is what tells a self-hosted runner's scope refusal
+    (`read_scope_under_caller`) from any other `auth.forbidden`, whose problem keeps no `requirement`.
 
     Its `problem` is the fetch failure's own when the bytes could not be read (`artifact_fetch_problem`), the resolve
     route's own for `resolve_failed`, `client.download_limit_exceeded` naming the cap for `too_large` and
@@ -1304,38 +1320,49 @@ class StoredTextLoadError(ArtifactOperationError):
         path: str,
         reason: str,
         status: int | None = None,
+        requirement: str | None = None,
         problem: Problem | None = None,
         wire_results: RunResults | None = None,
     ) -> None:
-        super().__init__(message, problem=problem or artifact_fetch_problem(reason=reason, uri=uri, status=status))
+        super().__init__(message, problem=problem or artifact_fetch_problem(reason=reason, uri=uri, status=status, requirement=requirement))
         self.uri = uri
         self.path = path
         self.reason = reason
         self.status = status
+        self.requirement = requirement
         self.wire_results = wire_results
 
 
-def artifact_fetch_problem(*, reason: str, uri: str, status: int | None = None) -> Problem:
+# The `requirement` a self-hosted runner's resolve route names when it refuses a reference outside the caller's scope
+# with `auth.forbidden`: the runner's equivalent of the platform's `pipelex.org.mismatch`.
+READ_SCOPE_UNDER_CALLER_REQUIREMENT = "read_scope_under_caller"
+
+
+def artifact_fetch_problem(*, reason: str, uri: str, status: int | None = None, requirement: str | None = None) -> Problem:
     """The problem of one reference's fetch failure that its raise site states none for.
 
     Args:
         reason: Why the fetch failed, in the download verdict's vocabulary.
         uri: The reference.
         status: The store's HTTP status, when one was received.
+        requirement: The `requirement` the resolve route's refusal names in its `params`, when it names one.
 
     Returns:
         `input.reference_not_found` naming the reference for the resolve route's `pipelex.storage.uri_invalid` and
-        `pipelex.org.mismatch` and for `not_found`;
+        `pipelex.org.mismatch`, for a self-hosted runner's `auth.forbidden` whose `requirement` is
+        `read_scope_under_caller` (a reference outside the caller's scope), and for `not_found`;
         `client.link_refused` for `unsupported_url`, `plain_http_refused` and `redirect_refused`; for `store_error`
-        and `store_refused`, the object store failing or refusing a link the platform has just signed,
+        and `store_refused`, the store failing or refusing a link the server has just signed,
         `storage_status_problem`'s reading of the store's status (`runtime.unavailable` for a `408`, a `429` or a
         `5xx` other than `501`, `runtime.unsupported` for a `501`, and `client.response_unreadable` naming any other
         status, a `401` or a `403` included), and `runtime.unavailable` when no status is known;
-        `runtime.unavailable` for `timeout` and `network`; and `runtime.unexpected` otherwise, `unknown` and a reason
-        this version does not know included.
+        `runtime.unavailable` for `timeout` and `network`; and `runtime.unexpected` otherwise, `unknown`, an
+        `auth.forbidden` naming any other requirement or none, and a reason this version does not know included.
     """
     match reason:
         case "pipelex.storage.uri_invalid" | "pipelex.org.mismatch" | "not_found":
+            return make_client_problem(CoreCode.INPUT_REFERENCE_NOT_FOUND, params={"input": uri})
+        case CoreCode.AUTH_FORBIDDEN if requirement == READ_SCOPE_UNDER_CALLER_REQUIREMENT:
             return make_client_problem(CoreCode.INPUT_REFERENCE_NOT_FOUND, params={"input": uri})
         case "unsupported_url":
             return make_client_problem(CoreCode.CLIENT_LINK_REFUSED, params={"reason": "unsupported_scheme"})

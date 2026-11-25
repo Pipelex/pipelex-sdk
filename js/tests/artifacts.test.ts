@@ -71,6 +71,8 @@ const INPUT_URI = "pipelex-storage://org/assets/brief.pdf";
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]);
 
+/** The origin the fake client is configured with, unless a case names another. */
+const API_ORIGIN = "https://api.example.test";
 const FUTURE = new Date(Date.now() + 15 * 60_000).toISOString();
 const PAST = new Date(Date.now() - 60_000).toISOString();
 
@@ -93,8 +95,14 @@ function resolvedItem(
   };
 }
 
-function refusedItem(uri: string, code: string, detail: string): ResolvedArtifact {
-  return { uri, url: null, expires_at: null, content_type: null, error: { code, detail } };
+function refusedItem(
+  uri: string,
+  code: string,
+  detail: string,
+  params?: Record<string, unknown>,
+): ResolvedArtifact {
+  const error = params === undefined ? { code, detail } : { code, detail, params };
+  return { uri, url: null, expires_at: null, content_type: null, error };
 }
 
 /** The `ApiResponseError` of a refusal: a problem document coded `code`, or an empty body. */
@@ -132,12 +140,15 @@ function makeClient(
     answers?: Record<string, ResolvedArtifact | Error>;
     /** Answers taken in order for successive calls, each an item map or an error to throw. */
     sequence?: (Record<string, ResolvedArtifact> | Error)[];
+    /** The origin of the client's configured base URL. Default {@link API_ORIGIN}. */
+    originUrl?: string;
   } = {},
 ): FakeClient {
   const resolveCalls: ResolveCall[] = [];
   const resultCalls: string[] = [];
   const resultOptions: (GetRunResultOptions | undefined)[] = [];
   return {
+    originUrl: options.originUrl ?? API_ORIGIN,
     resolveCalls,
     resultCalls,
     resultOptions,
@@ -604,6 +615,70 @@ describe("fetchArtifact", () => {
     },
   );
 
+  // A self-hosted runner refuses a reference outside the caller's scope with `auth.forbidden`
+  // naming `read_scope_under_caller`, its equivalent of the platform's `pipelex.org.mismatch`.
+  // An `auth.forbidden` naming any other requirement, or none, is not that refusal.
+  it.each([
+    ["read_scope_under_caller", "input.reference_not_found"],
+    ["admin", "runtime.unexpected"],
+    [undefined, "runtime.unexpected"],
+  ] as const)(
+    "reads a runner's auth.forbidden refusal naming the requirement %s as %s",
+    async (requirement, code) => {
+      const params = requirement === undefined ? undefined : { requirement };
+      const client = makeClient({
+        answers: { [REPORT_URI]: refusedItem(REPORT_URI, "auth.forbidden", "refused", params) },
+      });
+      const spy = mockFetch(() => streamed([]));
+
+      const failure = fetchArtifact(client, REPORT_URI);
+
+      await expect(failure).rejects.toMatchObject({
+        reason: "auth.forbidden",
+        uri: REPORT_URI,
+        code,
+      });
+      // The requirement stays on the error, so a caller tells the scope refusal from another
+      // `auth.forbidden` even where the problem keeps none.
+      const error = (await failure.catch((err: unknown) => err)) as ArtifactFetchError;
+      expect(error.requirement).toBe(requirement);
+      expect(spy).not.toHaveBeenCalled();
+    },
+  );
+
+  // A runner's signed download route refuses a bad or expired signature with a 403
+  // `auth.forbidden` and a missing object with a 404 `pipelex.storage.object_missing`: read by
+  // their status alone, as a presigned link's 403 and 404 are.
+  it.each([
+    [403, "auth.forbidden", "store_refused", "client.response_unreadable"],
+    [404, "pipelex.storage.object_missing", "not_found", "input.reference_not_found"],
+  ] as const)(
+    "reads a runner download's %s %s as %s, as a presigned link's",
+    async (status, bodyCode, reason, code) => {
+      const client = makeClient({
+        originUrl: "http://localhost:8081",
+        answers: {
+          [PICTURE_URI]: resolvedItem(PICTURE_URI, {
+            url: "http://localhost:8081/v1/storage/obj?expires=1&signature=x",
+          }),
+        },
+      });
+      mockFetch(
+        () =>
+          new Response(JSON.stringify(problemDocument(bodyCode, status, { detail: "refused" })), {
+            status,
+            headers: { "content-type": "application/problem+json" },
+          }),
+      );
+
+      await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
+        reason,
+        status,
+        code,
+      });
+    },
+  );
+
   it("refuses a plain http link by default and accepts it with allowHttp", async () => {
     const client = makeClient({
       answers: { [PICTURE_URI]: resolvedItem(PICTURE_URI, { url: "http://store.local/obj" }) },
@@ -619,6 +694,55 @@ describe("fetchArtifact", () => {
     const response = await fetchArtifact(client, PICTURE_URI, { allowHttp: true });
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG_BYTES);
   });
+
+  it.each([
+    ["the same origin", "http://localhost:8091", "http://localhost:8091/v1/storage/obj?sig=1"],
+    ["a trailing slash", "http://localhost:8091/", "http://localhost:8091/v1/storage/obj?sig=1"],
+    ["the default port written out", "http://localhost", "http://LOCALHOST:80/v1/storage/obj"],
+    [
+      "an IDN host",
+      "http://bücher.example:8091",
+      "http://xn--bcher-kva.example:8091/v1/storage/obj",
+    ],
+    ["an IPv4 shorthand", "http://127.0.0.1:8091", "http://127.1:8091/v1/storage/obj"],
+  ])(
+    "accepts a plain http link on the client's own origin without allowHttp (%s)",
+    async (_case, originUrl, link) => {
+      const client = makeClient({
+        originUrl,
+        answers: { [PICTURE_URI]: resolvedItem(PICTURE_URI, { url: link }) },
+      });
+      const spy = mockFetch(() => streamed([PNG_BYTES]));
+
+      const response = await fetchArtifact(client, PICTURE_URI);
+
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG_BYTES);
+      expect(spy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ["another host", "http://localhost:8091", "http://127.0.0.1:8091/v1/storage/obj"],
+    ["another port", "http://localhost:8091", "http://localhost:8092/v1/storage/obj"],
+    ["another scheme", "https://localhost:8091", "http://localhost:8091/v1/storage/obj"],
+  ])(
+    "refuses a plain http link on %s than the client's, and accepts it with allowHttp",
+    async (_case, originUrl, link) => {
+      const client = makeClient({
+        originUrl,
+        answers: { [PICTURE_URI]: resolvedItem(PICTURE_URI, { url: link }) },
+      });
+      const spy = mockFetch(() => streamed([PNG_BYTES]));
+
+      await expect(fetchArtifact(client, PICTURE_URI)).rejects.toMatchObject({
+        reason: "plain_http_refused",
+      });
+      expect(spy).not.toHaveBeenCalled();
+
+      const response = await fetchArtifact(client, PICTURE_URI, { allowHttp: true });
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG_BYTES);
+    },
+  );
 
   it("refuses a link that is not http(s), not a URL, or carries credentials, before any request", async () => {
     const spy = mockFetch(() => streamed([]));
@@ -1255,6 +1379,51 @@ describe("downloadArtifacts", () => {
       error: { code: "pipelex.org.mismatch", detail: "another organization" },
     });
     expect(verdict.saved_paths).toEqual([join(dir, "0.png")]);
+  });
+
+  it("keeps the parameters of a runner's refusal on the item's error", async () => {
+    const params = { requirement: "read_scope_under_caller" };
+    const client = makeClient({
+      answers: { [REPORT_URI]: refusedItem(REPORT_URI, "auth.forbidden", "outside", params) },
+    });
+    mockFetch(() => streamed([PNG_BYTES]));
+    const dir = await makeTempDir();
+
+    const verdict = await downloadArtifacts(client, {
+      results: { pipeline_run_id: RUN_ID, main_stuff: [{ url: PICTURE_URI }, { url: REPORT_URI }] },
+      dir,
+    });
+
+    expect(verdict.artifacts[1]!.error).toEqual({
+      code: "auth.forbidden",
+      detail: "outside",
+      params,
+    });
+    expect(verdict.artifacts[0]!.error).toBeNull();
+  });
+
+  it("saves a plain http link on the client's own origin, and refuses one on another", async () => {
+    const client = makeClient({
+      originUrl: "http://localhost:8091",
+      state: completed({ main_stuff: [{ url: PICTURE_URI }, { url: REPORT_URI }] }),
+      answers: {
+        [PICTURE_URI]: resolvedItem(PICTURE_URI, { url: "http://localhost:8091/v1/storage/a" }),
+        [REPORT_URI]: resolvedItem(REPORT_URI, { url: "http://127.0.0.1:8091/v1/storage/b" }),
+      },
+    });
+    const spy = mockFetch(() => streamed([PNG_BYTES]));
+    const dir = await makeTempDir();
+
+    const verdict = await downloadArtifacts(client, { run_id: RUN_ID, dir });
+
+    expect(verdict.all_saved).toBe(false);
+    expect(verdict.saved_paths).toEqual([join(dir, "0.png")]);
+    expect(verdict.artifacts[1]).toMatchObject({
+      uri: REPORT_URI,
+      path: null,
+      error: { code: "plain_http_refused" },
+    });
+    expect((spy.mock.calls as [URL][]).map(([url]) => url.host)).toEqual(["localhost:8091"]);
   });
 
   it("re-resolves a link that has expired by the time its worker reaches it", async () => {
