@@ -206,6 +206,11 @@ def _message(exc: PipelineRequestError, *, mode: RunMode | None) -> str:
             return f"Could not reach the Pipelex API at {_api_location(exc)}."
         case CoreCode.CLIENT_TIMEOUT:
             return f"The Pipelex API at {_api_location(exc)} did not answer in time."
+        case CoreCode.RUN_OUTCOME_UNKNOWN if mode is RunMode.BLOCKING:
+            return (
+                "The platform lost the blocking run's answer, and the run may still be going on the server: "
+                "a synchronous request is cut off at about 30 seconds behind the hosted platform, the usual cause."
+            )
         case CoreCode.CLIENT_OUTCOME_UNKNOWN if mode is RunMode.BLOCKING:
             elapsed = f" after {exc.elapsed_seconds:.0f}s" if isinstance(exc, PipelineExecuteTimeoutError) else ""
             return (
@@ -229,7 +234,7 @@ def _hint(exc: PipelineRequestError, *, mode: RunMode | None) -> str | None:
     match problem.code:
         case CoreCode.CLIENT_UNREACHABLE | CoreCode.CLIENT_TIMEOUT:
             return "Check PIPELEX_BASE_URL, and if you run your own runner, make sure it is up."
-        case CoreCode.CLIENT_OUTCOME_UNKNOWN if mode is RunMode.BLOCKING:
+        case CoreCode.CLIENT_OUTCOME_UNKNOWN | CoreCode.RUN_OUTCOME_UNKNOWN if mode is RunMode.BLOCKING:
             return "Run the same command without --blocking: a durable run has no such cap, and its id comes back at once."
         case CoreCode.RUNTIME_UNSUPPORTED if _param(problem, "capability") == _UPLOAD_CAPABILITY:
             return "File upload is a hosted capability: point PIPELEX_BASE_URL at https://api.pipelex.com, since a bare runner may not store files."

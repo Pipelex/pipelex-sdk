@@ -395,6 +395,24 @@ describe("classifyPipelineError — the blocking path", () => {
     },
   );
 
+  it("reads the platform's run.outcome_unknown on execute as the cap, naming the run", () => {
+    const problem = buildProblem(
+      "run.outcome_unknown",
+      { pipeline_run_id: "run-9" },
+      { pipeline_run_id: "run-9" },
+    );
+    const err = refusal(502, problem, { route: "/v1/execute", mayStartRun: true });
+    const result = classifyPipelineError(err, DEFAULT_ENV, { blocking: true });
+    expect(result.kind).toBe("execute_timeout");
+    expect(result.code).toBe("run.outcome_unknown");
+    expect(result.title).not.toMatch(/exceeded/);
+    expect(result.message).toMatch(/~30s/);
+    expect(result.support).toContain("run run-9");
+    expect(result.apiMessage).toBe(problem.detail);
+    expect(result.hint?.summary).toMatch(/durable/i);
+    expect(result.retry?.verdict).toBe("outcome_unknown");
+  });
+
   it("reads a run the API answered with its id instead of its result as still running", () => {
     const err = new RunStillRunningError("still running", "run-42", 5);
     const result = classifyPipelineError(err, DEFAULT_ENV, { blocking: true });
