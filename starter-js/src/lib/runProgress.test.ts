@@ -144,11 +144,9 @@ describe("toProgressSnapshot", () => {
       }),
     );
     const [first, second] = snapshot.invocations;
-    expect(first?.last_failure).toEqual({
-      message: FAILURE_TEXT_SHOWN,
-      at: "2026-10-16T09:00:09Z",
-    });
-    expect(second?.last_failure).toEqual({ message: FAILURE_TEXT_SHOWN });
+    const shown = { ...buildProblem("runtime.unexpected", {}), detail: FAILURE_TEXT_SHOWN };
+    expect(first?.last_failure).toEqual({ problem: shown, at: "2026-10-16T09:00:09Z" });
+    expect(second?.last_failure).toEqual({ problem: shown });
     expect(JSON.stringify(snapshot)).not.toContain("provider said");
   });
 

@@ -74,7 +74,7 @@ A few codes name a failure this app can say more about in its own terms, usually
 
 ## A poll tick that failed
 
-A status read that fails while a durable run is going says nothing about the run, which keeps executing server-side. `pollDurableRun` flags the failure transient when its problem's `retry` is `yes` (a gateway `5xx`, a rate limit, a timeout, a network blip) and hands `useRun` the problem's `retry_after`; the poll loop keeps reading, waiting at least that long, up to its budget of consecutive failures. The error then carries no retry line: its verdict judged the read, not the run, and offering a re-run of a run that may still be executing would start a second one.
+A status read that fails while a durable run is going says nothing about the run, which keeps executing server-side. `pollDurableRun` flags the failure transient when its problem's `retry` is `yes` (a gateway `5xx`, a rate limit, a timeout, a network blip), and when the SDK refused a completed result that does not yet say which of its values are stored texts (`StoredTextLoadError` with the reason `concepts_missing`, a read that landed after the runtime wrote `main_stuff` and before `output_form`), and hands `useRun` the problem's `retry_after`; the poll loop keeps reading, waiting at least that long, up to its budget of consecutive failures. The error then carries no retry line: its verdict judged the read, not the run, and offering a re-run of a run that may still be executing would start a second one.
 
 ## Other failures
 

@@ -304,10 +304,12 @@ describe("PdfForm", () => {
     );
 
     // No click on Preview: kernel 0.39.1 opens every preview as it mounts, so a
-    // click here would fold it away.
-    // The spinner is pending until a resolution lands for this URI, so its
-    // absence, with the placeholder in its place, is the resolver having answered.
-    await waitFor(() => expect(document.querySelector(".lucide-image-off")).not.toBeNull());
+    // click here would fold it away. Kernel 0.42.0 draws a PDF's pages only with
+    // a pdf.js worker, which this form does not supply, so the preview settles on
+    // the kernel's compact card. The spinner is pending until a resolution lands
+    // for this URI, so its absence, with the card in its place, is the resolver
+    // having answered.
+    expect(await screen.findByText("No preview for this file.")).toBeInTheDocument();
     expect(document.querySelector(".animate-spin")).toBeNull();
     // Nothing is painted from a scheme the browser cannot fetch.
     expect(document.querySelector("object, iframe")).toBeNull();

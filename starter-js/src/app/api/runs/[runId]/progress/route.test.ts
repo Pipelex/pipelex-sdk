@@ -113,7 +113,7 @@ describe("GET /api/runs/{runId}/progress", () => {
     expect(body.snapshot.pipeline_run_id).toBe("run-1");
     expect(body.snapshot).not.toHaveProperty("a_member_a_later_platform_adds");
     expect(body.snapshot.invocations[0].last_failure).toEqual({
-      message: FAILURE_TEXT_SHOWN,
+      problem: { ...buildProblem("runtime.unexpected", {}), detail: FAILURE_TEXT_SHOWN },
       at: "2026-10-16T09:00:09Z",
     });
     expect(JSON.stringify(body)).not.toContain("upstream refused");
