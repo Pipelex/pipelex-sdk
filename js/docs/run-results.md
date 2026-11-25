@@ -376,12 +376,14 @@ For the run's totals, call `summarizeUsage(results)` rather than adding the reco
 
 A run that produces an image, a PDF or a document does not embed the bytes. The content inside `main_stuff` carries the file's durable reference — a `pipelex-storage://` URI, in the content's `url` — beside a `public_url` the storage provider signed when the run wrote the file. **That signed link is short-lived and must not be stored**: it expires on the provider's own schedule, so a link persisted in a database or rendered into a cached page stops working without warning, while the `pipelex-storage://` reference beside it is permanent and is what belongs in your records.
 
-To read the bytes, mint a fresh link from the reference:
+To read the bytes, mint a fresh link from the reference. On the hosted platform, `resolveStorageUrl` mints one link:
 
 ```ts
 const resolved = await client.resolveStorageUrl({ uri: "pipelex-storage://..." });
 // { url, expires_at, content_type } — fetch `url` now; re-resolve for the next reader.
 ```
+
+`resolveStorageUrl` calls `POST /v1/resolve-storage-url`, which only the hosted platform serves: a self-hosted runner, from pipelex-api 0.118.0, serves the bulk route alone, so a caller of one mints its link with `resolveArtifacts([uri])`, a one-item list.
 
 The same rule holds in a browser: resolve on the server, hand the client a link it uses immediately, and never let a signed link outlive the request it was minted for.
 

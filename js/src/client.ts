@@ -5035,7 +5035,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
     await this.requestProduct("POST", "onboarding/submit", input);
   }
 
-  /** Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`. */
+  /**
+   * Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`.
+   * Only the hosted platform serves this route: a self-hosted runner, from
+   * pipelex-api 0.118.0, serves the bulk route alone and answers this one a
+   * `404`, so a self-hosted caller with one link to mint calls
+   * {@link resolveArtifacts} with a one-item list.
+   */
   async resolveStorageUrl(input: { uri: string }): Promise<ResolvedStorageUrl> {
     return this.requestProduct("POST", "resolve-storage-url", input);
   }

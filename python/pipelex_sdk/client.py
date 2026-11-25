@@ -3968,7 +3968,12 @@ class PipelexAPIClient(MthdsAPIClient):
         await self._request_product_without_answer("POST", "onboarding/submit", body=body)
 
     async def resolve_storage_url(self, uri: str) -> ResolvedStorageUrl:
-        """Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`."""
+        """Resolve a storage URI to a presigned URL — `POST /v1/resolve-storage-url`.
+
+        Only the hosted platform serves this route: a self-hosted runner, from pipelex-api 0.118.0, serves
+        the bulk route alone and answers this one a `404`, so a self-hosted caller with one link to mint
+        calls `resolve_artifacts` with a one-item list.
+        """
         return await self._request_product("POST", "resolve-storage-url", body={"uri": uri}, read=ResolvedStorageUrl.model_validate)
 
     async def resolve_storage_urls_bulk(self, uris: list[str]) -> BulkResolvedStorageUrls:

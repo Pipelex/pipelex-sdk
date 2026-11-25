@@ -379,11 +379,13 @@ A run that produces an image, a PDF or a document does not embed the bytes. The 
 
 **The whole download direction is [`artifact-download.md`](./artifact-download.md)**, and it is where a consumer should start: `locate_artifacts(results.main_stuff)` lists the references without touching the network, each with the paths of the fields it fills (`collect_artifacts` gives the references alone), `resolve_artifacts` mints a fresh link for each through the server's bulk route, `fetch_artifact` streams one within bounds, and `download_artifacts` saves a whole run's files under a directory, each named after the field it fills, and answers a produced verdict. None of them reads the embedded `public_url`.
 
-For the single reference you already hold, the raw primitive is still there:
+For the single reference you already hold on the hosted platform, the raw primitive is still there:
 
 ```python
 resolved = await client.resolve_storage_url("pipelex-storage://...")
 # resolved.url, resolved.expires_at, resolved.content_type — fetch `url` now; re-resolve for the next reader.
 ```
+
+`resolve_storage_url` calls `POST /v1/resolve-storage-url`, which only the hosted platform serves: a self-hosted runner, from pipelex-api 0.118.0, serves the bulk route alone, so a caller of one mints its link with `resolve_artifacts([uri])`, a one-item list.
 
 The same rule holds in a browser: resolve on the server, hand the client a link it uses immediately, and never let a signed link outlive the request it was minted for. The upload direction — turning local files into `pipelex-storage://` references before a run — is the mirror of this and has its own page, [`input-preparation.md`](./input-preparation.md).
