@@ -5,7 +5,7 @@
  * - {@link locateArtifacts} — a pure walk of any JSON value for the strings that
  *   ARE `pipelex-storage://` references, each with every path it sits at.
  *   {@link collectArtifacts} is the same walk's bare references. No network, no key.
- * - {@link resolveArtifacts} — the platform's bulk resolve route over a whole
+ * - {@link resolveArtifacts} — the server's bulk resolve route over a whole
  *   list, chunked at the route's bound, one verdict per reference.
  * - {@link fetchArtifact} — a bounded `Response` for one reference: resolved
  *   fresh, timed out, redirects refused, the byte cap enforced mid-stream, no
@@ -16,8 +16,9 @@
  * A produced file is never embedded in a run's results: the content carries its
  * durable `pipelex-storage://` reference beside a signed `public_url` that expires
  * on the provider's schedule. Nothing here reads that embedded link — every link
- * is minted fresh by the platform, and re-minted when it has expired by the time a
- * worker reaches it. See `docs/artifact-download.md`.
+ * is minted fresh by the server's bulk resolve route (the hosted platform's presigned
+ * link, or a self-hosted runner's own signed link), and re-minted when it has expired
+ * by the time a worker reaches it. See `docs/artifact-download.md`.
  *
  * `node:fs/promises`, `node:path` and `undici` come from the Node host
  * (`node-host.ts`), which a bundler building for the browser resolves to a module
@@ -66,7 +67,8 @@ export const PIPELEX_STORAGE_SCHEME = "pipelex-storage://";
 
 /**
  * How many references one bulk resolve request takes — the route's bound, fixed
- * by the platform contract rather than configured per deployment. A longer list
+ * by the route's contract, the same on the platform and a self-hosted runner,
+ * rather than configured per deployment. A longer list
  * is a `422`, so {@link resolveArtifacts} chunks at this size.
  */
 export const BULK_RESOLVE_MAX_URIS = 100;
@@ -89,9 +91,9 @@ export const DEFAULT_DOWNLOAD_CONCURRENCY = 4;
 
 /**
  * A link this close to its `expires_at` is re-resolved rather than fetched: the
- * object store checks the signature when the request arrives, and a few seconds
- * of clock skew between the platform and this process must not turn a link the
- * platform still considers live into a `403`.
+ * store checks the signature when the request arrives, and a few seconds of
+ * clock skew between the server that signed it and this process must not turn a
+ * link the server still considers live into a `403`.
  */
 const EXPIRY_MARGIN_MS = 10_000;
 
@@ -185,11 +187,15 @@ export type ResolvedArtifact =
   | {
       /** The reference exactly as sent. */
       uri: string;
-      /** A presigned link, fetchable now and for about fifteen minutes. */
+      /**
+       * A short-lived signed link, fetchable now and until `expires_at`, whose lifetime the server
+       * sets: the hosted platform's presigned link lasts about fifteen minutes, and a self-hosted
+       * runner's link to its own download route lasts its `STORAGE_LINK_TTL_SECONDS`.
+       */
       url: string;
       /** UTC expiry of the link, ISO 8601. */
       expires_at: string;
-      /** The platform's content-type guess from the reference's extension; null when it has none. */
+      /** The server's content-type guess from the reference's extension; null when it has none. */
       content_type: string | null;
       error: null;
     }
@@ -316,7 +322,7 @@ export type DownloadedKind = "file" | "text";
  * One reference's outcome in a download verdict — one shape with nullable fields,
  * like {@link ResolvedArtifact}: either `path` and `size` are set and `error` is
  * null, or `error` is set and both are null. `found_at` says where the reference
- * sits in the walked scope, and `content_type` is the platform's guess from the
+ * sits in the walked scope, and `content_type` is the server's guess from the
  * reference's extension, known before the fetch; both are on both arms, so an
  * item that was not saved still says which field it would have filled.
  */
@@ -597,7 +603,7 @@ export function isStorageReference(value: string): boolean {
 
 /**
  * A `url` a stored text may be loaded from: a `pipelex-storage://` reference, resolved through the
- * platform's bulk route to a link it signs, or a `data:` URL, decoded where it is. A stored text at
+ * server's bulk route to a link it signs, or a `data:` URL, decoded where it is. A stored text at
  * any other URL is never fetched, so a method cannot have the SDK read a host the caller did not
  * choose: the loader refuses it as `unsupported_url`.
  *
@@ -822,7 +828,7 @@ export async function resolveArtifacts(
 
 /**
  * A bounded `Response` for one reference: the link is minted fresh through the
- * bulk route, then fetched with `redirect: "manual"` (a presigned link has no
+ * bulk route, then fetched with `redirect: "manual"` (a signed link has no
  * reason to redirect, and one that does is refused rather than followed), no
  * headers of ours (the link carries its own authorization in the query string,
  * and nothing must ride along to the object store), a budget covering the
@@ -963,7 +969,7 @@ function checkUrl(
     url = new URL(downloadUrl);
   } catch {
     throw new ArtifactFetchError(
-      "The platform resolved the reference to a link that is not a valid absolute URL.",
+      "The server resolved the reference to a link that is not a valid absolute URL.",
       uri,
       "unsupported_url",
     );
@@ -974,7 +980,7 @@ function checkUrl(
     (clientOrigin === null || url.origin !== clientOrigin)
   ) {
     throw new ArtifactFetchError(
-      "The platform resolved the reference to a plain http link on an origin other than the " +
+      "The server resolved the reference to a plain http link on an origin other than the " +
         "client's own, which is refused by default; pass allowHttp: true to accept it (the local " +
         "stack's object store hands out such links).",
       uri,
@@ -983,7 +989,7 @@ function checkUrl(
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new ArtifactFetchError(
-      `The platform resolved the reference to a "${url.protocol.replace(":", "")}" link, which is not fetched; ` +
+      `The server resolved the reference to a "${url.protocol.replace(":", "")}" link, which is not fetched; ` +
         "only http(s) links are.",
       uri,
       "unsupported_url",
@@ -991,7 +997,7 @@ function checkUrl(
   }
   if (url.username !== "" || url.password !== "") {
     throw new ArtifactFetchError(
-      "The platform resolved the reference to a link carrying credentials, which is not fetched.",
+      "The server resolved the reference to a link carrying credentials, which is not fetched.",
       uri,
       "unsupported_url",
     );
@@ -1356,7 +1362,7 @@ interface StoredTextSite {
  * `main_stuff`, so a read can land in between: `waitForResult` keeps polling through that window
  * for a few polls before it throws.
  *
- * A `pipelex-storage://` reference is resolved through the platform's bulk route, at most
+ * A `pipelex-storage://` reference is resolved through the server's bulk route, at most
  * {@link BULK_RESOLVE_MAX_URIS} per request, and its signed link fetched under the same bounds as
  * `fetchArtifact`; a link within ten seconds of its `expires_at` when its read is about to start,
  * having waited behind the other reads, is resolved again first. A `data:` URL is decoded, its
@@ -1664,7 +1670,7 @@ async function resolveForTexts(
     const path = renderPath(site.segments);
     const detail = err instanceof Error ? err.message : String(err);
     throw new StoredTextLoadError(
-      `The stored text at ${path} could not be loaded: the platform's bulk resolve route failed: ${detail}`,
+      `The stored text at ${path} could not be loaded: the bulk resolve route failed: ${detail}`,
       {
         uri: site.url,
         path,
@@ -1783,7 +1789,7 @@ async function readStoredBytes(
   }
   // Unreachable: the walk admits only a reference or a data: URL, and every reference is resolved first.
   if (resolved === undefined) {
-    return fail("unsupported_url", "its url was not resolved by the platform.");
+    return fail("unsupported_url", "its url was not resolved by the bulk resolve route.");
   }
   if (resolved.error !== null) {
     return fail(resolved.error.code, resolved.error.detail, {
@@ -2058,6 +2064,7 @@ function itemError(
   contentType: string | null,
   code: string,
   detail: string,
+  params?: Record<string, unknown> | null,
 ): DownloadedArtifact {
   return {
     uri: location.uri,
@@ -2066,7 +2073,7 @@ function itemError(
     path: null,
     content_type: contentType,
     size: null,
-    error: { code, detail },
+    error: params === undefined || params === null ? { code, detail } : { code, detail, params },
   };
 }
 
@@ -2209,7 +2216,7 @@ export async function downloadArtifacts(
     kind: reference.text === undefined ? "file" : "text",
   }));
   const uris = located.map((reference) => reference.uri);
-  // A stored text's MIME type is its reference's, the platform's guess from the key otherwise.
+  // A stored text's MIME type is its reference's, the server's guess from the key otherwise.
   const contentTypeOf = (index: number, resolvedType: string | null): string | null => {
     const stated = located[index]!.text?.reference["mime_type"];
     return typeof stated === "string" ? stated : resolvedType;
@@ -2275,7 +2282,7 @@ export async function downloadArtifacts(
   const aborted = (): boolean => signal?.aborted === true;
   const workerBounds: FetchBounds = { ...bounds, signal };
   // A credential refusal on a re-resolve stops the workers taking new items, and
-  // nothing else: a fetch already running is on a presigned link that does not
+  // nothing else: a fetch already running is on a signed link that does not
   // carry the credential, so it is left to finish and its file is kept.
   let credentialFailure: ApiResponseError | undefined;
   // What the total cap is held against: the bytes of every file saved or being
@@ -2496,6 +2503,7 @@ export async function downloadArtifacts(
           contentTypeOf(index, null),
           entry.error.code,
           entry.error.detail,
+          entry.error.params,
         );
         continue;
       }

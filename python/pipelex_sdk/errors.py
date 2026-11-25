@@ -1347,7 +1347,7 @@ def artifact_fetch_problem(*, reason: str, uri: str, status: int | None = None, 
         `pipelex.org.mismatch`, for a self-hosted runner's `auth.forbidden` whose `requirement` is
         `read_scope_under_caller` (a reference outside the caller's scope), and for `not_found`;
         `client.link_refused` for `unsupported_url`, `plain_http_refused` and `redirect_refused`; for `store_error`
-        and `store_refused`, the object store failing or refusing a link the platform has just signed,
+        and `store_refused`, the store failing or refusing a link the server has just signed,
         `storage_status_problem`'s reading of the store's status (`runtime.unavailable` for a `408`, a `429` or a
         `5xx` other than `501`, `runtime.unsupported` for a `501`, and `client.response_unreadable` naming any other
         status, a `401` or a `403` included), and `runtime.unavailable` when no status is known;

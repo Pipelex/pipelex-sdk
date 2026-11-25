@@ -1377,6 +1377,27 @@ describe("downloadArtifacts", () => {
     expect(verdict.saved_paths).toEqual([join(dir, "0.png")]);
   });
 
+  it("keeps the parameters of a runner's refusal on the item's error", async () => {
+    const params = { requirement: "read_scope_under_caller" };
+    const client = makeClient({
+      answers: { [REPORT_URI]: refusedItem(REPORT_URI, "auth.forbidden", "outside", params) },
+    });
+    mockFetch(() => streamed([PNG_BYTES]));
+    const dir = await makeTempDir();
+
+    const verdict = await downloadArtifacts(client, {
+      results: { pipeline_run_id: RUN_ID, main_stuff: [{ url: PICTURE_URI }, { url: REPORT_URI }] },
+      dir,
+    });
+
+    expect(verdict.artifacts[1]!.error).toEqual({
+      code: "auth.forbidden",
+      detail: "outside",
+      params,
+    });
+    expect(verdict.artifacts[0]!.error).toBeNull();
+  });
+
   it("saves a plain http link on the client's own origin, and refuses one on another", async () => {
     const client = makeClient({
       originUrl: "http://localhost:8091",

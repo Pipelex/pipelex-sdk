@@ -1089,6 +1089,21 @@ class TestArtifacts:
         assert verdict.artifacts[1].error is None
         assert verdict.saved_paths == [str(tmp_path / "out" / "items-1.pdf")]
 
+    def test_keeps_the_parameters_of_a_runners_refusal_on_the_items_error(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        params = {"requirement": "read_scope_under_caller"}
+        client = _FakeClient(resolve=_resolver(_refused(_URI_PNG, code="auth.forbidden", detail="outside", params=params), _resolved(_URI_PDF)))
+        _patch_storage(mocker, _serving(_PDF_BYTES))
+        verdict = asyncio.run(
+            download_artifacts(client, dir_path=tmp_path / "out", results=_results({"items": [_content(_URI_PNG), _content(_URI_PDF)]}))
+        )
+
+        first = verdict.artifacts[0]
+        assert first.error is not None
+        assert first.error.code == "auth.forbidden"
+        assert first.error.params == params
+        assert first.error.requirement == "read_scope_under_caller"
+        assert verdict.artifacts[1].error is None
+
     def test_saves_a_plain_http_link_on_the_clients_own_origin_and_refuses_one_on_another(self, mocker: MockerFixture, tmp_path: Path) -> None:
         client = _FakeClient(
             resolve=_resolver(

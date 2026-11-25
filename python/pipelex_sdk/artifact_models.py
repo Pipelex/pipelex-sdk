@@ -24,9 +24,9 @@ from pipelex_sdk.stored_texts import StoredTextKind
 #: The scheme of a durable storage reference.
 PIPELEX_STORAGE_SCHEME = "pipelex-storage://"
 
-#: How many references one bulk resolve request takes — the route's bound, fixed by the platform
-#: contract rather than configured per deployment. A longer list is a `422`, so `resolve_artifacts`
-#: chunks at this size.
+#: How many references one bulk resolve request takes — the route's bound, fixed by the route's
+#: contract, the same on the platform and a self-hosted runner, rather than configured per
+#: deployment. A longer list is a `422`, so `resolve_artifacts` chunks at this size.
 BULK_RESOLVE_MAX_URIS = 100
 
 #: The per-file byte cap. An accident guard against filling a disk from a runaway output, not a
@@ -124,11 +124,13 @@ class ResolvedArtifact(BaseModel):
 
     #: The reference exactly as sent.
     uri: str
-    #: A presigned link, fetchable now and for about fifteen minutes.
+    #: A short-lived signed link, fetchable now and until `expires_at`, whose lifetime the server sets: the hosted
+    #: platform's presigned link lasts about fifteen minutes, and a self-hosted runner's link to its own download route
+    #: lasts its `STORAGE_LINK_TTL_SECONDS`.
     url: str | None = None
     #: UTC expiry of the link, ISO 8601.
     expires_at: str | None = None
-    #: The platform's content-type guess from the reference's extension; `None` when it has none.
+    #: The server's content-type guess from the reference's extension; `None` when it has none.
     content_type: str | None = None
     error: ArtifactItemError | None = None
 
@@ -258,7 +260,7 @@ class DownloadedArtifact(ArtifactLocation):
     """One reference's outcome in a download verdict — one shape with nullable fields, like
     `ResolvedArtifact`: either `path` and `size` are set and `error` is `None`, or `error` is set and
     both are `None`. `found_at` says where the reference sits in the walked scope, the first path
-    being the one that named the file, and `content_type` is the platform's guess from the
+    being the one that named the file, and `content_type` is the server's guess from the
     reference's extension, known before the fetch; both are on both arms, so an item that was not
     saved still says which field it would have filled.
 
