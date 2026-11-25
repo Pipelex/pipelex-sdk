@@ -236,6 +236,8 @@ class FakeClient:
     def __init__(self) -> None:
         #: The API key the client sends, which the SDK's `prepare_inputs` reads to word a refused credential.
         self.api_key = "test-key"
+        #: The origin of the client's base URL, on which the SDK fetches a plain-http resolved link without `allow_http`.
+        self.origin_url = "https://api.pipelex.com"
         self.start_answer: StartAnswer = RUN_ID
         self.execute_answer: PipelexExecuteResult | BaseException = execute_result({"text": "hi"})
         self.wait_answer: WaitAnswer = run_results(TEXT_OUTPUT)
