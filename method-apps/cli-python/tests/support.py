@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from pipelex_sdk.artifact_models import ArtifactItemError, ArtifactScope, DownloadArtifactsResult, DownloadedArtifact
+from pipelex_sdk.artifact_models import ArtifactItemError, ArtifactScope, DownloadArtifactsResult, DownloadedArtifact, DownloadedKind
 from pipelex_sdk.crate_models import PipeIORequest, PipeIOValidReport
 from pipelex_sdk.execute_result import PipelexExecuteResult
 from pipelex_sdk.prepare_inputs import PreparedInputs
@@ -202,16 +202,10 @@ def downloaded_artifact(
     content_type: str | None = None,
     size: int | None = None,
     error: ArtifactItemError | None = None,
-    kind: str = "file",
+    kind: DownloadedKind = DownloadedKind.FILE,
 ) -> DownloadedArtifact:
-    """One outcome of a download verdict, a stored file unless `kind` says `text`.
-
-    It is validated from a mapping rather than constructed, because `kind` is required from the SDK
-    release that saves stored texts as text files and unknown before it, which ignores the key: so
-    the same test reads the verdict of either.
-    """
-    fields = {"uri": uri, "found_at": found_at, "path": path, "content_type": content_type, "size": size, "error": error, "kind": kind}
-    return DownloadedArtifact.model_validate(fields)
+    """One outcome of a download verdict, a stored file unless `kind` says it is a stored text."""
+    return DownloadedArtifact(uri=uri, found_at=found_at, path=path, content_type=content_type, size=size, error=error, kind=kind)
 
 
 def download_verdict(*artifacts: DownloadedArtifact) -> DownloadArtifactsResult:
