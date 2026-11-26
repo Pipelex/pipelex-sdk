@@ -921,19 +921,43 @@ function ownership(
   checkout: string,
 ): "ours" | "gone" | "foreign" {
   const group = recordedGroup(state);
+  if (WINDOWS) return treeOwnership(config, state, checkout);
   if (!groupAlive(config, group)) return "gone";
   // A group's id is its first process's. While that process runs it must be
   // the one serve started; once it has ended, the id is not given to another
   // process until the whole group has ended too, so the group is still serve's.
   const leaderStart = leaderStartOf(state.pgid, config.ps);
   if (leaderStart !== undefined && leaderStart !== state.leaderStart) return "foreign";
-  if (WINDOWS) return state.checkout === checkout ? "ours" : "foreign";
   const cwds = groupCwds(config.lsof, state.pgid);
   if (cwds.length > 0) return cwds.includes(checkout) ? "ours" : "foreign";
   // Nothing seen: the group has ended since, or lsof may not look at its
   // processes, which proves neither way.
   if (!groupAlive(config, group)) return "gone";
   throw new NoLsofError(state.pgid);
+}
+
+/**
+ * `ownership` on Windows, where the group is the tree under its first process.
+ * The tree holds only processes proven the record's: the first one by its start
+ * time, each one under it by starting after its parent and before any process
+ * given its parent's id later. Unlike a process group's id, a process's id is
+ * given to another process as soon as it ends, even while its children run on,
+ * so the process holding the recorded id says nothing about a tree that still
+ * has members. When the tree has none, a process holding that id is another's,
+ * since the tree would have held it had it started when the record says; one
+ * whose start time cannot be read proves neither way, and throws `NoPsError`.
+ */
+function treeOwnership(
+  config: ServeConfig,
+  state: ServeState,
+  checkout: string,
+): "ours" | "gone" | "foreign" {
+  const here = state.checkout === checkout ? "ours" : "foreign";
+  if (groupAlive(config, recordedGroup(state))) return here;
+  const leaderStart = leaderStartOf(state.pgid, config.ps);
+  if (leaderStart === undefined) return "gone";
+  // The first process started since the tree was read: still the record's.
+  return leaderStart === state.leaderStart ? here : "foreign";
 }
 
 /**

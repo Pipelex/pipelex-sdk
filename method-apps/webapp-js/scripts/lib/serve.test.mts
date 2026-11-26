@@ -126,15 +126,36 @@ if (role === "parent") {
 const dirs: string[] = [];
 const holders: ChildProcess[] = [];
 
-afterEach(() => {
-  for (const dir of dirs.splice(0)) {
-    for (const pid of pidsIn(dir)) kill(pid, "SIGKILL");
-    rmSync(dir, { recursive: true, force: true });
+// Every process a case left running is killed, and waited for, before its
+// directories are removed: Windows refuses to remove a directory a process
+// still runs in, or a file it holds open, and a killed process lets go of them
+// only once it has ended.
+afterEach(async () => {
+  const killed: number[] = [];
+  for (const dir of dirs) {
+    for (const pid of pidsIn(dir)) {
+      kill(pid, "SIGKILL");
+      killed.push(pid);
+    }
   }
   for (const holder of holders.splice(0)) {
-    if (holder.pid !== undefined) kill(WINDOWS ? holder.pid : -holder.pid, "SIGKILL");
+    if (holder.pid === undefined) continue;
+    kill(WINDOWS ? holder.pid : -holder.pid, "SIGKILL");
+    killed.push(holder.pid);
   }
-});
+  const ended = await allGone(killed, 10_000);
+  for (const dir of dirs.splice(0)) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+      throw new Error(
+        `could not remove ${dir}${ended ? "" : ", where a process the case started still runs"}: ` +
+          `${(error as Error).message}`,
+        { cause: error },
+      );
+    }
+  }
+}, 30_000);
 
 function kill(pid: number, signal: NodeJS.Signals): void {
   try {
@@ -766,9 +787,11 @@ describe.skipIf(!CAN_SERVE)("make serve", SPAWNS, () => {
 
     const result = await run(serve, configFor(checkout, "ok", ports, { port: ports[0] }));
     expect(result.code).toBe(1);
+    // The holder's working directory, or on Windows, where that cannot be read,
+    // its command line, which runs a file of that directory.
     expect(result.verdict).toMatch(
       new RegExp(
-        `^refused: port-held — port ${ports[0]} is held by pid ${foreign.pid}, running in `,
+        `^refused: port-held — port ${ports[0]} is held by pid ${foreign.pid}, running ${WINDOWS ? "" : "in "}`,
       ),
     );
     expect(result.verdict).toContain(foreign.dir);
