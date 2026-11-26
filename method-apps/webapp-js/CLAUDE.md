@@ -278,7 +278,7 @@ Text inputs are plain strings. File inputs (PDFs, images) take one extra step, a
 
 ## Adding a method
 
-**Every method is added with `make add-method METHOD=<method>`**, whatever form it takes:
+**Every method is added with `npm run add-method -- <method>`**, or `make add-method METHOD=<method>` with make, whatever form it takes:
 
 - **a bundle** — a `.mthds` file or a directory of them, copied into `methods/<name>/`; a path already inside `methods/<name>/` is scaffolded in place, all of that directory's files. Author or edit one with `/mthds-build` and `/mthds-edit` first;
 - **a catalog id** (`mt_…`) or **a published address** (`github.com/owner/repo[/pkg][@tag]`), named by a `methods/<name>/method.json` the gesture writes.
@@ -397,11 +397,11 @@ We use a tarball install rather than a symlink (`ln -s`) because Next.js 16's Tu
 
 ## Workflow Rules
 
-**After any code change, run `make all`.** It runs `check` (lint + format-check + typecheck + the offline codegen check) + `test` + `build`, which catches the failure classes that block CI: ESLint violations, Prettier formatting drift, TypeScript errors, generated types that no longer match their methods, and broken unit tests / production build. Do not declare a task done if `make all` doesn't pass cleanly.
+**After any code change, run `npm run all`**, or `make all`, which runs the same script. It runs `check` (lint + format-check + typecheck + the offline codegen check) + `test` + `build`, which catches the failure classes that block CI: ESLint violations, Prettier formatting drift, TypeScript errors, generated types that no longer match their methods, and broken unit tests / production build. Do not declare a task done if it doesn't pass cleanly.
 
 **After editing anything under `methods/`, run `npm run codegen`.** `make check` compares each generated tree against a hash of the source files it was projected from, so a source edit without a regeneration fails with "Run `npm run codegen` to regenerate." rather than shipping types that quietly lie. Regeneration needs `PIPELEX_API_KEY`. Commit the regenerated tree in the same commit as the source edit. The same applies to a `methods/<name>/method.json` manifest: bumping its tag is a source edit.
 
-If `make format-check` fails, run `make format` to auto-fix and re-run `make all`. Don't hand-edit files to satisfy Prettier — let the formatter do it.
+If the format check fails, run `npm run format` (`make format`) to auto-fix and re-run `npm run all`. Don't hand-edit files to satisfy Prettier — let the formatter do it.
 
 Other targets that matter:
 

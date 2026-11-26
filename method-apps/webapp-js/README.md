@@ -22,20 +22,20 @@ cd my-app && npm run serve                             # the URL, once the page 
 
 `npm run create` scaffolds the method, names the project after it (the package name, the title and the description all come from the method, and `--name`, `--title` and `--description` override them, which are `NAME=`, `TITLE=` and `DESCRIPTION=` to `make create` itself), writes `.env.local` with the base URL it ran against and, unless another env file holds a key, an empty key line for your own key, since it never copies the key your shell exports, and runs `npm run all`. It commits nothing, so `git diff` against the initializer's pristine commit shows everything it did. `--dry-run` (`DRY_RUN=1`) prints the plan first. [`docs/create.md`](docs/create.md) is the reference.
 
-To choose every value yourself instead, open the repository in [Claude Code](https://claude.com/claude-code), run `/bootstrap`, then `make add-method METHOD=…`.
+To choose every value yourself instead, open the repository in [Claude Code](https://claude.com/claude-code), run `/bootstrap`, then `npm run add-method -- <method>`.
 
 ## What a method looks like here
 
-With no method, the page shows an empty state that names `make add-method`. With one method, its form is the page. With several, they are tabs. The registry is `src/methods.ts`.
+With no method, the page shows an empty state that names `npm run add-method`. With one method, its form is the page. With several, they are tabs. The registry is `src/methods.ts`.
 
-`make add-method` writes one vertical slice per method, and `make create` runs it for the first one:
+`npm run add-method` (`make add-method`) writes one vertical slice per method, and `npm run create` runs it for the first one:
 
 - `methods/<name>/` — the method's own `.mthds` files, or a `method.json` naming a method that lives elsewhere. Changing the method is editing the files, or the tag, and running `npm run codegen`.
 - `src/generated/<name>/` — the method's zod schemas, binders, input and output contracts, and the codegen lock. Committed, and never edited by hand.
 - `src/types/`, `src/actions/`, `src/components/` — a typed narrower, the Server Actions for both execution modes with a test, and the form.
 - `src/methods.ts` — one import and one registry entry.
 
-The command refuses rather than overwriting a slice that already exists, and `DRY_RUN=1` prints the plan without writing anything. [`docs/add-method.md`](docs/add-method.md) is the reference, including how to remove a method.
+The command refuses rather than overwriting a slice that already exists, and `--dry-run` (`DRY_RUN=1` to make) prints the plan without writing anything. [`docs/add-method.md`](docs/add-method.md) is the reference, including how to remove a method.
 
 ## How it works
 
@@ -62,13 +62,13 @@ The page wears the branding of the organization the API key belongs to, when an 
 | `PIPELEX_BASE_URL`           | Pipelex API base URL                                                                  | `https://api.pipelex.com` |
 | `NEXT_PUBLIC_EXECUTION_MODE` | Execution mode for every method — `durable` or `blocking`. The page offers no switch. | `durable`                 |
 
-**`make create`, `make add-method`, `npm run codegen` and `npm run codegen:verify` need `PIPELEX_API_KEY` and the network.** Each one asks the API for the method's typed artifacts (`POST /v1/codegen`) and for its contracts and form descriptors (`POST /v1/pipe-io`) and, for a catalog id or a package address, checks that the base URL resolves that kind of method, naming the missing route or capability when one is not served. A method whose pipes are still declared as signatures is refused, naming them, since it cannot run yet. `make all` needs neither a key nor a network.
+**`npm run create`, `npm run add-method`, `npm run codegen` and `npm run codegen:verify`, and their make targets, need `PIPELEX_API_KEY` and the network.** Each one asks the API for the method's typed artifacts (`POST /v1/codegen`) and for its contracts and form descriptors (`POST /v1/pipe-io`) and, for a catalog id or a package address, checks that the base URL resolves that kind of method, naming the missing route or capability when one is not served. A method whose pipes are still declared as signatures is refused, naming them, since it cannot run yet. `make all` needs neither a key nor a network.
 
 A variable already exported in your shell wins over `.env.local`.
 
 ## Where the app listens
 
-`make dev` and `make start` listen on `127.0.0.1:4300`, which only this machine can reach. That is deliberate. The app's Server Actions run methods with the `PIPELEX_API_KEY` in the server's environment, and nothing authenticates the browser that calls them, so anyone who can reach the server runs methods billed to your key. Two variables change it, on the command line or from the shell:
+`npm run dev` and `npm run start`, or `make dev` and `make start`, listen on `127.0.0.1:4300`, which only this machine can reach. That is deliberate. The app's Server Actions run methods with the `PIPELEX_API_KEY` in the server's environment, and nothing authenticates the browser that calls them, so anyone who can reach the server runs methods billed to your key. Two variables change it, on the command line or from the shell:
 
 | Variable   | Purpose                                                                                          | Default     |
 | ---------- | ------------------------------------------------------------------------------------------------ | ----------- |

@@ -68,7 +68,7 @@ For each bullet that renames an identifier written as `` `oldName` `` → `` `ne
 1. Grep the **whole repo** for the old name — don't scope this to `src/` only. Kernel names leak into `README.md`, `CLAUDE.md`, `docs/input-form.md`, `docs/adopt-in-an-existing-project.md`, test files, and `src/app/globals.css` comments, not just the runtime import sites. Two places to leave alone: `CHANGELOG.md`'s **already-dated release entries** (`## [vX.Y.Z] - YYYY-MM-DD` — a historical record; Step 7 adds this change's entry), and **anything under `src/generated/`** — if the old name appears there, that tree needs `npm run codegen` after the bump (Step 6), never an edit.
 2. **If found**: this repo needs the migration. Apply it with `Edit`, then show the diff. This matches the workspace's "no backward-compatibility shims — just change it" principle.
 3. **If not found**: say so and move on — this repo is already using the new name (or never used the old surface), nothing to do.
-4. **Run `make format` right after any rename**, before moving on. A literal find-and-replace changes string lengths, and this repo's Prettier config re-flows Markdown tables to keep columns aligned — a raw rename inside a `README.md` table will fail `make format-check` purely on column padding, which reads as a confusing false alarm if you hit it without knowing the rename caused it.
+4. **Run `npm run format` (`make format`) right after any rename**, before moving on. A literal find-and-replace changes string lengths, and this repo's Prettier config re-flows Markdown tables to keep columns aligned — a raw rename inside a `README.md` table will fail `make format-check` purely on column padding, which reads as a confusing false alarm if you hit it without knowing the rename caused it.
 
 Not every impactful change is a mechanical rename — most of this kernel's changelog is behavior: a gate that prunes differently, a wire shape that changed, a control that renders differently. **Never guess at those.** List them clearly as a "needs manual review" checklist and let the user decide how (or whether) to adapt this repo's code before continuing. If any of these are unresolved and would break `make all`, say so explicitly — better to surface that now than have Step 6 fail with a confusing error.
 
@@ -79,7 +79,7 @@ Not every impactful change is a mechanical rename — most of this kernel's chan
 
 ## Step 6 — Run Checks
 
-Run `make all` (lint + format-check + typecheck + unit tests + build, per this repo's `CLAUDE.md`). The unit suite includes the browser/server invariant table (`src/lib/runInputs.test.ts`) and the form/hook tests over the kernel's real derivation — this is where a readiness or gate semantics change surfaces.
+Run `npm run all`, or `make all` (lint + format-check + typecheck + unit tests + build, per this repo's `CLAUDE.md`). The unit suite includes the browser/server invariant table (`src/lib/runInputs.test.ts`) and the form/hook tests over the kernel's real derivation — this is where a readiness or gate semantics change surfaces.
 
 - **On success**: report and continue.
 - **On failure**: show the errors. If they trace back to one of the "needs manual review" items from Step 4, connect the dots for the user rather than just dumping the error. Ask how to proceed (fix, skip, abort) — don't guess at a fix for a behavior change you flagged as needing human judgment.
