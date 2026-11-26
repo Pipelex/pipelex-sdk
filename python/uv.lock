@@ -396,7 +396,7 @@ wheels = [
 
 [[package]]
 name = "pipelex-sdk"
-version = "0.69.5"
+version = "0.71.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
