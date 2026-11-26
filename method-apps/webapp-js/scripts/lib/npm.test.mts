@@ -20,11 +20,27 @@ describe("how the scripts run npm", () => {
 
   it("takes npm from the PATH outside npm, except on Windows", () => {
     expect(npmInvocation({}, "linux", "/bin/node")).toEqual({ command: "npm", args: [] });
-    // pnpm and yarn name a binary that is not npm's script: npm on the PATH again.
-    expect(npmInvocation({ npm_execpath: "/x/pnpm" }, "darwin", "/bin/node")).toEqual({
-      command: "npm",
-      args: [],
-    });
+    // pnpm, yarn and npx name a script that is not npm's: npm on the PATH again,
+    // never that script run as npm, whatever its extension.
+    for (const named of [
+      "/x/pnpm",
+      "/x/pnpm/bin/pnpm.cjs",
+      "/x/.yarn/releases/yarn-4.5.0.cjs",
+      "/x/npm/bin/npx-cli.js",
+    ]) {
+      expect(npmInvocation({ npm_execpath: named }, "darwin", "/bin/node"), named).toEqual({
+        command: "npm",
+        args: [],
+      });
+    }
+    // On Windows, npm's own script is still told by its name, with either slash.
+    const node = "C:\\nodejs\\node.exe";
+    expect(npmInvocation({ npm_execpath: "C:\\x\\pnpm.cjs" }, "win32", node).args).toEqual([
+      "C:\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+    ]);
+    expect(npmInvocation({ npm_execpath: "C:\\y\\npm-cli.js" }, "win32", node).args).toEqual([
+      "C:\\y\\npm-cli.js",
+    ]);
   });
 
   it("runs the npm installed beside node.exe on Windows, never npm.cmd", () => {

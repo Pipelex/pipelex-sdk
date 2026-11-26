@@ -280,7 +280,7 @@ export function commitPristine({ dest, init, paths, message, env }) {
 
 /**
  * The commands a person runs to make the pristine commit by hand, once the
- * copy stands, joined with `&&` for a shell. `quote` quotes one word.
+ * copy stands, in order. `quote` quotes one word.
  */
 export function pristineByHand({ dest, init, message, quote }) {
   const at = `git -C ${quote(dest)}`;
@@ -288,5 +288,5 @@ export function pristineByHand({ dest, init, message, quote }) {
     ...(init ? [`${at} init -q`, `${at} symbolic-ref HEAD refs/heads/main`] : []),
     `${at} add --force -A`,
     `${at} commit -m ${quote(message)}`,
-  ].join(" && ");
+  ];
 }

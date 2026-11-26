@@ -156,26 +156,40 @@ export function extractWarnings(output) {
   return [...seen];
 }
 
+/** How long a step has to end once it is stopped, before the run stops waiting for it. */
+export const STOP_GRACE_MS = 10_000;
+
 /**
  * Stop a child and everything it started. Elsewhere npm passes the signal on
  * to the script it runs; on Windows there is no signal to pass, so the whole
- * tree is ended with `taskkill`, which Windows ships.
+ * tree is ended with `taskkill`, which Windows ships. A `taskkill` that cannot
+ * run, or that ends with a failure, as when it is denied access, falls back
+ * to ending npm alone, which is all Node can do there.
  */
-function stop(child, platform) {
+function stop(child, platform, taskkill) {
   if (platform !== "win32") {
     child.kill("SIGTERM");
     return;
   }
   if (child.pid === undefined) return;
-  const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+  const killer = spawn(taskkill, ["/pid", String(child.pid), "/T", "/F"], {
     stdio: "ignore",
     windowsHide: true,
   });
-  killer.on("error", () => child.kill());
+  let fellBack = false;
+  const fallBack = () => {
+    if (fellBack) return;
+    fellBack = true;
+    child.kill();
+  };
+  killer.on("error", fallBack);
+  killer.on("close", (code) => {
+    if (code !== 0) fallBack();
+  });
 }
 
 /** Run one npm command, sending its output to `take`. Resolves `{ status, signal, error }`. */
-function runOne(invocation, args, { cwd, env, take, signal, platform }) {
+function runOne(invocation, args, { cwd, env, take, signal, platform, taskkill, graceMs }) {
   return new Promise((resolve) => {
     const child = spawn(invocation.command, [...invocation.args, ...args], {
       cwd,
@@ -185,13 +199,32 @@ function runOne(invocation, args, { cwd, env, take, signal, platform }) {
     });
     child.stdout.on("data", take);
     child.stderr.on("data", take);
-    const onAbort = () => stop(child, platform);
-    signal?.addEventListener("abort", onAbort, { once: true });
     let failed = null;
     let settled = false;
+    let bound;
+    // Stopped, the step gets a bounded time to end: a run whose step would
+    // not stop ends anyway, saying the step may still run, rather than wait
+    // for it as long as it takes.
+    const onAbort = () => {
+      stop(child, platform, taskkill);
+      bound = setTimeout(() => {
+        failed = new Error(
+          `npm (pid ${child.pid}) did not stop within ${Math.round(graceMs / 1000)}s of the interruption, and may still be running`,
+        );
+        failed.stuck = true;
+        // Let go of it, so the run can end while it runs on.
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+        finish(null, null);
+      }, graceMs);
+      bound.unref?.();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     const finish = (status, killedBy) => {
       if (settled) return;
       settled = true;
+      clearTimeout(bound);
       signal?.removeEventListener("abort", onAbort);
       resolve({ status, signal: killedBy, error: failed });
     };
@@ -213,7 +246,17 @@ function runOne(invocation, args, { cwd, env, take, signal, platform }) {
  */
 export async function runCreate(
   words,
-  { npm, cwd, env, out, logFile, signal, platform = process.platform },
+  {
+    npm,
+    cwd,
+    env,
+    out,
+    logFile,
+    signal,
+    platform = process.platform,
+    taskkill = "taskkill",
+    graceMs = STOP_GRACE_MS,
+  },
 ) {
   const log = logFile ? fs.openSync(logFile, "w", 0o600) : null;
   const chunks = [];
@@ -226,7 +269,7 @@ export async function runCreate(
   // drops for its own git calls too: the copy's install wires its hooks with
   // `git config`, which would otherwise write into the repository a caller's
   // `GIT_DIR` names rather than the copy's.
-  const options = { cwd, env: gitEnv(env), take, signal, platform };
+  const options = { cwd, env: gitEnv(env), take, signal, platform, taskkill, graceMs };
   let step = "install";
   let result;
   try {

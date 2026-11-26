@@ -6,6 +6,9 @@
 import path from "node:path";
 import process from "node:process";
 
+/** npm's own script, which npm names in `npm_execpath` for whatever it runs. */
+const NPM_SCRIPT = "npm-cli.js";
+
 /** How a script runs npm: a command and the arguments that come before npm's own. */
 export interface NpmInvocation {
   command: string;
@@ -25,12 +28,14 @@ export function npmInvocation(
   execPath: string = process.execPath,
 ): NpmInvocation {
   const named = env.npm_execpath;
-  if (named !== undefined && /\.c?js$/.test(named)) return { command: execPath, args: [named] };
+  // npm's own script alone: pnpm, yarn and npx name scripts of their own there.
+  const pathOf = platform === "win32" ? path.win32 : path.posix;
+  if (named !== undefined && pathOf.basename(named) === NPM_SCRIPT) {
+    return { command: execPath, args: [named] };
+  }
   if (platform !== "win32") return { command: "npm", args: [] };
   return {
     command: execPath,
-    args: [
-      path.win32.join(path.win32.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js"),
-    ],
+    args: [path.win32.join(path.win32.dirname(execPath), "node_modules", "npm", "bin", NPM_SCRIPT)],
   };
 }

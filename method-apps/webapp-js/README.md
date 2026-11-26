@@ -13,7 +13,8 @@ This template is the `webapp-js/` directory of the [method-app family](https://g
 ```bash
 export PIPELEX_API_KEY=…                               # from app.pipelex.com
 npm create @pipelex/method-app@latest my-app -- --method path/to/my_method.mthds
-cd my-app && npm run serve                             # the URL, once the page answers
+cd my-app
+npm run serve                                          # the URL, once the page answers
 ```
 
 `npm run serve` starts the dev server in the background, prints its URL once the page answers, and `npm run serve -- stop` stops it; `npm run dev` runs the same server in this terminal instead, on http://127.0.0.1:4300. The npm scripts are the commands on every system, Windows included, and with `make` they are also `make serve`, `make stop` and `make dev`, as the [table below](#make-targets) lists. The initializer's [README](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/initializers/js#readme) lists its options, one per `make create` variable below.

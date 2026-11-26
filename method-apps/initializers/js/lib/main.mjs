@@ -58,7 +58,7 @@ import {
 } from "./npm.mjs";
 import { decodePack, PackError } from "./pack.mjs";
 import { loadTable, PACKAGE_ROOT } from "./templates.mjs";
-import { EXIT_OK, shellQuote, Verdict } from "./verdict.mjs";
+import { EXIT_OK, inTurn, shellQuote, Verdict } from "./verdict.mjs";
 import { DestinationChanged, Interrupted, writeTree } from "./write.mjs";
 
 export const PACKS_DIR = path.join(PACKAGE_ROOT, "templates");
@@ -246,10 +246,11 @@ function planGit(args, dest, found, env) {
 }
 
 /**
- * The commands to run next in the copy, without --dry-run, quoted for a shell:
- * `npm run create`, after the `npm install` it needs unless `installed`.
+ * The commands to run next, without --dry-run, quoted for this system's shell
+ * and in order: `cd` into the copy, then `npm run create`, after the
+ * `npm install` it needs unless `installed`.
  */
-function nextCreate(table, template, values, { installed = false } = {}) {
+function nextCreate(dest, table, template, values, { installed = false } = {}) {
   const forwarded = { ...values };
   delete forwarded.DRY_RUN;
   const words = createWords(
@@ -257,10 +258,10 @@ function nextCreate(table, template, values, { installed = false } = {}) {
     forwarded,
     table.switches,
     table.required,
-  ).map(shellQuote);
+  ).map((word) => shellQuote(word));
   if (values[table.required] === undefined) words.unshift("<method>");
   const create = `npm run create -- ${words.join(" ")}`;
-  return installed ? create : `npm install && ${create}`;
+  return inTurn([`cd ${shellQuote(dest)}`, ...(installed ? [] : ["npm install"]), create]);
 }
 
 async function create(argv, d, say, state) {
@@ -382,15 +383,14 @@ async function create(argv, d, say, state) {
       for (const line of error.message.split("\n")) say(line);
       throw Verdict.failed(
         "commit",
-        `git refused the pristine commit (above). The copy stands in ${dest}: commit it with ${pristineByHand({ dest, init: git.init, message, quote: shellQuote })}, then run cd ${shellQuote(dest)} && ${nextCreate(table, template, values)}`,
+        `git refused the pristine commit (above). The copy stands in ${dest}: commit it with ${inTurn(pristineByHand({ dest, init: git.init, message, quote: shellQuote }))}, then run ${nextCreate(dest, table, template, values)}`,
       );
     }
   }
 
-  const where = shellQuote(dest);
   if (args.noCreate) {
     say(gitLine);
-    return { line: `copied ${dest}; next: cd ${where} && ${nextCreate(table, template, values)}` };
+    return { line: `copied ${dest}; next: ${nextCreate(dest, table, template, values)}` };
   }
 
   // ── npm install, then npm run create ──
@@ -400,7 +400,7 @@ async function create(argv, d, say, state) {
     say(gitLine);
     throw Verdict.failed(
       "create",
-      `${d.signal.reason ?? "a signal"} interrupted the run before npm install started. ${stands} in ${dest}; run cd ${where} && ${nextCreate(table, template, values)}`,
+      `${d.signal.reason ?? "a signal"} interrupted the run before npm install started. ${stands} in ${dest}; run ${nextCreate(dest, table, template, values)}`,
     );
   }
   let logFile;
@@ -427,6 +427,12 @@ async function create(argv, d, say, state) {
   say(warnings.length > 0 ? "warnings from npm run create:" : "warnings from npm run create: none");
   for (const warning of warnings) say(`  ${warning}`);
   say(gitLine);
+  if (result.error?.stuck) {
+    throw Verdict.failed(
+      "create",
+      `${d.signal?.reason ?? "a signal"} interrupted npm ${result.step}, and ${result.error.message}: stop it yourself. ${stands} in ${dest}.`,
+    );
+  }
   if (result.error !== null) {
     throw Verdict.failed(
       "create",
@@ -444,7 +450,7 @@ async function create(argv, d, say, state) {
     if (result.step === "install") {
       throw Verdict.failed(
         "create",
-        `npm install ${how}, so npm run create did not start. ${stands} in ${dest}, and ${said} says why; once that is fixed, run cd ${where} && ${nextCreate(table, template, values)}`,
+        `npm install ${how}, so npm run create did not start. ${stands} in ${dest}, and ${said} says why; once that is fixed, run ${nextCreate(dest, table, template, values)}`,
       );
     }
     throw Verdict.failed(
@@ -456,16 +462,16 @@ async function create(argv, d, say, state) {
     // The install succeeded, and an interruption came before the gesture.
     throw Verdict.failed(
       "create",
-      `${interrupted ?? "a signal"} interrupted the run before npm run create started. ${stands} in ${dest}, its dependencies installed; run cd ${where} && ${nextCreate(table, template, values, { installed: true })}`,
+      `${interrupted ?? "a signal"} interrupted the run before npm run create started. ${stands} in ${dest}, its dependencies installed; run ${nextCreate(dest, table, template, values, { installed: true })}`,
     );
   }
   if (values.DRY_RUN) {
     return {
-      line: `copied ${dest} (npm run create --dry-run changed nothing); next: cd ${where} && ${nextCreate(table, template, values, { installed: true })}`,
+      line: `copied ${dest} (npm run create --dry-run changed nothing); next: ${nextCreate(dest, table, template, values, { installed: true })}`,
     };
   }
   stampInstall(dest);
-  return { line: `created ${dest}; next: cd ${where} && npm run serve` };
+  return { line: `created ${dest}; next: ${inTurn([`cd ${shellQuote(dest)}`, "npm run serve"])}` };
 }
 
 /**

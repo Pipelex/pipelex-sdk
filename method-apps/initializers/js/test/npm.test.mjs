@@ -18,6 +18,7 @@ import {
   npmInvocation,
   npmProblem,
   onPath,
+  runCreate,
 } from "../lib/npm.mjs";
 import { loadTable } from "../lib/templates.mjs";
 import { FAMILY_ROOT, tempRoot } from "./support.mjs";
@@ -201,3 +202,76 @@ function shellWords(line) {
   if (word !== null) out.push(word);
   return out;
 }
+
+// Windows' stop, held on any system with a stand-in for taskkill: the stop's
+// own logic is what is tested, and a POSIX `false` fails as a taskkill denied
+// access does.
+describe(
+  "stopping a step on Windows",
+  { skip: process.platform === "win32" && "taskkill itself runs there" },
+  () => {
+    /** An npm that writes its pid, then runs until it is killed, or, `stubborn`, past SIGTERM too. */
+    function fakeNpm(dir, stubborn) {
+      const script = path.join(dir, "npm-cli.js");
+      fs.writeFileSync(
+        script,
+        `require("node:fs").writeFileSync(${JSON.stringify(path.join(dir, "pid"))}, String(process.pid));\n` +
+          (stubborn ? `process.on("SIGTERM", () => {});\n` : "") +
+          "setInterval(() => {}, 1 << 30);\n",
+      );
+      return { command: process.execPath, args: [script] };
+    }
+
+    async function interrupted(stubborn, graceMs) {
+      const dir = tempRoot();
+      const controller = new AbortController();
+      const running = runCreate(["mt_1"], {
+        npm: fakeNpm(dir, stubborn),
+        cwd: dir,
+        env: process.env,
+        out: { write() {} },
+        signal: controller.signal,
+        platform: "win32",
+        taskkill: "false",
+        graceMs,
+      });
+      const pidFile = path.join(dir, "pid");
+      const deadline = Date.now() + 10_000;
+      while (!fs.existsSync(pidFile) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const pid = Number(fs.readFileSync(pidFile, "utf8"));
+      const started = Date.now();
+      controller.abort("SIGINT");
+      try {
+        return { result: await running, took: Date.now() - started, pid };
+      } finally {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // ended
+        }
+      }
+    }
+
+    it("ends npm itself when taskkill fails, as when it is denied access", async () => {
+      const { result, took } = await interrupted(false, 30_000);
+      assert.equal(result.step, "install");
+      assert.equal(result.error, null);
+      assert.equal(result.signal, "SIGTERM");
+      assert.ok(took < 10_000, `took ${took} ms`);
+    });
+
+    it("stops waiting for an npm that will not end, and says it may still run", async () => {
+      const { result, pid } = await interrupted(true, 300);
+      assert.equal(result.status, null);
+      assert.equal(result.error?.stuck, true);
+      assert.match(
+        result.error.message,
+        new RegExp(
+          `^npm \\(pid ${pid}\\) did not stop within 0s of the interruption, and may still be running$`,
+        ),
+      );
+    });
+  },
+);

@@ -71,7 +71,8 @@ A project starts from a template through the initializer of the template's ecosy
 
 ```bash
 npm create @pipelex/method-app@latest my-app -- --method ./receipt_review.mthds
-cd my-app && npm run serve
+cd my-app
+npm run serve
 ```
 
 `initializers/js/` is `@pipelex/create-method-app`, the npm initializer of the Node templates, and its README is its npm page and the reference for its options, its git outcomes and its verdicts. An initializer is not a template: no project is a copy of one, so it is not in `TEMPLATES` and no template target runs in it. It is in `INITIALIZERS` instead, which `test-family` reads, and the repository root's `Makefile` names it in `UNITS` with the template, as one unit whose manifests carry one version.

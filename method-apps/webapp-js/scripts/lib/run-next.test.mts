@@ -12,7 +12,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { nextArgs, nextBin } from "./run-next.mts";
+import { exitCodeOf, nextArgs, nextBin } from "./run-next.mts";
 import { REPO_ROOT } from "./shared.mts";
 
 const SPAWNS = { timeout: 60_000 };
@@ -60,6 +60,24 @@ describe("where npm run dev and npm run start listen", () => {
       "4300",
       "--turbopack",
     ]);
+  });
+
+  it("refuses a host or a port among next's own options, which would win over its own", () => {
+    for (const word of ["-H", "-H0.0.0.0", "--hostname", "--hostname=0.0.0.0", "-p", "--port=1"]) {
+      expect(() => nextArgs("dev", { APP_HOST: "127.0.0.1" }, [word, "0.0.0.0"]), word).toThrow(
+        /is not taken here: the host is APP_HOST and the port APP_PORT/,
+      );
+    }
+    expect(nextArgs("start", {}, ["--keepAliveTimeout", "5"])).toHaveLength(7);
+  });
+
+  it("ends as next ended, by its code or 128 plus its signal's number", () => {
+    expect(exitCodeOf(0, null)).toBe(0);
+    expect(exitCodeOf(3, null)).toBe(3);
+    expect(exitCodeOf(null, "SIGINT")).toBe(130);
+    expect(exitCodeOf(null, "SIGTERM")).toBe(143);
+    expect(exitCodeOf(null, "SIGKILL")).toBe(137);
+    expect(exitCodeOf(null, null)).toBe(1);
   });
 
   it("refuses any other mode", () => {

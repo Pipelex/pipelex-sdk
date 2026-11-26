@@ -31,6 +31,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  commandPaths,
   commandRunsIn,
   commandsFor,
   DEFAULT_CONFIG,
@@ -41,17 +42,22 @@ import {
   LOCK_FILE,
   lsofUsable,
   MAKE_COMMANDS,
+  NoPsError,
   NPM_COMMANDS,
   parseNetstat,
   parseProcessTable,
   parseServeArgs,
+  processTableScript,
   processTime,
   psUsable,
+  readNetstat,
   serve,
   startTimeOf,
   stop,
+  stopSpawned,
   STATE_FILE,
   treeOf,
+  withEnvironment,
   type ProcessEntry,
   type ServeConfig,
   type ServeState,
@@ -440,6 +446,7 @@ describe("the loopback rules", () => {
   it("accepts a dev script that binds the host it is given, or loopback itself", () => {
     for (const script of [
       TEMPLATE_DEV,
+      `${TEMPLATE_DEV} --turbopack`,
       "next dev -H ${APP_HOST:-127.0.0.1} -p ${APP_PORT:-4300}",
       'next dev -H "${APP_HOST:-127.0.0.1}" -p 4300',
       "next dev --hostname=127.0.0.1",
@@ -455,6 +462,11 @@ describe("the loopback rules", () => {
       "next dev -H ${APP_HOST}",
       "next dev -H 127.0.0.10",
       "node --experimental-strip-types scripts/run-next.mts start",
+      // run-next hands next its host first, so a host after it would win.
+      `${TEMPLATE_DEV} -H 0.0.0.0`,
+      `${TEMPLATE_DEV} --hostname=0.0.0.0`,
+      `${TEMPLATE_DEV} --turbopack --hostname 0.0.0.0`,
+      `${TEMPLATE_DEV} -p 80`,
       "",
     ]) {
       expect(devScriptBindsLoopback(script), script).toBe(false);
@@ -472,6 +484,41 @@ describe("the loopback rules", () => {
     expect(parseServeArgs(["--port", "43o5"]).port).toBeNaN();
     expect(() => parseServeArgs(["--port"])).toThrow("--port needs a value");
     expect(() => parseServeArgs(["--pot", "1"])).toThrow("unknown argument --pot");
+  });
+
+  it("takes APP_HOST and APP_PORT from the environment when no flag names them, outside make", () => {
+    const env = { APP_HOST: " 0.0.0.0 ", APP_PORT: "4305" };
+    expect(withEnvironment({ action: "serve" }, env)).toEqual({
+      action: "serve",
+      host: "0.0.0.0",
+      port: 4305,
+    });
+    // A flag wins, a blank value is none, and a value that is no port is refused later.
+    expect(withEnvironment({ action: "serve", host: "::1", port: 4301 }, env)).toEqual({
+      action: "serve",
+      host: "::1",
+      port: 4301,
+    });
+    expect(withEnvironment({ action: "serve" }, { APP_HOST: " ", APP_PORT: "" })).toEqual({
+      action: "serve",
+    });
+    expect(withEnvironment({ action: "serve" }, { APP_PORT: "43o5" }).port).toBeNaN();
+    // Under make, the Makefile exports its own defaults under those names and
+    // has already turned what the person gave into flags.
+    expect(
+      withEnvironment({ action: "serve", host: "127.0.0.1" }, { ...env, MAKELEVEL: "1" }),
+    ).toEqual({
+      action: "serve",
+      host: "127.0.0.1",
+    });
+  });
+
+  it("refuses an APP_HOST beyond loopback from the environment, as npm run serve reads it", async () => {
+    const checkout = checkoutWith();
+    const host = withEnvironment({ action: "serve" }, { APP_HOST: "0.0.0.0" }).host!;
+    const result = await run(serve, configFor(checkout, "ok", await freePorts(1), { host }));
+    expect(result.verdict).toMatch(/^refused: not-loopback — APP_HOST=0\.0\.0\.0 /);
+    expect(pidsIn(checkout)).toEqual([]);
   });
 });
 
@@ -527,6 +574,14 @@ describe("what Windows says", () => {
     expect(parseProcessTable("")).toEqual([]);
   });
 
+  it("spells a start time in the invariant culture, whatever the machine's", () => {
+    // The custom format's `:` and `.` would otherwise be the culture's own
+    // separators, and its calendar the culture's: neither compares with ISO.
+    const script = processTableScript();
+    expect(script).toContain("[System.Globalization.CultureInfo]::InvariantCulture");
+    expect(script).toContain(`"yyyy-MM-dd'T'HH':'mm':'ss'.'ffffff'Z'"`);
+  });
+
   it("spells a time as the process table does, a second earlier", () => {
     expect(processTime(new Date("2026-11-26T09:00:01.250Z"))).toBe("2026-11-26T09:00:00.250000Z");
   });
@@ -546,15 +601,29 @@ describe("what Windows says", () => {
       expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10) }))).toEqual([10, 11, 12]);
     });
 
-    it("keeps the children of a first process that has ended", () => {
-      const table = [entry(11, 10, 11), entry(12, 11, 12)];
-      expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10) }))).toEqual([11, 12]);
+    it("keeps the members it recorded once their parents have ended, and their children", () => {
+      // npm (10) and run-next (11) have ended; next (12) and its worker (13) run on.
+      const table = [entry(12, 11, 12), entry(13, 12, 13)];
+      const members = [11, 12, 13].map((pid) => ({ pid, started: at(pid) }));
+      expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10), members }))).toEqual([12, 13]);
+    });
+
+    it("never adopts a process on the id of a parent that has ended, unrecorded", () => {
+      // A record outliving a reboot: its first process's id is now the parent
+      // id of Explorer, whose own parent ended at sign-in.
+      const explorer = { ...entry(4321, 10, 30), command: "C:\\Windows\\explorer.exe" };
+      const table = [explorer, entry(4400, 4321, 31)];
+      expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10) }))).toEqual([]);
+      // Nor when the record names members, none of which runs with its start time.
+      const members = [{ pid: 4321, started: at(12) }];
+      expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10), members }))).toEqual([]);
     });
 
     it("never takes a process given the first one's id later, nor its children", () => {
       // 10 ended; its child 11 runs on; 10 was given to a stranger, whose child is 13.
       const table = [entry(10, 1, 20), entry(11, 10, 11), entry(13, 10, 21)];
-      expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10) }))).toEqual([11]);
+      const members = [{ pid: 11, started: at(11) }];
+      expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10), members }))).toEqual([11]);
     });
 
     it("never takes a child older than its parent, which another process with that id left", () => {
@@ -584,6 +653,22 @@ describe("what Windows says", () => {
     ]) {
       expect(commandRunsIn(command, checkout), command).toBe(true);
     }
+    // A short 8.3 name, a junction or a subst drive spells the same file another
+    // way: each path is resolved, as the system would, before it is compared.
+    const resolve = (file: string) =>
+      file.replace(/^C:\\Users\\ADA~1\\/i, "C:\\Users\\Ada\\").replace(/^S:\\/i, "C:\\Users\\");
+    for (const command of [
+      "node C:\\Users\\ADA~1\\my-app\\node_modules\\next\\dist\\bin\\next dev",
+      '"C:\\Program Files\\nodejs\\node.exe" "S:\\Ada\\my-app\\fake-dev.mjs" child ok',
+    ]) {
+      expect(commandRunsIn(command, checkout), command).toBe(false);
+      expect(commandRunsIn(command, checkout, resolve), command).toBe(true);
+    }
+    expect(commandPaths('"C:\\a b\\node.exe" C:\\x\\y.js -H 127.0.0.1 /tmp/z')).toEqual([
+      "C:\\a b\\node.exe",
+      "C:\\x\\y.js",
+      "/tmp/z",
+    ]);
     for (const command of [
       "node C:\\Users\\Ada\\my-app2\\server.js",
       "node -e \"require('node:net')\"",
@@ -591,6 +676,78 @@ describe("what Windows says", () => {
     ]) {
       expect(commandRunsIn(command, checkout), command).toBe(false);
     }
+  });
+});
+
+describe("what Windows says, read from the system", () => {
+  it("knows a command line that reaches the checkout through a link", () => {
+    // A junction on Windows, as %TEMP% may be reached through; a symlink elsewhere.
+    const checkout = tempDir("serve-real-");
+    writeFileSync(path.join(checkout, "server.js"), "");
+    const link = path.join(tempDir("serve-alias-"), "app");
+    symlinkSync(checkout, link, WINDOWS ? "junction" : undefined);
+    const command = `"${process.execPath}" ${path.join(link, "server.js")} dev`;
+    expect(commandRunsIn(command, checkout), command).toBe(true);
+    expect(commandRunsIn(`node ${path.join(link, "missing.js")}`, checkout)).toBe(false);
+  });
+
+  it("takes a netstat that fails for no answer, never for nothing listening", () => {
+    expect(() => readNetstat("netstat-that-is-not-installed")).toThrow(
+      /^netstat-that-is-not-installed -ano gave no answer \(/,
+    );
+    if (WINDOWS) return;
+    // It printed a socket, then failed: what it printed is not taken either.
+    const failing = path.join(tempDir("serve-netstat-"), "netstat");
+    writeFileSync(
+      failing,
+      "#!/bin/sh\necho '  TCP 0.0.0.0:4300 0.0.0.0:0 LISTENING 1'\necho denied >&2\nexit 1\n",
+    );
+    chmodSync(failing, 0o755);
+    expect(() => readNetstat(failing)).toThrow(/ -ano gave no answer \(it exited 1: denied\)$/);
+  });
+});
+
+describe("stopping what a start spawned when no tool answers", () => {
+  /** A process of its own group, as serve's server is, that runs until killed. */
+  function spawned() {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    holders.push(child);
+    return child;
+  }
+  const config = configFor("unused", "ok", []);
+  const failing = async (): Promise<never> => {
+    throw new NoPsError();
+  };
+
+  it("ends the group by force while the process it spawned runs, and says so", async () => {
+    const child = spawned();
+    await sleep(200);
+    const stopped = await stopSpawned(config, { pgid: child.pid! }, () => true, failing);
+    expect(stopped.outcome).toBe("unknown");
+    expect(stopped.unproven).toMatch(
+      /^no start time, so it was ended by force \((taskkill \/T \/F \/PID|kill -- -)\d+\) unread$/,
+    );
+    expect(await allGone([child.pid!])).toBe(true);
+  });
+
+  it("sends nothing once the process it spawned has ended, whose id may name another", async () => {
+    const child = spawned();
+    await sleep(200);
+    const stopped = await stopSpawned(config, { pgid: child.pid! }, () => false, failing);
+    expect(stopped.outcome).toBe("unknown");
+    expect(stopped.unproven).toMatch(/had already exited, so nothing was sent to what it left$/);
+    expect(alive(child.pid!)).toBe(true);
+  });
+
+  it("passes on an error that is not a tool's silence", async () => {
+    const broken = async (): Promise<never> => {
+      throw new Error("bug");
+    };
+    await expect(stopSpawned(config, { pgid: 1 }, () => true, broken)).rejects.toThrow("bug");
   });
 });
 
@@ -1295,6 +1452,24 @@ describe.skipIf(!CAN_SERVE)("make stop", SPAWNS, () => {
       expect((await run(stop, config)).verdict).toMatch(/^stopped /);
     },
   );
+
+  it("stops a server whose first process has ended, with what it left", async () => {
+    // On Windows a process's children outlive it, and their parent's id may be
+    // given to another process: the record names them, so they are still found.
+    const checkout = checkoutWith();
+    const config = configFor(checkout, "ok", await freePorts(1));
+    const started = await run(serve, config);
+    expect(started.code, started.lines.join("\n")).toBe(0);
+    const [parent, child] = pidsIn(checkout);
+    kill(parent, "SIGKILL");
+    expect(await allGone([parent])).toBe(true);
+    expect(alive(child)).toBe(true);
+
+    const result = await run(stop, config);
+    expect(result.verdict, result.lines.join("\n")).toMatch(/^stopped /);
+    expect(await allGone([child])).toBe(true);
+    expect(stateOf(checkout)).toBeUndefined();
+  });
 
   it("never signals a recorded group whose first process is another one, even here", async () => {
     // A stale record whose id now names a process started in this checkout —

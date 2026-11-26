@@ -97,10 +97,10 @@ describe("a run", () => {
       assert.equal(call.sawKey, true);
     }
     const dest = path.join(work, "app");
-    const next = words.filter((word) => word !== "--dry-run").map(shellQuote);
+    const next = words.filter((word) => word !== "--dry-run").map((word) => shellQuote(word));
     assert.equal(
       output.trimEnd().split("\n").at(-1),
-      `copied ${dest} (npm run create --dry-run changed nothing); next: cd ${dest} && npm run create -- ${next.join(" ")}`,
+      `copied ${dest} (npm run create --dry-run changed nothing); next: \`cd ${shellQuote(dest)}\`, then \`npm run create -- ${next.join(" ")}\``,
       "the next command drops --dry-run, and needs no install again",
     );
   });
@@ -164,7 +164,7 @@ describe("a run", () => {
     );
     assert.equal(
       summary[4],
-      `created ${path.join(work, "app")}; next: cd ${path.join(work, "app")} && npm run serve`,
+      `created ${path.join(work, "app")}; next: \`cd ${shellQuote(path.join(work, "app"))}\`, then \`npm run serve\``,
     );
     assert.equal(summary.length, 5);
     assert.ok(output.includes("create: 5/6 run npm run all"), "the stream reaches the output");
@@ -221,7 +221,7 @@ describe("a run", () => {
     const dest = path.join(work, "app");
     assert.equal(
       output.trimEnd().split("\n").at(-1),
-      `failed: create — npm install exited 1, so npm run create did not start. The copy and its commit stand in ${dest}, and its own message above says why; once that is fixed, run cd ${dest} && npm install && npm run create -- mt_1`,
+      `failed: create — npm install exited 1, so npm run create did not start. The copy and its commit stand in ${dest}, and its own message above says why; once that is fixed, run \`cd ${shellQuote(dest)}\`, then \`npm install\`, then \`npm run create -- mt_1\``,
     );
     assert.ok(fs.existsSync(path.join(dest, "package.json")), "the copy stands");
   });
@@ -301,7 +301,7 @@ describe("a run", () => {
     assert.ok(output.includes("a global hook said no"));
     assert.match(
       output.trimEnd().split("\n").at(-1),
-      /commit it with git -C (\S+) init -q && git -C \1 symbolic-ref HEAD refs\/heads\/main && git -C \1 add --force -A && git -C \1 commit -m 'Start from .*', then run cd .* && npm install && npm run create -- mt_1$/,
+      /commit it with `git -C (\S+) init -q`, then `git -C \1 symbolic-ref HEAD refs\/heads\/main`, then `git -C \1 add --force -A`, then `git -C \1 commit -m 'Start from [^`]*'`, then run `cd [^`]*`, then `npm install`, then `npm run create -- mt_1`$/,
     );
     assert.ok(fs.existsSync(path.join(work, "app", "package.json")), "the copy stands");
     assert.equal(npmRecord(root), null, "npm did not run");
@@ -480,7 +480,7 @@ describe("a run", () => {
     const dest = path.join(work, "my app");
     assert.equal(
       output.trimEnd().split("\n").at(-1),
-      `copied ${dest}; next: cd '${dest}' && npm install && npm run create -- <method> --title 'Bob'\\''s app'`,
+      `copied ${dest}; next: \`cd '${dest}'\`, then \`npm install\`, then \`npm run create -- <method> --title 'Bob'\\''s app'\``,
     );
   });
 

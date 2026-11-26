@@ -70,7 +70,7 @@ For each bullet that renames an identifier written as `` `oldName` `` → `` `ne
 3. **If not found**: say so and move on — this repo is already using the new name (or never used the old surface), nothing to do.
 4. **Run `npm run format` (`make format`) right after any rename**, before moving on. A literal find-and-replace changes string lengths, and this repo's Prettier config re-flows Markdown tables to keep columns aligned — a raw rename inside a `README.md` table will fail `make format-check` purely on column padding, which reads as a confusing false alarm if you hit it without knowing the rename caused it.
 
-Not every impactful change is a mechanical rename — most of this kernel's changelog is behavior: a gate that prunes differently, a wire shape that changed, a control that renders differently. **Never guess at those.** List them clearly as a "needs manual review" checklist and let the user decide how (or whether) to adapt this repo's code before continuing. If any of these are unresolved and would break `make all`, say so explicitly — better to surface that now than have Step 6 fail with a confusing error.
+Not every impactful change is a mechanical rename — most of this kernel's changelog is behavior: a gate that prunes differently, a wire shape that changed, a control that renders differently. **Never guess at those.** List them clearly as a "needs manual review" checklist and let the user decide how (or whether) to adapt this repo's code before continuing. If any of these are unresolved and would break `npm run all`, say so explicitly — better to surface that now than have Step 6 fail with a confusing error.
 
 ## Step 5 — Apply the Version Bump
 

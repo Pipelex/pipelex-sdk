@@ -89,18 +89,30 @@
  *    foreign address is the wildcard, which no locale translates, and the
  *    processes with PowerShell's `Get-CimInstance Win32_Process`: each one's
  *    parent, its start time to the microsecond and its command line.
- *  - The "group" is the tree under the process serve spawned: every process
- *    whose parent is in it and that started after that parent, so a child of
- *    a process given a member's id later is never taken for a member. A
- *    member that has ended keeps its children in the tree for the rest of a
- *    stop, which kills the tree top down, so nothing it held can start again.
+ *  - The "group" is the tree under the process serve spawned, and a process
+ *    belongs to it only when it is proven serve's: the first process, by its
+ *    start time; every process serve saw in the tree once the server listened,
+ *    recorded in the state by its id and start time; and every process whose
+ *    parent is one of those, still running, and that started after that
+ *    parent. A process id is reused once its process ends, so a process whose
+ *    recorded parent has ended is never adopted on its parent id alone, as
+ *    Explorer's would be, whose parent ends at sign-in; and a recorded member
+ *    stays one, and stoppable, after the processes between it and the first
+ *    have ended. Only during a stop, which kills the tree top down, does a
+ *    member that has ended since that stop saw it keep its children.
  *  - Windows has no polite signal a detached console program receives, so a
  *    stop terminates the tree at once rather than after a grace period.
  *  - A process's working directory cannot be read there. A recorded tree is
  *    serve's server in this checkout when its first process, if it still runs,
  *    started when the record says and the record names this checkout, and a
  *    server a person started here is recognised by a command line that runs a
- *    file of this checkout, as `next` does from its `node_modules`.
+ *    file of this checkout, as `next` does from its `node_modules`, the path
+ *    compared once it is resolved, so a short 8.3 name, a junction or a `subst`
+ *    drive on either side does not hide it.
+ *  - A `netstat` that fails is no answer, never "nothing listens". A stop that
+ *    cannot read the process table falls back to `taskkill /T /F` on the
+ *    process serve spawned while it still runs, and says the server may still
+ *    run rather than that nothing was started.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -120,6 +132,7 @@ import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { npmInvocation } from "./npm.mts";
+import { isHostOrPortOption } from "./run-next.mts";
 
 // The project's root, anchored on this file as `shared.mts` anchors its own.
 // Not imported from there, because that module loads the SDK, and serving the
@@ -239,6 +252,11 @@ export interface ServeState {
   log: string;
   checkout: string;
   startedAt: string;
+  /**
+   * On Windows, every process of the server's tree serve saw once it listened,
+   * so that one whose parents have ended is still known for serve's.
+   */
+  members?: MemberId[];
 }
 
 /**
@@ -246,11 +264,16 @@ export interface ServeState {
  * `pgid`, one that sees none of a recorded group's processes while the group
  * still runs.
  */
-class NoLsofError extends Error {
+export class NoLsofError extends Error {
   readonly pgid?: number;
-  constructor(pgid?: number) {
-    super(pgid === undefined ? "no usable lsof" : `lsof sees no process of group ${pgid}`);
+  /** What the tool answered, when it ran and failed, for the verdict to say. */
+  readonly detail?: string;
+  constructor(pgid?: number, detail?: string) {
+    super(
+      detail ?? (pgid === undefined ? "no usable lsof" : `lsof sees no process of group ${pgid}`),
+    );
     this.pgid = pgid;
+    this.detail = detail;
   }
 }
 
@@ -259,7 +282,7 @@ class NoLsofError extends Error {
  * run here at all, or, with `pid`, that of a recorded group's first process,
  * which still runs.
  */
-class NoPsError extends Error {
+export class NoPsError extends Error {
   readonly pid?: number;
   constructor(pid?: number) {
     super(pid === undefined ? "no start time" : `no start time for pid ${pid}`);
@@ -268,7 +291,7 @@ class NoPsError extends Error {
 }
 
 /** An `lsof` or `ps` serve ran was killed by a signal, so it gave no answer. */
-class HelperKilledError extends Error {
+export class HelperKilledError extends Error {
   readonly signal: NodeJS.Signals;
   constructor(helper: string, signal: NodeJS.Signals) {
     super(`${signal} killed ${helper} before it answered`);
@@ -303,11 +326,14 @@ export function isLoopbackAddress(address: string): boolean {
  * names, loopback by default, on every system.
  */
 export function devScriptBindsLoopback(script: string): boolean {
-  return (
-    /(^|\s)scripts\/run-next\.mts\s+dev(\s|$)/.test(script) ||
-    /(^|\s)(-H|--hostname)(\s+|=)("?)(\$\{APP_HOST:-127\.0\.0\.1\}|127\.0\.0\.1|localhost|::1)\4(\s|$)/.test(
-      script,
-    )
+  const runNext = /(^|\s)scripts\/run-next\.mts\s+dev(\s+(.*))?$/.exec(script);
+  if (runNext !== null) {
+    // run-next.mts hands `next` the host first, so a host option after it
+    // would win; run-next refuses one too.
+    return !(runNext[3] ?? "").split(/\s+/).some(isHostOrPortOption);
+  }
+  return /(^|\s)(-H|--hostname)(\s+|=)("?)(\$\{APP_HOST:-127\.0\.0\.1\}|127\.0\.0\.1|localhost|::1)\4(\s|$)/.test(
+    script,
   );
 }
 
@@ -385,9 +411,33 @@ export function parseNetstat(output: string): Listener[] {
   return listeners;
 }
 
+/**
+ * What `netstat -ano` prints. Unlike lsof, which exits 1 when nothing matched,
+ * netstat lists every socket and exits 0, so any other end is no answer, and is
+ * refused as one rather than read as "nothing listens", which would pass the
+ * loopback check of a server listening everywhere. A busy machine lists
+ * thousands of sockets, beyond `spawnSync`'s default buffer.
+ */
+export function readNetstat(netstat: string): string {
+  const result = spawnSync(netstat, ["-ano"], {
+    encoding: "utf-8",
+    windowsHide: true,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.signal !== null) throw new HelperKilledError(netstat, result.signal);
+  if (result.error !== undefined || result.status !== 0) {
+    const why =
+      result.error !== undefined
+        ? result.error.message
+        : `it exited ${result.status}${result.stderr?.trim() ? `: ${result.stderr.trim()}` : ""}`;
+    throw new NoLsofError(undefined, `${netstat} -ano gave no answer (${why})`);
+  }
+  return result.stdout;
+}
+
 /** Every listening TCP socket on Windows, whatever its port. */
 function netstatListeners(netstat: string): Listener[] {
-  return parseNetstat(runLsof(netstat, ["-ano"]));
+  return parseNetstat(readNetstat(netstat));
 }
 
 function requireLsof(lsof: string): void {
@@ -504,12 +554,39 @@ function runsHere(where: Whereabouts | undefined, checkout: string): boolean {
 /**
  * Whether a Windows command line runs a file under `dir`: names a path inside
  * it, in any letter case and with either slash, as `node` does when it runs
- * `next` from the checkout's `node_modules`.
+ * `next` from the checkout's `node_modules`. `dir` is the checkout's real path,
+ * and a command line may spell the same file another way: through a short 8.3
+ * name, as `%TEMP%` is on many machines, a junction or a `subst` drive. So
+ * every absolute path the command line names is resolved too, with `real`, and
+ * compared once resolved.
  */
-export function commandRunsIn(command: string, dir: string): boolean {
+export function commandRunsIn(
+  command: string,
+  dir: string,
+  real: (file: string) => string | undefined = realPathOf,
+): boolean {
   const normalize = (text: string) => text.replaceAll("/", "\\").toLowerCase();
   const prefix = normalize(dir).replace(/\\+$/, "") + "\\";
-  return normalize(command).includes(prefix);
+  if (normalize(command).includes(prefix)) return true;
+  return commandPaths(command).some((file) => {
+    const resolved = real(file);
+    return resolved !== undefined && `${normalize(resolved)}\\`.startsWith(prefix);
+  });
+}
+
+/** The absolute paths a command line names: each word, quoted or not, that is one. */
+export function commandPaths(command: string): string[] {
+  const words = [...command.matchAll(/"([^"]*)"|(\S+)/g)].map((match) => match[1] ?? match[2]);
+  return words.filter((word) => /^([a-z]:[\\/]|[\\/])/i.test(word));
+}
+
+/** A file's real path, as the system resolves it, or `undefined` when it cannot be read. */
+function realPathOf(file: string): string | undefined {
+  try {
+    return realpathSync.native(file);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Where a process runs, for a verdict. */
@@ -541,7 +618,7 @@ export interface ProcessEntry {
  * `command`, in JSON on UTF-8, so that a command line naming a path outside
  * ASCII reads as the disk spells it. `filter` narrows it to one process.
  */
-function processTableScript(filter = ""): string {
+export function processTableScript(filter = ""): string {
   return [
     "$ErrorActionPreference = 'Stop'",
     "$ProgressPreference = 'SilentlyContinue'",
@@ -550,7 +627,9 @@ function processTableScript(filter = ""): string {
     "  [pscustomobject]@{",
     "    pid = [long]$_.ProcessId",
     "    ppid = [long]$_.ParentProcessId",
-    "    started = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString(\"yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'\") } else { '' })",
+    // The invariant culture: a custom format's `:` is the culture's time
+    // separator, and its calendar may not be the Gregorian one ISO times use.
+    "    started = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString(\"yyyy-MM-dd'T'HH':'mm':'ss'.'ffffff'Z'\", [System.Globalization.CultureInfo]::InvariantCulture) } else { '' })",
     "    command = [string]$_.CommandLine",
     "  }",
     "})",
@@ -601,14 +680,23 @@ export function processTime(date: Date): string {
 }
 
 /**
- * The processes of a group on Windows: the tree under its first process. A
- * process belongs when its parent does and it started no earlier than that
- * parent, and no later than another process given the parent's id after it:
- * a process id is reused once its process ends, so a parent id alone could
- * name a stranger's child. The first process counts while it is the one the
- * group records, by its start time, or, before that was read, one that
- * started after `notBefore`. `known` holds members seen earlier that may have
- * ended since, whose children still belong.
+ * The processes of a group on Windows: the tree under its first process, each
+ * one proven serve's. A process is a member when it is
+ *
+ *  - the first process, while it is the one the group records, by its start
+ *    time, or, before that was read, one that started after `notBefore`;
+ *  - a member the group records (`members`), still running with the start
+ *    time recorded, whatever became of the processes between it and the first;
+ *  - a process whose parent is a member, or is in `known`, and that started no
+ *    earlier than that parent and no later than another process given the
+ *    parent's id after it.
+ *
+ * A process id is reused once its process ends, so a parent id alone could
+ * name a stranger's child, and the children of a process that has ended are
+ * never adopted on its id: a record outliving a reboot would otherwise take
+ * every process whose parent ended at sign-in, Explorer among them, for its
+ * own. `known` is the exception, for a stop under way: members it saw a moment
+ * ago and killed since, whose children started meanwhile still belong.
  */
 export function treeOf(
   table: readonly ProcessEntry[],
@@ -620,14 +708,18 @@ export function treeOf(
   const rootIsOurs =
     live !== undefined &&
     (group.leaderStart !== undefined ? live.started === group.leaderStart : live.started >= floor);
-  // The first process stands in the tree even once it has ended, as the
-  // parent its children still name.
-  const root: ProcessEntry = rootIsOurs
-    ? live
-    : { pid: group.pgid, ppid: -1, started: floor, command: "" };
   const members = new Map<number, ProcessEntry>();
-  const nodes: ProcessEntry[] = [root];
-  if (rootIsOurs) members.set(root.pid, root);
+  const nodes: ProcessEntry[] = [];
+  const admit = (entry: ProcessEntry) => {
+    if (members.has(entry.pid)) return;
+    members.set(entry.pid, entry);
+    nodes.push(entry);
+  };
+  if (rootIsOurs) admit(live);
+  for (const member of group.members ?? []) {
+    const now = table.find((entry) => entry.pid === member.pid && entry.started === member.started);
+    if (now !== undefined) admit(now);
+  }
   for (const entry of known) {
     if (!nodes.some((node) => node.pid === entry.pid && node.started === entry.started)) {
       nodes.push(entry);
@@ -644,17 +736,20 @@ export function treeOf(
       if (child.ppid !== parent.pid || child.pid === parent.pid) continue;
       if (child.started < parent.started) continue;
       if (successor !== undefined && child.started >= successor) continue;
-      if (members.has(child.pid)) continue;
-      members.set(child.pid, child);
-      nodes.push(child);
+      admit(child);
     }
   }
-  // A member seen earlier that still runs is still a member.
+  // A member seen earlier in this stop that still runs is still a member.
   for (const entry of known) {
     const now = table.find((each) => each.pid === entry.pid && each.started === entry.started);
     if (now !== undefined) members.set(now.pid, now);
   }
   return [...members.values()];
+}
+
+/** The identities a state records of a tree's members: each one's id and start time. */
+function memberIds(members: readonly ProcessEntry[]): MemberId[] {
+  return members.map(({ pid, started }) => ({ pid, started }));
 }
 
 // ── The process group ───────────────────────────────────────────────────────
@@ -668,6 +763,14 @@ export interface Group {
   pgid: number;
   leaderStart?: string;
   notBefore?: string;
+  /** On Windows, the members serve saw once the server listened (`treeOf`). */
+  members?: readonly MemberId[];
+}
+
+/** A process as a state records it: its id, and when it started, which tells it from a later one. */
+export interface MemberId {
+  pid: number;
+  started: string;
 }
 
 /** Whether a process exists, or with a negative id, a process group. */
@@ -786,8 +889,11 @@ function signalGroup(pgid: number, signal: NodeJS.Signals): boolean {
   }
 }
 
-/** How stopping a group ended: it has, the system refused the signal, or it outlived the hard one. */
-export type StopOutcome = "stopped" | "refused" | "survived";
+/**
+ * How stopping a group ended: it has, the system refused the signal, it
+ * outlived the hard one, or whether it ended could not be read.
+ */
+export type StopOutcome = "stopped" | "refused" | "survived" | "unknown";
 
 /**
  * Stop a whole group: a polite signal, then a hard one once the grace period
@@ -848,6 +954,66 @@ function killCommand(pgid: number): string {
   return WINDOWS ? `taskkill /T /F /PID ${pgid}` : `kill -- -${pgid}`;
 }
 
+/** End a group by force, with no tool to read: the whole tree on Windows, the group elsewhere. */
+function forceKill(pgid: number): void {
+  if (WINDOWS) {
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(pgid)], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    process.kill(-pgid, "SIGKILL");
+  } catch {
+    // Gone already, or refused: the verdict says it may still run either way.
+  }
+}
+
+/**
+ * Stop the group a start has just spawned, and never throw for a tool that
+ * cannot answer: on Windows the stop reads the process table, and a
+ * PowerShell that fails or is killed then would leave a detached server
+ * running behind a verdict saying nothing was started. Such a stop ends as
+ * `unknown`, with `unproven` saying why, after the group is ended by force
+ * while `spawnedRuns` says the process serve spawned still runs, so that its
+ * id cannot name another process yet; once it has ended, what it left is
+ * reported and nothing is sent.
+ */
+export async function stopSpawned(
+  config: ServeConfig,
+  group: Group,
+  spawnedRuns: () => boolean,
+  stopper: typeof stopGroup = stopGroup,
+): Promise<{ outcome: StopOutcome; unproven?: string }> {
+  try {
+    return { outcome: await stopper(config, group) };
+  } catch (error) {
+    if (
+      !(
+        error instanceof NoPsError ||
+        error instanceof HelperKilledError ||
+        error instanceof NoLsofError
+      )
+    ) {
+      throw error;
+    }
+    if (!spawnedRuns()) {
+      return {
+        outcome: "unknown",
+        unproven:
+          `${error.message}, and its first process had already exited, so nothing was sent to ` +
+          "what it left",
+      };
+    }
+    forceKill(group.pgid);
+    return {
+      outcome: "unknown",
+      unproven: `${error.message}, so it was ended by force (${killCommand(group.pgid)}) unread`,
+    };
+  }
+}
+
 /**
  * The verdict for a group serve or stop meant to stop and could not, `why`
  * saying why it was stopping it. Its record is kept, so a later stop still
@@ -859,8 +1025,19 @@ function stillRunning(
   why: string,
   outcome: StopOutcome,
   recorded = true,
+  unproven?: string,
 ): string {
   const { serve, stop } = config.commands;
+  if (outcome === "unknown") {
+    const then = recorded
+      ? `It may still be running, and is still recorded in ${STATE_FILE}, so ${stop} finds it.`
+      : `It may still be running, and was never recorded, so ${stop} cannot find it: check ` +
+        `for it, and stop it with ${killCommand(pgid)} where that is allowed.`;
+    return (
+      `failed: still-running — the server ${serve} started (process group ${pgid}) ${why}, ` +
+      `and whether it stopped could not be read: ${unproven ?? "no tool answered"}. ${then}`
+    );
+  }
   const cause =
     outcome === "refused"
       ? "the system refused to signal it, as a sandbox refuses a signal to a process started " +
@@ -882,9 +1059,19 @@ function stillRunning(
 function readState(checkout: string): ServeState | undefined {
   try {
     const state = JSON.parse(readFileSync(path.join(checkout, STATE_FILE), "utf-8")) as ServeState;
-    return Number.isInteger(state.pgid) && state.pgid > 1 && typeof state.leaderStart === "string"
-      ? state
+    if (
+      !(Number.isInteger(state.pgid) && state.pgid > 1 && typeof state.leaderStart === "string")
+    ) {
+      return undefined;
+    }
+    // A member is only as good as its identity: one without both is dropped.
+    const members = Array.isArray(state.members)
+      ? state.members.filter(
+          (member) =>
+            Number.isInteger(member?.pid) && typeof member?.started === "string" && member.started,
+        )
       : undefined;
+    return { ...state, members };
   } catch {
     return undefined;
   }
@@ -902,7 +1089,7 @@ function removeState(checkout: string): void {
 
 /** The group a state file records. */
 function recordedGroup(state: ServeState): Group {
-  return { pgid: state.pgid, leaderStart: state.leaderStart };
+  return { pgid: state.pgid, leaderStart: state.leaderStart, members: state.members };
 }
 
 /**
@@ -938,9 +1125,10 @@ function ownership(
 
 /**
  * `ownership` on Windows, where the group is the tree under its first process.
- * The tree holds only processes proven the record's: the first one by its start
- * time, each one under it by starting after its parent and before any process
- * given its parent's id later. Unlike a process group's id, a process's id is
+ * The tree holds only processes proven the record's (`treeOf`): the first one
+ * and the recorded members by their start times, each one under them by
+ * starting after its parent and before any process given its parent's id
+ * later. Unlike a process group's id, a process's id is
  * given to another process as soon as it ends, even while its children run on,
  * so the process holding the recorded id says nothing about a tree that still
  * has members. When the tree has none, a process holding that id is another's,
@@ -1250,7 +1438,7 @@ export async function serve(config: ServeConfig): Promise<number> {
       print(
         error.pgid !== undefined
           ? unseenGroup(config, error.pgid)
-          : refusedNoLsof(config, `${serveCommand} reads who holds the port`),
+          : refusedNoLsof(config, `${serveCommand} reads who holds the port`, error.detail),
       );
       return EXIT_FAILED;
     }
@@ -1274,7 +1462,13 @@ export async function serve(config: ServeConfig): Promise<number> {
  * The `refused: no-lsof` verdict for a tool that cannot read the listeners:
  * `need` says what serve or stop reads them for.
  */
-function refusedNoLsof(config: ServeConfig, need: string): string {
+function refusedNoLsof(config: ServeConfig, need: string, detail?: string): string {
+  if (detail !== undefined) {
+    return (
+      `refused: no-lsof — ${need}, and ${detail}, so it cannot tell what listens. Nothing more ` +
+      `was done. Run ${config.commands.dev} in the foreground.`
+    );
+  }
   if (WINDOWS) {
     return (
       `refused: no-lsof — ${need} with netstat, and ${config.lsof} is not on the PATH or does ` +
@@ -1450,6 +1644,13 @@ async function reportOwnServer(
     );
     return EXIT_FAILED;
   }
+  if (WINDOWS) {
+    // Members started since the record was written are recorded too.
+    writeState(checkout, {
+      ...state,
+      members: memberIds(treeOf(readProcessTable(config.ps), group)),
+    });
+  }
   const title = "title" in page ? page.title : undefined;
   print(`already-serving ${describePage(url, title)} (log ${LOG_FILE}); stop it with: ${stop}`);
   return EXIT_OK;
@@ -1550,10 +1751,12 @@ async function start(
   // verdict says it still runs rather than the status it was stopped for.
   let settled = false;
   let recorded = false;
+  let unproven: string | undefined;
   const stopStarted = async (): Promise<StopOutcome> => {
-    const outcome = await stopGroup(config, group);
-    if (outcome === "stopped") removeState(checkout);
-    return outcome;
+    const stopped = await stopSpawned(config, group, () => exit === undefined);
+    unproven = stopped.unproven;
+    if (stopped.outcome === "stopped") removeState(checkout);
+    return stopped.outcome;
   };
   const giveUp = async (status: string, reason: string, tail = true): Promise<number> => {
     settled = true;
@@ -1562,7 +1765,7 @@ async function start(
     print(
       outcome === "stopped"
         ? `${status} — ${reason}`
-        : stillRunning(config, pgid, `failed to start (${status})`, outcome, recorded),
+        : stillRunning(config, pgid, `failed to start (${status})`, outcome, recorded, unproven),
     );
     return EXIT_FAILED;
   };
@@ -1586,10 +1789,25 @@ async function start(
     }
     group.leaderStart = leaderStart;
     const startedAt = new Date().toISOString();
-    const record = (url: string) => {
-      writeState(checkout, { pgid, leaderStart, port, url, log: LOG_FILE, checkout, startedAt });
+    // On Windows the record also names every process of the tree it can see,
+    // read once the server listens and again once its page answers, so that a
+    // server whose parents end is still known for serve's (`treeOf`).
+    const record = (url: string, members?: MemberId[]) => {
+      if (members !== undefined) group.members = members;
+      writeState(checkout, {
+        pgid,
+        leaderStart,
+        port,
+        url,
+        log: LOG_FILE,
+        checkout,
+        startedAt,
+        ...(group.members !== undefined ? { members: [...group.members] } : {}),
+      });
       recorded = true;
     };
+    const seen = () =>
+      WINDOWS ? memberIds(treeOf(readProcessTable(config.ps), group)) : undefined;
     record(urlOf(host.includes(":") ? `[${host}]` : host, port));
     print(`starting the dev server on port ${port} (process group ${pgid}, log ${LOG_FILE})`);
 
@@ -1629,7 +1847,7 @@ async function start(
     }
 
     const url = urlOf(loopbackAddressOf(listening), port);
-    record(url);
+    record(url, seen());
     const page = await requestPage(url, config.pageMs, () => exit === undefined, interrupt.signal);
     if (interrupt.received()) return await interrupted();
     if (page.status === "exited") {
@@ -1655,6 +1873,12 @@ async function start(
       );
     }
 
+    try {
+      record(url, seen());
+    } catch (error) {
+      // The members read once it listened stand; the page is proven.
+      if (!(error instanceof NoPsError)) throw error;
+    }
     settled = true;
     print(`serving ${describePage(url, page.title)} (log ${LOG_FILE}); stop it with: ${stop}`);
     return EXIT_OK;
@@ -1674,7 +1898,9 @@ async function start(
     if (!settled) {
       const outcome = await stopStarted();
       if (outcome !== "stopped") {
-        print(stillRunning(config, pgid, "hit an error while starting", outcome, recorded));
+        print(
+          stillRunning(config, pgid, "hit an error while starting", outcome, recorded, unproven),
+        );
       }
     }
   }
@@ -1702,6 +1928,7 @@ export async function stop(config: ServeConfig): Promise<number> {
               config,
               `${stopCommand} checks that the recorded process group still runs in this ` +
                 "checkout before signalling it",
+              error.detail,
             ),
       );
       return EXIT_FAILED;
@@ -1781,10 +2008,33 @@ export function parseServeArgs(argv: readonly string[]): ServeArgs {
     const value = rest.shift();
     if (value === undefined) throw new UsageError(`${flag} needs a value`);
     if (flag === "--host") args.host = value;
-    else if (flag === "--port") args.port = /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN;
+    else if (flag === "--port") args.port = portOf(value);
     else throw new UsageError(`unknown argument ${flag}`);
   }
   return args;
+}
+
+/** A port as typed: a number, or `NaN`, which serve refuses as `bad-port`. */
+function portOf(value: string): number {
+  return /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN;
+}
+
+/**
+ * The host and port serve is asked for: the flags, else `APP_HOST` and
+ * `APP_PORT` from the environment, a blank value being none, as `npm run dev`
+ * reads them. Under make (`MAKELEVEL`) the flags are the whole request: the
+ * Makefile exports its own defaults under those names and has already turned
+ * what the person gave, on its command line or in the shell, into flags.
+ */
+export function withEnvironment(args: ServeArgs, env: NodeJS.ProcessEnv): ServeArgs {
+  if (env.MAKELEVEL?.trim()) return args;
+  const host = env.APP_HOST?.trim();
+  const port = env.APP_PORT?.trim();
+  return {
+    ...args,
+    ...(args.host === undefined && host ? { host } : {}),
+    ...(args.port === undefined && port ? { port: portOf(port) } : {}),
+  };
 }
 
 /** The whole command, exit code included. */
@@ -1794,7 +2044,7 @@ export async function runServe(
 ): Promise<number> {
   let args: ServeArgs;
   try {
-    args = parseServeArgs(argv);
+    args = withEnvironment(parseServeArgs(argv), process.env);
   } catch (error) {
     if (!(error instanceof UsageError)) throw error;
     console.error(`serve: ${error.message}\n${USAGE}`);

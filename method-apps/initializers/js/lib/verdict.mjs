@@ -43,7 +43,33 @@ export class Verdict extends Error {
   }
 }
 
-/** Quote a word for a line a person may paste into a shell. */
-export function shellQuote(word) {
-  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+import process from "node:process";
+
+/**
+ * Quote a word for a line a person may paste into this system's shell. A POSIX
+ * shell takes single quotes. Windows has two shells and no quoting they share
+ * entirely: double quotes are quotes in both PowerShell and `cmd`, where single
+ * quotes are not quotes to `cmd`, so a word is double-quoted there, unless it
+ * holds a `$` or a backquote, which PowerShell would expand inside double
+ * quotes, and then it is single-quoted as PowerShell reads it. A word left bare
+ * on Windows holds nothing either shell reads specially: no `@`, which
+ * PowerShell splats, no `,`, which it makes a list, and no `%`, though `cmd`
+ * expands a `%NAME%` even between quotes.
+ */
+export function shellQuote(word, platform = process.platform) {
+  if (platform !== "win32") {
+    return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+  }
+  if (/^[\w+=:./\\-]+$/.test(word)) return word;
+  if (/[$`]/.test(word)) return `'${word.replaceAll("'", "''")}'`;
+  return `"${word.replaceAll('"', '""')}"`;
+}
+
+/**
+ * Commands a person runs one after the other, each in backquotes, as npm names
+ * a command: no separator between two commands reads the same in every shell,
+ * since Windows PowerShell 5.1 has no `&&` and `cmd` no `;`.
+ */
+export function inTurn(commands) {
+  return commands.map((command) => `\`${command}\``).join(", then ");
 }
