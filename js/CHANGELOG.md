@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`getFilePreview`, the PDF preview of an Office file**: `PipelexApiClient.getFilePreview(uri)` asks `GET /v1/files/preview` where the PDF of a stored Word, Excel or PowerPoint file stands and answers a `FilePreview` discriminated on `state`, `ready` with its signed `url` and `url_expires_at`, `preparing`, `failed` with its `failure` `{ code, detail }`, or `unavailable`; the platform's refusals are `ApiResponseError`s, and a ready preview's link is kept out of every error the SDK throws (`docs/files.md`). `FilePreview`, `FilePreviewState`, `FilePreviewFailure` and `FilePreviewFailureCode` are exported.
+
 ### Changed
 
 - **A plain `http:` link on the client's own origin is fetched without `allowHttp`**: `loadStoredTexts`, the result readers that load stored texts, `fetchArtifact` and `downloadArtifacts` accept a resolved link on plain `http:` when its origin (scheme, host and port) is the origin of the client's configured base URL, so a self-hosted runner listening on plain http hands back its stored texts, images and documents with no option set; a plain `http:` link on any other origin is still refused unless `allowHttp` is set.
