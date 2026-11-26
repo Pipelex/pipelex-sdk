@@ -236,7 +236,7 @@ A `FilePreview` carries all four members in every state, those its state does no
 
 **The link is a bearer capability.** Keep it out of logs and ask again for a fresh one rather than storing it. The SDK keeps it out of its own errors: an answer it cannot read, one whose `state` it does not know, a `ready` one without a non-empty `url` and a string `url_expires_at`, or a `failed` one whose `failure` is not a `code` and a `detail`, is an `ApiResponseError` of `client.response_unreadable` whose `responseBody` replaces every `url` member and every link's query with `[redacted]`, and which carries no `cause` ([errors.md](./errors.md)). The answer it hands back holds the four members and nothing else the platform may add.
 
-A `uri` that is not a non-empty string is refused before any request with a `RequestArgumentError`. The platform answers `422` `pipelex.storage.uri_invalid` for a malformed address, `403` `pipelex.org.mismatch` for another organization's, and `503` `runtime.unavailable`, `retry` `yes`, when the conversion could not be queued, so the same request can be sent again. Each is an `ApiResponseError` whose problem's `domain` and `retry` say what to do.
+A `uri` that is not a non-empty string is refused before any request with a `RequestArgumentError`. The platform answers `422` `pipelex.storage.uri_invalid` for a malformed address, `403` `pipelex.org.mismatch` for another organization's, `422` `request.invalid` for an address over 512 characters, and `503` `runtime.unavailable`, `retry` `yes`, when the conversion could not be queued, so the same request can be sent again. Each is an `ApiResponseError` whose problem's `domain` and `retry` say what to do.
 
 ## A run's files
 

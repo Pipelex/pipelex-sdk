@@ -5620,8 +5620,9 @@ export class PipelexApiClient implements HostedProtocolSurface {
    *
    * Throws `RequestArgumentError` for a `uri` that is not a non-empty string, before any request.
    * Throws `ApiResponseError`: `422` `pipelex.storage.uri_invalid` for a malformed address, `403`
-   * `pipelex.org.mismatch` for another organization's, and `503` `runtime.unavailable`, `retry`
-   * `yes`, when the conversion could not be queued, so the same request can be sent again. An
+   * `pipelex.org.mismatch` for another organization's, `422` `request.invalid` for an address over
+   * 512 characters, and `503` `runtime.unavailable`, `retry` `yes`, when the conversion could not
+   * be queued, so the same request can be sent again. An
    * answer that is not a preview, an object with a known `state` and the members that state fills,
    * is an answer the SDK cannot read, thrown as an `ApiResponseError` whose body hides the link.
    */

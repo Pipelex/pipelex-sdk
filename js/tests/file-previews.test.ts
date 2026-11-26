@@ -170,6 +170,12 @@ describe("getFilePreview", () => {
       { domain: "auth", retry: "no", detail: "The address belongs to another organization." },
     ],
     [
+      "an address over 512 characters",
+      "request.invalid",
+      422,
+      { domain: "input", retry: "no", detail: "uri: String should have at most 512 characters." },
+    ],
+    [
       "a conversion that could not be queued",
       "runtime.unavailable",
       503,
