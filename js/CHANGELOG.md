@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.71.0] - 2026-11-26
+
+### Added
+
+- **`getFilePreview`, the PDF preview of an Office file**: `PipelexApiClient.getFilePreview(uri)` asks `GET /v1/files/preview` where the PDF of a stored Word, Excel or PowerPoint file stands and answers a `FilePreview` discriminated on `state`, `ready` with its signed `url` and `url_expires_at`, `preparing`, `failed` with its `failure` `{ code, detail }`, or `unavailable`; the platform's refusals are `ApiResponseError`s, and a ready preview's link is kept out of every error the SDK throws (`docs/files.md`). `FilePreview`, `FilePreviewState`, `FilePreviewFailure` and `FilePreviewFailureCode` are exported.
+
+### Changed
+
+- **A plain `http:` link on the client's own origin is fetched without `allowHttp`**: `loadStoredTexts`, the result readers that load stored texts, `fetchArtifact` and `downloadArtifacts` accept a resolved link on plain `http:` when its origin (scheme, host and port) is the origin of the client's configured base URL, so a self-hosted runner listening on plain http hands back its stored texts, images and documents with no option set; a plain `http:` link on any other origin is still refused unless `allowHttp` is set.
+- **`ArtifactCapableClient` carries `originUrl` (Breaking)**: a client handed to `loadStoredTexts`, `fetchArtifact` or `downloadArtifacts` states the origin of its configured base URL, which `PipelexApiClient` now exposes as its public `originUrl`; a fake or a wrapper implementing the interface adds the field.
+
+### Fixed
+
+- **A self-hosted runner's refusals read as the platform's**: a reference a self-hosted runner's bulk resolve route refuses as outside the caller's scope, `auth.forbidden` whose `params.requirement` is `read_scope_under_caller`, now gives `StoredTextLoadError` and `ArtifactFetchError` the problem `input.reference_not_found`, as the platform's `pipelex.org.mismatch` does, instead of `runtime.unexpected`; an `auth.forbidden` naming any other requirement still reads as `runtime.unexpected`. `ArtifactItemError` carries the refusal's `params`, on the resolve route's items and on the download verdict's, `artifactFetchProblem` takes the `requirement`, and `ArtifactFetchError` and `StoredTextLoadError` take it beside their reason and keep it as their `requirement`, `undefined` when the refusal names none, so a caller tells a scope refusal from another `auth.forbidden`, whose problem keeps no requirement.
+
 ## [v0.69.5] - 2026-11-20
 
 ### Added

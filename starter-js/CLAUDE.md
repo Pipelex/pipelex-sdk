@@ -225,7 +225,7 @@ export async function pollExtractEntitiesRun(
 }
 ```
 
-The shared helpers in `src/lib/` own the SDK call + `classifyPipelineError` (server-side, where the SDK's errors, and the problem each carries, still exist): `executeBlockingRun` wraps `client.execute` and **adapts its response onto `RunResults`** through the SDK's own `resultsFromExecute` — the canonical lift of `main_stuff`, the working memory, the graph pair, the three I/O artifacts and the usage pair off the extension-open `pipe_output` onto their declared fields, public since `@pipelex/sdk` 0.20.1 — so one narrower serves both modes and every `RunResults` field reads the same whichever path ran. Do not restate that mapping by hand: a partial copy is what made `working_memory` durable-only for two releases; `startDurableRun` wraps `client.start`; `pollDurableRun` does one `getRunStatus` (+ `getRunResult` on a terminal status) tick.
+The shared helpers in `src/lib/` own the SDK call + `classifyPipelineError` (server-side, where the SDK's errors, and the problem each carries, still exist): `executeBlockingRun` wraps `client.execute` and **adapts its response onto `RunResults`** through the SDK's own `resultsFromExecute` — the canonical lift of `main_stuff`, the working memory, the graph pair, the three I/O artifacts and the usage pair off the extension-open `pipe_output` onto their declared fields, public since `@pipelex/sdk` 0.20.1 — so one narrower serves both modes and every `RunResults` field reads the same whichever path ran. Do not restate that mapping by hand: a partial copy is what made `working_memory` durable-only for two releases. The lift loads nothing, so `executeBlockingRun` then loads the stored texts of `main_stuff` with the SDK's `loadStoredTexts`, as `getRunResult` loads a durable run's, and a text that fails to load is classified as `result_not_loaded`, never as the ~30s cap; `startDurableRun` wraps `client.start`; `pollDurableRun` does one `getRunStatus` (+ `getRunResult` on a terminal status) tick.
 
 **One narrower contract — `parseXxx(results: RunResults)`, an adapter over the method's generated binder.** Both modes deliver the output the same way, so the narrower reads one field and hands it straight to the schema projected from the bundle:
 
@@ -320,26 +320,26 @@ Enforced via Husky + lint-staged on commit.
 
 ## Scripts (via Make)
 
-| Target                | Purpose                                                                                        |
-| --------------------- | ---------------------------------------------------------------------------------------------- |
-| `make dev`            | Start the Next.js dev server                                                                   |
-| `make build`          | Production build                                                                               |
-| `make lint`           | ESLint                                                                                         |
-| `make format`         | Prettier write                                                                                 |
-| `make format-check`   | Prettier check (CI)                                                                            |
-| `make typecheck`      | `tsc --noEmit` (app) + `tsc -p tsconfig.e2e.json` (e2e) + `tsc -p tsconfig.scripts.json`       |
-| `make codegen`        | Regenerate `src/generated/` from `methods/` (needs `PIPELEX_API_KEY`; **not** in `make all`)   |
-| `make codegen-check`  | Prove `src/generated/` is current — offline, no key. Part of `make check`                      |
-| `make codegen-verify` | Ask the engine whether the committed crates are still current (needs a key; not in `make all`) |
-| `make add-method`     | Scaffold a method into a new tab — `METHOD=<path \| mt_… \| address>` (needs a key)            |
-| `make test`           | Vitest single pass                                                                             |
-| `make agent-test`     | Vitest, silent on success (preferred for AI agents)                                            |
-| `make agent-check`    | `check`, installing first when `node_modules` is missing (for AI agents)                       |
-| `make test-e2e`       | Optional Playwright e2e (live API, costs an LLM call; prompts first, auto-skips without a key) |
-| `make check`          | lint + format-check + typecheck + codegen-check                                                |
-| `make all`            | check + test + build (does **not** include e2e, `codegen`, or `codegen-verify`)                |
-| `make use-local`      | Pack and install siblings `../pipelex-sdk/js` + `../mthds-form` (alias: `ul`)                  |
-| `make use-npm`        | Restore the latest npm-published `@pipelex/sdk` + `@pipelex/mthds-form` (alias: `un`)          |
+| Target                | Purpose                                                                                                    |
+| --------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `make dev`            | Start the Next.js dev server                                                                               |
+| `make build`          | Production build                                                                                           |
+| `make lint`           | ESLint                                                                                                     |
+| `make format`         | Prettier write                                                                                             |
+| `make format-check`   | Prettier check (CI)                                                                                        |
+| `make typecheck`      | `tsc --noEmit` (app) + `tsc -p tsconfig.e2e.json` (e2e) + `tsc -p tsconfig.scripts.json`                   |
+| `make codegen`        | Regenerate `src/generated/` from `methods/` (needs `PIPELEX_API_KEY`; **not** in `make all`)               |
+| `make codegen-check`  | Prove `src/generated/` is current — offline, no key. Part of `make check`                                  |
+| `make codegen-verify` | Ask the engine whether the committed crates are still current (needs a key; not in `make all`)             |
+| `make add-method`     | Scaffold a method into a new tab — `METHOD=<path \| mt_… \| address>` (needs a key)                        |
+| `make test`           | Vitest single pass                                                                                         |
+| `make agent-test`     | Vitest, silent on success (preferred for AI agents)                                                        |
+| `make agent-check`    | `check`, installing first when `node_modules` is missing or older than `package-lock.json` (for AI agents) |
+| `make test-e2e`       | Optional Playwright e2e (live API, costs an LLM call; prompts first, auto-skips without a key)             |
+| `make check`          | lint + format-check + typecheck + codegen-check                                                            |
+| `make all`            | check + test + build (does **not** include e2e, `codegen`, or `codegen-verify`)                            |
+| `make use-local`      | Pack and install siblings `../pipelex-sdk/js` + `../mthds-form` (alias: `ul`)                              |
+| `make use-npm`        | Restore the latest npm-published `@pipelex/sdk` + `@pipelex/mthds-form` (alias: `un`)                      |
 
 ## Local package development (`use-local`)
 

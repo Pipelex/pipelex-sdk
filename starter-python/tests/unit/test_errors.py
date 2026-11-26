@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 from mthds.protocol.problem.models import Problem
-from pipelex_sdk.artifact_models import ArtifactScope, DownloadArtifactsResult
+from pipelex_sdk.artifact_models import STORED_TEXT_CONCEPTS_MISSING, ArtifactScope, DownloadArtifactsResult
 from pipelex_sdk.errors import (
     ApiResponseError,
     ApiUnreachableError,
@@ -15,6 +15,7 @@ from pipelex_sdk.errors import (
     RunFailedError,
     RunLifecycleUnavailableError,
     RunTimeoutError,
+    StoredTextLoadError,
     UnsupportedUploadCapabilityError,
     UploadAuthenticationError,
     run_failed_problem,
@@ -436,3 +437,67 @@ class TestPresentError:
         rendered = buffer.getvalue()
         assert "Bad value [x] in [/y]." in rendered
         assert "Reason: list [1, 2] [bold]" in rendered
+
+
+class TestStoredTextFailure:
+    """A run that finished, one of whose long texts could not be loaded from the run's storage."""
+
+    @staticmethod
+    def _failure() -> StoredTextLoadError:
+        return StoredTextLoadError(
+            "The stored text at $.summary could not be loaded: the request timed out.",
+            uri="pipelex-storage://org/runs/run-9/generated/ab/value.txt",
+            path="$.summary",
+            reason="timeout",
+        )
+
+    def test_is_never_the_api_out_of_reach_nor_files_that_failed_to_save(self):
+        presentation = present_error(self._failure())
+        assert presentation.message.startswith("The run finished, but its result could not be loaded:")
+        assert "did not answer in time" not in presentation.message
+        assert presentation.hint is not None
+        assert "saving its files" not in presentation.hint
+        assert "Where: $.summary in the result" in presentation.details
+        assert "Why: timeout" in presentation.details
+
+    def test_a_durable_run_is_read_again_by_its_id_when_a_second_try_can_pass(self):
+        presentation = present_error(self._failure())
+        assert presentation.hint == (
+            "The run's result is kept, and this failure can pass on a second try: "
+            "read it again with `widget detached wait <run id>`, which does not run the method again."
+        )
+        # The read's verdict is folded into the hint, never printed as a line that would invite a second paid run.
+        assert not any(line.startswith("Retry:") for line in presentation.details)
+
+    def test_a_failure_a_second_try_meets_again_is_never_sent_round_to_another_run(self):
+        too_large = StoredTextLoadError(
+            "The stored text at $ could not be loaded: it is over the load's limit.",
+            uri="pipelex-storage://org/runs/run-9/generated/ab/value.txt",
+            path="$",
+            reason="too_large",
+        )
+        blocking = present_error(too_large, blocking=True)
+        assert blocking.hint is not None
+        assert "would meet the same failure" in blocking.hint
+        assert "widget attended" not in blocking.hint
+        assert present_error(too_large).hint == "The run's result is kept, but reading it again would meet the same failure."
+
+    def test_a_result_not_yet_whole_is_read_again_on_a_durable_run_and_never_on_a_blocking_one(self):
+        missing = StoredTextLoadError(
+            "The stored text at $ could not be loaded: the result does not yet say which values are texts.",
+            uri="pipelex-storage://org/runs/run-9/generated/ab/value.txt",
+            path="$",
+            reason=STORED_TEXT_CONCEPTS_MISSING,
+        )
+        durable = present_error(missing)
+        assert durable.hint is not None
+        assert "can pass on a second try" in durable.hint
+        blocking = present_error(missing, blocking=True)
+        assert blocking.hint is not None
+        assert "would meet the same failure" in blocking.hint
+
+    def test_a_blocking_run_is_run_again_since_its_result_is_kept_nowhere(self):
+        presentation = present_error(self._failure(), blocking=True)
+        assert presentation.hint is not None
+        assert "kept nowhere else" in presentation.hint
+        assert "widget attended" in presentation.hint

@@ -87,7 +87,7 @@ make li                       - Shorthand -> lock install
 endef
 export HELP
 
-.PHONY: all help env env-verbose check-uv check-uv-verbose lock install install-if-missing update build test-package test e2e-test live-account test-with-prints t tp gha-tests agent-test format lint pyright mypy pylint merge-check-ruff-format merge-check-ruff-lint merge-check-pyright merge-check-mypy merge-check-pylint check-unused-imports fix-unused-imports check-TODOs cleanderived cleanenv cleanall c cc li agent-check
+.PHONY: all help env env-verbose check-uv check-uv-verbose lock install install-if-needed update build test-package test e2e-test live-account test-with-prints t tp gha-tests agent-test format lint pyright mypy pylint merge-check-ruff-format merge-check-ruff-lint merge-check-pyright merge-check-mypy merge-check-pylint check-unused-imports fix-unused-imports check-TODOs cleanderived cleanenv cleanall c cc li agent-check
 
 all help:
 	@echo "$$HELP"
@@ -137,17 +137,31 @@ env-verbose: check-uv-verbose
 	fi
 	@echo "Using Python: $$($(VENV_PYTHON) --version) from $$(readlink $(VENV_PYTHON) 2>/dev/null || echo $(VENV_PYTHON))"
 
+# Every target that syncs .venv with uv.lock touches this stamp after the sync succeeds, so a
+# uv.lock newer than the stamp is one that moved after the last sync: a merge, a pull or a
+# `make lock` brought other versions than .venv holds.
+SYNC_STAMP := $(VIRTUAL_ENV)/.uv-lock-synced
+
 install: env-verbose
 	$(call PRINT_TITLE,"Installing dependencies")
 	@. "$(VIRTUAL_ENV)/bin/activate" && \
 	uv sync --all-extras && \
+	touch "$(SYNC_STAMP)" && \
 	echo "Installed $(PROJECT_NAME) dependencies in ${VIRTUAL_ENV} with all extras.";
 
 # The agent targets install the project first when it was never installed, so a fresh checkout
-# can run them directly. The test reads a tool rather than the virtual environment, because `env`
-# creates an empty one for every target that depends on it, and an interrupted sync leaves one too.
-install-if-missing:
-	@[ -x "$(VIRTUAL_ENV)/bin/pytest" ] || $(MAKE) --no-print-directory install
+# can run them directly, and again when uv.lock moved after the last sync, so they never run
+# against other versions than the lock pins. The first test reads a tool rather than the virtual
+# environment, because `env` creates an empty one for every target that depends on it, and an
+# interrupted sync leaves one too. A package installed over the locked one after the sync stays:
+# only a lock that moved since brings the locked versions back.
+install-if-needed:
+	@if [ ! -x "$(VIRTUAL_ENV)/bin/pytest" ]; then \
+		$(MAKE) --no-print-directory install; \
+	elif [ ! -f "$(SYNC_STAMP)" ] || [ uv.lock -nt "$(SYNC_STAMP)" ]; then \
+		echo "uv.lock has moved since .venv was last synced with it, or that sync was never recorded: running make install first."; \
+		$(MAKE) --no-print-directory install; \
+	fi
 
 lock: env
 	$(call PRINT_TITLE,"Resolving dependencies without update")
@@ -158,6 +172,7 @@ update: env
 	$(call PRINT_TITLE,"Updating all dependencies")
 	@uv lock --upgrade && \
 	uv sync --all-extras && \
+	touch "$(SYNC_STAMP)" && \
 	echo "Updated dependencies in ${VIRTUAL_ENV}";
 
 
@@ -240,7 +255,7 @@ e2e-test: env
 # `make live-starter`, `make live-method-app`, `make live-codegen-verify` and `make live-create` run
 # it before a template's live checks. Nothing is sent before the base URL, the production gate, the
 # key and its expectations hold.
-live-account: install-if-missing
+live-account: install-if-needed
 	@$(VENV_PYTHON) -m tests.e2e.live_account --base-url-env "$(BASE_URL_ENV)" $(if $(DEFAULT_BASE_URL),--default-base-url "$(DEFAULT_BASE_URL)") --run-command "$(RUN_COMMAND)"
 
 test-with-prints: env
@@ -261,7 +276,7 @@ gha-tests: env
 	$(call PRINT_TITLE,"Unit testing for GitHub Actions")
 	$(VENV_PYTEST) --exitfirst --quiet
 
-agent-test: install-if-missing
+agent-test: install-if-needed
 	@echo "• Running unit tests..."
 	@tmpfile=$$(mktemp); \
 	$(VENV_PYTEST) -o log_level=WARNING --tb=short -q > "$$tmpfile" 2>&1; \
@@ -352,7 +367,7 @@ cc: cleanderived c
 check: cc check-unused-imports pylint
 	@echo "> done: check"
 
-agent-check: install-if-missing
+agent-check: install-if-needed
 	@$(MAKE) --no-print-directory fix-unused-imports format lint pyright mypy
 	@echo "> done: agent-check"
 

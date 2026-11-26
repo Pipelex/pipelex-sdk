@@ -1,4 +1,4 @@
-.PHONY: help install install-if-missing check check-family lint format format-check typecheck test test-family agent-check agent-test build all lock clean use-local use-local-form use-published use-published-form local-status ul un
+.PHONY: help install install-if-needed check check-family lint format format-check typecheck test test-family agent-check agent-test build all lock clean use-local use-local-form use-published use-published-form local-status ul un
 
 # The family's root gate. Each template is a directory with its own Makefile,
 # copied out whole into the projects created from it, so every target here
@@ -49,8 +49,8 @@ install: ## Install every template's dependencies
 
 # The git hooks belong to the repository's root, whose `make install` wires them
 # and whose pre-commit hook runs each template's own hook from inside it.
-install-if-missing: ## Install each template that was never installed (its node_modules or .venv is missing)
-	$(call each,install-if-missing)
+install-if-needed: ## Install each template that was never installed, or whose lockfile moved since its last install
+	$(call each,install-if-needed)
 
 check: check-family ## Check the family, then run every template's check (lint, format, typecheck, codegen)
 	$(call each,check)
@@ -84,10 +84,10 @@ test-family: ## Run the tests of the family's own scripts and of every initializ
 test: test-family ## Run the family's tests, then every template's
 	$(call each,test)
 
-agent-check: install-if-missing ## Check the family, then every template, installing first what was never installed (for agents)
+agent-check: install-if-needed ## Check the family, then every template, installing first what was never installed or is older than its lockfile (for agents)
 	@$(MAKE) --no-print-directory check
 
-agent-test: install-if-missing ## Run every test, silent on success, installing first what was never installed (for agents)
+agent-test: install-if-needed ## Run every test, silent on success, installing first what was never installed or is older than its lockfile (for agents)
 	@OUTPUT=$$(node --test $(FAMILY_TESTS) 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 	$(call each,agent-test)
 

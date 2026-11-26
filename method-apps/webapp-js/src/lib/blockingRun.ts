@@ -9,7 +9,12 @@ import { buildUsageReport, type UsageReport } from "@/lib/usageReport";
 // method that lives on the platform or in a published package rather than
 // shipping its bundle inline. Every extension is optional, so an action that
 // sends its bundle as the method's tree, `contents`, satisfies this type unchanged.
-import { resultsFromExecute, type PipelexStartOptions, type RunResults } from "@pipelex/sdk";
+import {
+  loadStoredTexts,
+  resultsFromExecute,
+  type PipelexStartOptions,
+  type RunResults,
+} from "@pipelex/sdk";
 
 export type BlockingOutcome<T> =
   | { ok: true; output: T; usage: UsageReport; runId: string }
@@ -38,6 +43,19 @@ export type BlockingOutcome<T> =
  * one — one accessor each, no `pipe_output` search. A completed run that named no
  * locatable main stuff throws `MissingMainStuffError` on that lift, which the catch
  * below classifies like any other SDK error.
+ *
+ * The lift loads nothing, so the stored texts of `main_stuff` are loaded right
+ * after it, as the SDK's own result readers load a durable run's: the runtime
+ * keeps a `Text`, `Markdown`, `Html` or `JSON` value past 4 KiB in the run's
+ * storage and answers with its reference, and `loadStoredTexts` puts the text
+ * back, so the narrower reads the value its generated schema requires whichever
+ * mode ran. The answer carries the working memory and the forms, so the load
+ * reads nothing again, and a result with no stored text costs no request. A
+ * load that fails throws `StoredTextLoadError`, classified as a completed run
+ * whose result could not be loaded, never as the ~30s cap or a run still
+ * going: a blocking run's result is delivered with its answer and kept nowhere
+ * else, so it cannot be read again by its id, and running it again is the way
+ * to it.
  */
 export async function executeBlockingRun<T>(
   buildOptions: () => Promise<PipelexStartOptions>,
@@ -46,7 +64,8 @@ export async function executeBlockingRun<T>(
   let runId: string | undefined;
   try {
     const options = await buildOptions();
-    const response = await getPipelexClient().execute(options);
+    const client = getPipelexClient();
+    const response = await client.execute(options);
     runId = response.pipeline_run_id;
     // The durable path logs a run's id when it starts; a blocking run has no id
     // until it has finished, so it is logged here, before its result is read,
@@ -56,12 +75,12 @@ export async function executeBlockingRun<T>(
     // the page is closed (see `durableRun.ts`).
     // eslint-disable-next-line no-console
     console.info(`[pipelex] run finished: ${runId}`);
-    const results = resultsFromExecute(response);
+    const results = await loadStoredTexts(client, resultsFromExecute(response));
     return { ok: true, output: parse(results), usage: buildUsageReport(results), runId };
   } catch (err) {
     // `blocking: true` reads the platform's `run.outcome_unknown` and the SDK's
     // `client.outcome_unknown`, a gateway's 502/504 cap response among it, as
-    // execute_timeout.
+    // execute_timeout; a stored text that failed to load is read before either.
     const error = classifyPipelineError(err, readClassifyEnv(), { blocking: true });
     return runId === undefined ? { ok: false, error } : { ok: false, error, runId };
   }

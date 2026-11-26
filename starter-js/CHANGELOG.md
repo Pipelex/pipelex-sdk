@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.71.0] - 2026-11-26
+
+### Fixed
+
+- **`make agent-check` and `make agent-test` install again when `package-lock.json` moved**: their guard, now `install-if-needed` where it was `install-if-missing`, runs `make install` when `package-lock.json` is newer than the last install, which `make install` records in `node_modules/.lock-installed`, so a project that pulled or merged a new lock, or regenerated it with `make lock`, no longer checks and tests against the packages it held before. That install is the new `make install-locked`, `npm ci`, which puts back exactly what the lock pins. Where `make install` never ran, as in a CI that installs with `npm ci`, npm's own record of the last install stands in for the stamp until the guard finds the install current and stamps it, and `make use-npm` stamps its own install. `make use-local` runs the guard first, so the next check does not replace the local build. A package installed over the locked one since, as `make use-local` does, stays until the lock moves.
+- **A blocking run's long text arrives as its text, and a text that fails to load reads as such**: `executeBlockingRun` loads the stored texts of the result with the SDK's `loadStoredTexts` after lifting the answer, so a `Text`, `Markdown`, `Html` or `JSON` result the runtime kept apart reaches the narrower as its value in Blocking mode too, where it arrived as its `{url, size, mime_type, preview}` reference and the generated schema refused it. A stored text that cannot be loaded, on either path, is classified as the new kind `result_not_loaded`, "The run finished, but its result could not be loaded", naming where the text sits and why, where it read as the API out of reach or, in Blocking mode, as the ~30s cap; in Blocking mode its hint says the result is kept nowhere but in its answer, and sends only a failure that can pass on a second try round to running the method again. The technical details show a stored text's reference whole only when it is the platform's own, cutting any other URL down to its scheme and host.
+
 ## [v0.70.0] - 2026-11-25
 
 ### Changed

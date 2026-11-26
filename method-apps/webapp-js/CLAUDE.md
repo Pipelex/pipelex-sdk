@@ -232,7 +232,7 @@ export async function pollTextStatsRun(runId: string): Promise<PollOutcome<TextS
 
 A method whose bundle is in this repo declares `const METHOD_DIR = "<name>";` in place of the manifest import and passes `contents: await loadMethodBundles(METHOD_DIR)` in place of the selector; `loadMethodBundles` (`src/lib/loadBundle.ts`) reads every `.mthds` file under `methods/<name>/` into the method's tree, each file's text keyed by its path inside that directory, in path order, the map `npm run codegen` sends the crate routes too. With a file input, `buildOptions` reads the bundle once and hands the same map to `prepareInputs` and to the run (`contents: bundles`).
 
-The shared helpers in `src/lib/` own the SDK call + `classifyPipelineError` (server-side, where the SDK's errors, and the problem each carries, still exist): `executeBlockingRun` wraps `client.execute` and **lifts its response onto `RunResults`** with the SDK's `resultsFromExecute` (the SDK-resolved `.main_stuff`, the working memory and the usage pair, off the runner's `pipe_output`) so one narrower serves both modes; `startDurableRun` wraps `client.start`; `pollDurableRun` does one `getRunStatus` (+ `getRunResult` on a terminal status) tick.
+The shared helpers in `src/lib/` own the SDK call + `classifyPipelineError` (server-side, where the SDK's errors, and the problem each carries, still exist): `executeBlockingRun` wraps `client.execute` and **lifts its response onto `RunResults`** with the SDK's `resultsFromExecute` (the SDK-resolved `.main_stuff`, the working memory and the usage pair, off the runner's `pipe_output`), then loads the stored texts of `main_stuff` with the SDK's `loadStoredTexts`, as `getRunResult` loads a durable run's, so one narrower serves both modes, and a text that fails to load is classified as `result_not_loaded`, never as the ~30s cap; `startDurableRun` wraps `client.start`; `pollDurableRun` does one `getRunStatus` (+ `getRunResult` on a terminal status) tick.
 
 **One narrower contract — `parseXxx(results: RunResults)`, an adapter over the method's generated binder.** Both modes deliver the output the same way, so the narrower reads one field and hands it straight to the schema projected from the method:
 
@@ -372,7 +372,7 @@ Enforced via Husky + lint-staged on commit.
 | `make add-method`         | Scaffold a method into the app — `METHOD=<bundle path \| mt_… \| address>` (needs a key)                    |
 | `make test`               | Vitest single pass                                                                                          |
 | `make agent-test`         | Vitest, silent on success (preferred for AI agents)                                                         |
-| `make agent-check`        | `check`, installing first when `node_modules` is missing (for AI agents)                                    |
+| `make agent-check`        | `check`, installing first when `node_modules` is missing or older than `package-lock.json` (for AI agents)  |
 | `make test-e2e`           | Optional Playwright e2e (live specs cost an LLM call; prompts first, auto-skip without a key)               |
 | `make check`              | lint + format-check + typecheck + codegen-check                                                             |
 | `make all`                | check + test + build (does **not** include e2e, `codegen`, or `codegen-verify`)                             |

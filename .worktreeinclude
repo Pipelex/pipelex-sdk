@@ -6,5 +6,6 @@
 .env*
 **/.claude/settings.local.json
 # Nothing under node_modules: a dependency can ship a local settings file of its own, and copying
-# it would create a node_modules that stops each directory's install-if-missing guard.
+# it would create a node_modules that holds nothing else, which each directory's install-if-needed
+# guard would only install over.
 !**/node_modules/**

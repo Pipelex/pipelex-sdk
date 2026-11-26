@@ -24,7 +24,7 @@ These are the files to check after a bump, and the tests that catch a change und
 | Files | What a release can change under them | What catches it |
 | --- | --- | --- |
 | `src/<package>/lib/client.py` | The client's constructor and `AppInfo` | `tests/test_client.py`, pyright |
-| `src/<package>/lib/run.py` | `prepare_inputs`, `start`, `execute`, `results_from_execute`, and `wait_for_result` with its options, its poll information and the `RunTimeoutError` the command waits through | `tests/test_cli.py`, which drives every mode over a fake client answering with the SDK's own types |
+| `src/<package>/lib/run.py` | `prepare_inputs`, `start`, `execute`, `results_from_execute`, `load_stored_texts`, and `wait_for_result` with its options, its poll information and the `RunTimeoutError` the command waits through | `tests/test_cli.py`, which drives every mode over a fake client answering with the SDK's own types |
 | `src/<package>/lib/inputs.py`, `lib/wire.py`, `lib/contracts.py` | `mthds.protocol`'s input-form and output-form models, the IO contracts and `render_inputs_template` | `tests/test_inputs.py`, `tests/test_wire.py`, `tests/test_wire_table.py` and `tests/test_contracts.py`, and the command itself, which parses the committed `contracts.json` into those models when it loads |
 | `src/<package>/lib/artifacts.py` | `collect_artifacts`, `download_artifacts` and the result they return | `tests/test_artifacts.py` |
 | `src/<package>/lib/narrow.py`, `lib/output.py` | `RunResults` and the shapes its `main_stuff` arrives in | `tests/test_narrow.py`, `tests/test_output.py` |

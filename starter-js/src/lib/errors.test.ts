@@ -11,6 +11,7 @@ import {
   RunTimeoutError,
   UnsupportedUploadCapabilityError,
   UploadAuthenticationError,
+  StoredTextLoadError,
   UploadTransportError,
   buildProblem,
   type Problem,
@@ -392,6 +393,85 @@ describe("classifyPipelineError — BadImageOutputError", () => {
     expect(result.message).toMatch(/PIPELEX_BASE_URL/);
     expect(result.hint?.code).toContain("PIPELEX_BASE_URL=https://api.pipelex.com");
     expect(result.details).toContain("file:///tmp/storage/abc.png");
+  });
+});
+
+describe("classifyPipelineError — a stored text that failed to load", () => {
+  const URI = "pipelex-storage://org/runs/run-9/generated/ab/value.txt";
+
+  function loadFailure(problem: Problem, reason = "store_error"): StoredTextLoadError {
+    return new StoredTextLoadError(
+      "The stored text at $ could not be loaded: the store did not answer.",
+      { uri: URI, path: "$", reason },
+      { problem },
+    );
+  }
+
+  it("is a finished run's unloadable result on the blocking path, never the ~30s cap", () => {
+    // A problem the blocking path would otherwise read as the cap.
+    const result = classifyPipelineError(
+      loadFailure(buildProblem("client.outcome_unknown", {})),
+      DEFAULT_ENV,
+      { blocking: true },
+    );
+    expect(result.kind).toBe("result_not_loaded");
+    expect(result.title).toBe("The run finished, but its result could not be loaded");
+    expect(result.message).toContain("the text at $ could not be loaded (store_error)");
+    expect(result.details).toContain("The stored text at $ could not be loaded");
+    expect(result.hint?.summary).toMatch(/cannot be read again by the run's id/);
+    expect(result.code).toBe("client.outcome_unknown");
+    expect(result.details).toContain("path: $");
+    expect(result.details).toContain(`uri: ${URI}`);
+  });
+
+  it("is never the API out of reach, whatever the read's problem says", () => {
+    const result = classifyPipelineError(
+      loadFailure(buildProblem("client.timeout", { seconds: 120 }), "timeout"),
+      OVERRIDE_ENV,
+    );
+    expect(result.kind).toBe("result_not_loaded");
+    expect(result.retry?.verdict).toBe("yes");
+  });
+
+  it("never sends a failure a second try meets again round to another run", () => {
+    const result = classifyPipelineError(
+      loadFailure(buildProblem("client.download_limit_exceeded", { limit: 1 }), "too_large"),
+      DEFAULT_ENV,
+      { blocking: true },
+    );
+    expect(result.retry?.verdict).toBe("no");
+    expect(result.hint?.summary).toMatch(/cannot be read again by the run's id\.$/);
+    expect(result.hint?.summary).not.toMatch(/trying again|durable/i);
+  });
+
+  it("shows a method's own URL by its scheme and host alone, and a data: URL by its length", () => {
+    const signed = new StoredTextLoadError(
+      "The stored text at $ could not be loaded: its url is neither a reference nor a data: URL.",
+      {
+        uri: "https://user:secret@files.example.com/a.txt?sig=token",
+        path: "$",
+        reason: "unsupported_url",
+      },
+    );
+    const signedDetails = classifyPipelineError(signed, DEFAULT_ENV).details;
+    expect(signedDetails).toContain("uri: https://files.example.com (the rest is not shown)");
+    expect(signedDetails).not.toMatch(/secret|token|a\.txt/);
+
+    const inline = new StoredTextLoadError(
+      "The stored text at $ could not be loaded: it is not UTF-8 text.",
+      { uri: `data:text/plain;base64,${"A".repeat(400)}`, path: "$", reason: "not_utf8" },
+    );
+    const inlineDetails = classifyPipelineError(inline, DEFAULT_ENV).details;
+    expect(inlineDetails).toContain("uri: a data: URL of 423 characters (not shown)");
+    expect(inlineDetails).not.toContain("AAAA");
+  });
+
+  it("offers no re-run hint on the durable path, whose result stays readable by its id", () => {
+    const result = classifyPipelineError(
+      loadFailure(buildProblem("client.timeout", { seconds: 120 }), "timeout"),
+      DEFAULT_ENV,
+    );
+    expect(result.hint).toBeUndefined();
   });
 });
 

@@ -180,14 +180,18 @@ def run_results(main_stuff: object, *, run_id: str = RUN_ID, **fields: Any) -> R
     return RunResults.model_validate({**body, **fields})
 
 
-def execute_result(content: object, *, run_id: str = RUN_ID) -> PipelexExecuteResult:
-    """A blocking run's response, whose `main_stuff_name` names the working-memory root holding `content`."""
+def execute_result(content: object, *, run_id: str = RUN_ID, concept: str = "native.Text") -> PipelexExecuteResult:
+    """A blocking run's response, whose `main_stuff_name` names the working-memory root holding `content` of `concept`.
+
+    The concept matters since the blocking path loads stored texts: a value under a text concept that is shaped like
+    a reference is a stored text, so an image's output names its own concept.
+    """
     return PipelexExecuteResult.model_validate(
         {
             "pipeline_run_id": run_id,
             "main_stuff_name": "result",
             "pipe_output": {
-                "working_memory": {"root": {"result": {"concept": "native.Text", "content": content}}, "aliases": {"main_stuff": "result"}},
+                "working_memory": {"root": {"result": {"concept": concept, "content": content}}, "aliases": {"main_stuff": "result"}},
                 "pipeline_run_id": run_id,
             },
         }
@@ -232,6 +236,8 @@ class FakeClient:
     def __init__(self) -> None:
         #: The API key the client sends, which the SDK's `prepare_inputs` reads to word a refused credential.
         self.api_key = "test-key"
+        #: The origin of the client's base URL, on which the SDK fetches a plain-http resolved link without `allow_http`.
+        self.origin_url = "https://api.pipelex.com"
         self.start_answer: StartAnswer = RUN_ID
         self.execute_answer: PipelexExecuteResult | BaseException = execute_result({"text": "hi"})
         self.wait_answer: WaitAnswer = run_results(TEXT_OUTPUT)
@@ -249,6 +255,10 @@ class FakeClient:
         self.uploaded: list[str] = []
         self.pipe_io_asked: list[PipeIORequest] = []
         self.prepared: list[dict[str, Any]] = []
+        #: What the bulk resolve route raises, or a coroutine to run instead: the load of a stored text that is a
+        #: reference reaches it, and a test that serves one sets what it meets. A `data:` URL never reaches it.
+        self.resolve_failure: BaseException | Callable[[], Awaitable[Any]] | None = None
+        self.resolved: list[list[str]] = []
 
     async def __aenter__(self) -> "FakeClient":
         self.entered += 1
@@ -264,6 +274,16 @@ class FakeClient:
             raise answer
         run_id = answer if isinstance(answer, str) else await answer()
         return PipelexRunResultStart(pipeline_run_id=run_id)
+
+    async def resolve_storage_urls_bulk(self, uris: list[str]) -> Any:
+        """The bulk resolve route, which a stored text's load reads: the test's failure, else a test that forgot one."""
+        self.resolved.append(uris)
+        if isinstance(self.resolve_failure, BaseException):
+            raise self.resolve_failure
+        if self.resolve_failure is not None:
+            return await self.resolve_failure()
+        msg = "the test set no resolve answer"
+        raise AssertionError(msg)
 
     async def execute(self, **kwargs: Any) -> PipelexExecuteResult:
         self.executed.append(kwargs)

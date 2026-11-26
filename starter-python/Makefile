@@ -46,7 +46,7 @@ Usage:
 make env                      - Create python virtual env
 make lock                     - Refresh uv.lock without updating anything
 make install                  - Create local virtualenv & install all dependencies
-make update                   - Upgrade dependencies via uv
+make update                   - Upgrade every dependency in uv.lock and sync the virtual env
 make export-requirements      - Export production requirements.txt (no dev dependencies)
 make export-requirements-dev  - Export requirements-dev.txt (all dependencies including dev)
 make er                       - Shorthand -> export-requirements
@@ -65,7 +65,7 @@ make plxt-lint                - Lint .mthds/.toml with plxt
 make pyright                  - Check types with pyright
 make mypy                     - Check types with mypy
 
-make cleanenv                 - Remove virtual env and lock files
+make cleanenv                 - Remove the virtual env
 make cleanderived             - Remove extraneous compiled files, caches, logs, etc.
 make cleanall                 - Remove all -> cleanenv + cleanderived
 make reinstall                - Reinstall dependencies
@@ -102,7 +102,7 @@ endef
 export HELP
 
 .PHONY: \
-	all help env env-verbose check-uv check-uv-verbose lock install install-if-missing update build \
+	all help env env-verbose check-uv check-uv-verbose lock install install-if-needed update build \
 	export-requirements export-requirements-dev er erd \
 	format lint ruff-format ruff-lint plxt-format plxt-lint pyright mypy \
 	cleanderived cleanenv cleanall \
@@ -159,28 +159,45 @@ env-verbose: check-uv-verbose
 		echo "Python virtual env already exists in \`${VIRTUAL_ENV}\`"; \
 	fi
 
+# Every target that syncs .venv with uv.lock touches this stamp after the sync succeeds, so a
+# uv.lock newer than the stamp is one that moved after the last sync: a merge, a pull or a
+# `make lock` brought other versions than .venv holds.
+SYNC_STAMP := $(VIRTUAL_ENV)/.uv-lock-synced
+
 install: env-verbose
 	$(call PRINT_TITLE,"Installing dependencies")
 	@. $(VIRTUAL_ENV)/bin/activate && \
 	uv sync --all-extras && \
+	touch "$(SYNC_STAMP)" && \
 	echo "Installed dependencies in ${VIRTUAL_ENV}";
 
 # The agent targets install the project first when it was never installed, so a fresh checkout
-# can run them directly. The test reads a tool rather than the virtual environment, because `env`
-# creates an empty one for every target that depends on it, and an interrupted sync leaves one too.
-install-if-missing:
-	@[ -x "$(VIRTUAL_ENV)/bin/pytest" ] || $(MAKE) --no-print-directory install
+# can run them directly, and again when uv.lock moved after the last sync, so they never run
+# against other versions than the lock pins. The first test reads a tool rather than the virtual
+# environment, because `env` creates an empty one for every target that depends on it, and an
+# interrupted sync leaves one too. A package installed over the locked one after the sync stays:
+# only a lock that moved since brings the locked versions back.
+install-if-needed:
+	@if [ ! -x "$(VIRTUAL_ENV)/bin/pytest" ]; then \
+		$(MAKE) --no-print-directory install; \
+	elif [ ! -f "$(SYNC_STAMP)" ] || [ uv.lock -nt "$(SYNC_STAMP)" ]; then \
+		echo "uv.lock has moved since .venv was last synced with it, or that sync was never recorded: running make install first."; \
+		$(MAKE) --no-print-directory install; \
+	fi
 
 lock: env-verbose
 	$(call PRINT_TITLE,"Resolving dependencies without update")
 	@uv lock && \
 	echo "uv lock without update";
 
+# Upgrades every dependency within the ranges pyproject.toml allows, in uv.lock, then syncs .venv
+# with it: uv.lock is what `make install` and the CI install from.
 update: env-verbose
 	$(call PRINT_TITLE,"Updating all dependencies")
-	@uv pip compile --upgrade pyproject.toml -o requirements.lock && \
-	uv pip install -e ".[dev]" && \
-	echo "Updated dependencies in ${VIRTUAL_ENV}";
+	@uv lock --upgrade && \
+	uv sync --all-extras && \
+	touch "$(SYNC_STAMP)" && \
+	echo "Updated uv.lock and the dependencies in ${VIRTUAL_ENV}";
 
 export-requirements: env
 	$(call PRINT_TITLE,"Exporting production requirements")
@@ -263,16 +280,10 @@ cleanderived:
 
 cleanenv:
 	$(call PRINT_TITLE,"Erasing virtual environment")
-	find . -name 'requirements.lock' -delete && \
 	find . -type d -wholename './.venv' -exec rm -rf {} + && \
-	echo "Cleaned up virtual env and dependency lock files";
+	echo "Cleaned up the virtual env";
 
-cleanlock:
-	$(call PRINT_TITLE,"Erasing uv lock file")
-	@find . -name 'requirements.lock' -delete && \
-	echo "Cleaned up uv lock file";
-
-reinstall: cleanenv cleanlock install
+reinstall: cleanenv install
 	@echo "Reinstalled dependencies";
 
 ri: reinstall
@@ -368,7 +379,7 @@ test-inference: env
 ti: test-inference
 	@echo "> done: ti = test-inference"
 
-agent-test: install-if-missing
+agent-test: install-if-needed
 	@echo "• Running unit tests..."
 	@tmpfile=$$(mktemp); \
 	$(VENV_PYTEST) -m $(USUAL_PYTEST_MARKERS) -o log_level=WARNING --tb=short -q > "$$tmpfile" 2>&1; \
@@ -459,7 +470,7 @@ cc: cleanderived c
 check: cleanderived check-unused-imports c
 	@echo "> done: check"
 
-agent-check: install-if-missing
+agent-check: install-if-needed
 	@$(MAKE) --no-print-directory fix-unused-imports format lint pyright mypy
 	@echo "> done: agent-check"
 
