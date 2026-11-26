@@ -1,5 +1,5 @@
 {
-  "about": "The cases every initializer of the family executes, so that each prints the same verdict for the same destination, git state and flags. Each suite runs its initializer with a stub make that records its arguments and exits with make_exit, a PATH holding that stub and the real git, a git configuration of its own, and PIPELEX_API_KEY set unless key is false.",
+  "about": "The cases every initializer of the family executes, so that each prints the same verdict for the same destination, git state and flags. Each suite runs its initializer with a stub npm, named to it the way npm names itself to what it runs, that records its arguments, succeeds at npm install and exits with create_exit from npm run create; a PATH holding the real git alone; a git configuration of its own; and PIPELEX_API_KEY set unless key is false.",
   "legend": {
     "destination": "What stands at the destination before the run. missing: nothing; empty: an empty directory; git-without-commit: a directory holding only the .git of git init; git-with-history: a directory holding only the .git of a repository with a commit, its files deleted; git-with-staged-file: a directory holding only the .git of git init whose index holds notes.txt, added and then deleted from the directory; ds-store: a directory holding .DS_Store; user-file: a directory holding notes.txt; beneath-a-file: the destination is typed as notes.txt/my-app, notes.txt being a file, so nothing can stand there.",
     "spelled": "How the destination is typed. name: my-app, from its parent; space: my app, from its parent; dot: ., from inside it (the destination must exist); absent: no directory at all.",
@@ -7,14 +7,15 @@
     "args": "The arguments after the destination. {other-ecosystem} stands for a template of another ecosystem, which this initializer refuses by naming that ecosystem's initializer or, while the ecosystem has none, the template's copy-out instructions.",
     "method": "Whether --method mt_case is passed. Defaults to true.",
     "key": "Whether PIPELEX_API_KEY is set. Defaults to true.",
-    "tools": "Which of make and git are on the PATH. Defaults to both.",
+    "tools": "Which tools are on the PATH: [\"git\"] or none. Defaults to [\"git\"].",
+    "npm": "Whether npm can be found. false: the npm the initializer is told to run does not exist. Defaults to true.",
     "git_identity": "Whether git has an identity to commit with. true: in its global configuration; false: none, and git refuses to guess one; under-parent: only through an includeIf \"gitdir:<the destination's parent>/\" section, git refusing to guess one elsewhere; enclosing-only: only in the enclosing repository's own .git/config, git refusing to guess one elsewhere. Defaults to true.",
-    "make_exit": "The stub make's exit status. Defaults to 0.",
+    "create_exit": "The exit status of the stub's npm run create. Defaults to 0.",
     "expect.verdict": "The verdict: the last line's first word, or its first two for refused: and failed:.",
     "expect.written": "Whether the template was written. When false, the destination holds exactly what it held before the run.",
     "expect.git": "initialized: the destination is a repository on main with one commit, the pristine one, and an enclosing repository's HEAD did not move and its git status --porcelain --untracked-files=all prints nothing; first-commit: the repository that was there has one commit, the pristine one; none: the destination holds no .git, and the enclosing repository's HEAD did not move; untouched: the repository that was there did not change.",
-    "expect.make": "Whether make ran.",
-    "expect.forwarded": "Arguments make's argument vector must contain."
+    "expect.create": "Whether npm run create ran.",
+    "expect.forwarded": "Arguments npm run create must receive after its --, consecutively and in this order."
   },
   "cases": [
     {
@@ -24,31 +25,31 @@
         "verdict": "created",
         "written": true,
         "git": "initialized",
-        "make": true,
-        "forwarded": ["create", "METHOD=mt_case"]
+        "create": true,
+        "forwarded": ["mt_case"]
       }
     },
     {
       "name": "an empty destination",
       "destination": "empty",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "the destination spelled .",
       "destination": "empty",
       "spelled": "dot",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "a name with a space",
       "destination": "missing",
       "spelled": "space",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "a lone .git with no commit gets the pristine commit as its first",
       "destination": "git-without-commit",
-      "expect": { "verdict": "created", "written": true, "git": "first-commit", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "first-commit", "create": true }
     },
     {
       "name": "a lone .git with history is refused",
@@ -57,7 +58,7 @@
         "verdict": "refused: repository-has-history",
         "written": false,
         "git": "untouched",
-        "make": false
+        "create": false
       }
     },
     {
@@ -67,103 +68,103 @@
         "verdict": "refused: repository-has-staged-files",
         "written": false,
         "git": "untouched",
-        "make": false
+        "create": false
       }
     },
     {
       "name": "a .DS_Store makes a directory not empty",
       "destination": "ds-store",
-      "expect": { "verdict": "refused: not-empty", "written": false, "make": false }
+      "expect": { "verdict": "refused: not-empty", "written": false, "create": false }
     },
     {
       "name": "a file of the user's is never written beside",
       "destination": "user-file",
-      "expect": { "verdict": "refused: not-empty", "written": false, "make": false }
+      "expect": { "verdict": "refused: not-empty", "written": false, "create": false }
     },
     {
       "name": "a destination beneath a file is refused",
       "destination": "beneath-a-file",
-      "expect": { "verdict": "refused: unusable-destination", "written": false, "make": false }
+      "expect": { "verdict": "refused: unusable-destination", "written": false, "create": false }
     },
     {
       "name": "inside another repository's work tree, nothing is initialized or committed",
       "destination": "missing",
       "within": "work-tree",
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "an empty directory inside another repository's work tree",
       "destination": "empty",
       "within": "work-tree",
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "inside another work tree, no git identity is needed",
       "destination": "missing",
       "within": "work-tree",
       "git_identity": false,
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "under a path the enclosing repository ignores, the project gets a repository of its own",
       "destination": "missing",
       "within": "ignored-parent",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "an empty directory under an ignored path",
       "destination": "empty",
       "within": "ignored-parent",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "a destination a directory-only pattern ignores is read as a directory before it exists",
       "destination": "missing",
       "within": "ignored-by-name",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "an ignored destination spelled .",
       "destination": "empty",
       "within": "ignored-by-name",
       "spelled": "dot",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "a destination the enclosing repository re-includes is new files in that repository",
       "destination": "missing",
       "within": "re-included",
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "a repository that ignores everything gives the project a repository of its own",
       "destination": "missing",
       "within": "ignores-everything",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "a directory whose files alone are ignored gets no repository before it exists",
       "destination": "missing",
       "within": "ignores-files-only",
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "an empty directory whose files alone are ignored gets no repository",
       "destination": "empty",
       "within": "ignores-files-only",
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "a destination whose contents alone are ignored gets no repository before it exists",
       "destination": "missing",
       "within": "contents-ignored",
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "an empty destination whose contents alone are ignored gets no repository",
       "destination": "empty",
       "within": "contents-ignored",
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "under an ignored path, an identity only the enclosing repository holds is not the new repository's",
@@ -174,7 +175,7 @@
         "verdict": "refused: no-git-identity",
         "written": false,
         "git": "none",
-        "make": false
+        "create": false
       }
     },
     {
@@ -185,7 +186,7 @@
         "verdict": "refused: inside-template-checkout",
         "written": false,
         "git": "none",
-        "make": false
+        "create": false
       }
     },
     {
@@ -197,21 +198,21 @@
         "verdict": "refused: inside-template-checkout",
         "written": false,
         "git": "none",
-        "make": false
+        "create": false
       }
     },
     {
       "name": "--no-git makes no repository",
       "destination": "missing",
       "args": ["--no-git"],
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "--no-git needs no git",
       "destination": "missing",
       "args": ["--no-git"],
-      "tools": ["make"],
-      "expect": { "verdict": "created", "written": true, "git": "none", "make": true }
+      "tools": [],
+      "expect": { "verdict": "created", "written": true, "git": "none", "create": true }
     },
     {
       "name": "--no-create copies and commits, and needs neither a method nor a key",
@@ -219,7 +220,7 @@
       "args": ["--no-create"],
       "method": false,
       "key": false,
-      "expect": { "verdict": "copied", "written": true, "git": "initialized", "make": false }
+      "expect": { "verdict": "copied", "written": true, "git": "initialized", "create": false }
     },
     {
       "name": "--dry-run is forwarded, and the copy is not yet created",
@@ -229,8 +230,8 @@
         "verdict": "copied",
         "written": true,
         "git": "initialized",
-        "make": true,
-        "forwarded": ["DRY_RUN=1"]
+        "create": true,
+        "forwarded": ["--dry-run"]
       }
     },
     {
@@ -241,45 +242,58 @@
         "verdict": "created",
         "written": true,
         "git": "initialized",
-        "make": true,
-        "forwarded": ["TITLE=Bob's \"$5\" app"]
+        "create": true,
+        "forwarded": ["--title", "Bob's \"$5\" app"]
       }
     },
     {
-      "name": "a failing make create leaves the copy and its commit",
+      "name": "a failing npm run create leaves the copy and its commit",
       "destination": "missing",
-      "make_exit": 2,
-      "expect": { "verdict": "failed: create", "written": true, "git": "initialized", "make": true }
+      "create_exit": 2,
+      "expect": {
+        "verdict": "failed: create",
+        "written": true,
+        "git": "initialized",
+        "create": true
+      }
     },
     {
       "name": "no method",
       "destination": "missing",
       "method": false,
-      "expect": { "verdict": "refused: no-method", "written": false, "make": false }
+      "expect": { "verdict": "refused: no-method", "written": false, "create": false }
     },
     {
       "name": "no key",
       "destination": "missing",
       "key": false,
-      "expect": { "verdict": "refused: no-key", "written": false, "make": false }
+      "expect": { "verdict": "refused: no-key", "written": false, "create": false }
     },
     {
-      "name": "no make on the PATH",
+      "name": "no npm to run",
       "destination": "missing",
-      "tools": ["git"],
-      "expect": { "verdict": "refused: missing-tool", "written": false, "make": false }
+      "npm": false,
+      "expect": { "verdict": "refused: missing-tool", "written": false, "create": false }
+    },
+    {
+      "name": "--no-create needs no npm",
+      "destination": "missing",
+      "args": ["--no-create"],
+      "method": false,
+      "npm": false,
+      "expect": { "verdict": "copied", "written": true, "git": "initialized", "create": false }
     },
     {
       "name": "no git on the PATH",
       "destination": "missing",
-      "tools": ["make"],
-      "expect": { "verdict": "refused: missing-tool", "written": false, "make": false }
+      "tools": [],
+      "expect": { "verdict": "refused: missing-tool", "written": false, "create": false }
     },
     {
       "name": "no git identity where a commit would be made",
       "destination": "missing",
       "git_identity": false,
-      "expect": { "verdict": "refused: no-git-identity", "written": false, "make": false }
+      "expect": { "verdict": "refused: no-git-identity", "written": false, "create": false }
     },
     {
       "name": "no git identity in an empty destination leaves it without a repository",
@@ -289,50 +303,50 @@
         "verdict": "refused: no-git-identity",
         "written": false,
         "git": "none",
-        "make": false
+        "create": false
       }
     },
     {
       "name": "an identity git gives only to the repositories under the parent is found",
       "destination": "missing",
       "git_identity": "under-parent",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "the same identity is found in an empty destination",
       "destination": "empty",
       "git_identity": "under-parent",
-      "expect": { "verdict": "created", "written": true, "git": "initialized", "make": true }
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "an unknown option",
       "destination": "missing",
       "args": ["--colour", "blue"],
-      "expect": { "verdict": "refused: unknown-option", "written": false, "make": false }
+      "expect": { "verdict": "refused: unknown-option", "written": false, "create": false }
     },
     {
       "name": "an unknown template",
       "destination": "missing",
       "args": ["--template", "no-such-template"],
-      "expect": { "verdict": "refused: unknown-template", "written": false, "make": false }
+      "expect": { "verdict": "refused: unknown-template", "written": false, "create": false }
     },
     {
       "name": "a name every object carries is no template",
       "destination": "missing",
       "args": ["--template", "constructor"],
-      "expect": { "verdict": "refused: unknown-template", "written": false, "make": false }
+      "expect": { "verdict": "refused: unknown-template", "written": false, "create": false }
     },
     {
       "name": "the other ecosystem's template is refused, naming where it is served",
       "destination": "missing",
       "args": ["--template", "{other-ecosystem}"],
-      "expect": { "verdict": "refused: other-ecosystem", "written": false, "make": false }
+      "expect": { "verdict": "refused: other-ecosystem", "written": false, "create": false }
     },
     {
       "name": "no directory",
       "spelled": "absent",
       "destination": "missing",
-      "expect": { "verdict": "refused: usage", "written": false, "make": false }
+      "expect": { "verdict": "refused: usage", "written": false, "create": false }
     }
   ]
 }

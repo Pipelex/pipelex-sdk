@@ -1,5 +1,5 @@
-// A whole run, against the stub make: what reaches make create, what is
-// printed, and what never is.
+// A whole run, against the stub npm: what reaches npm install and
+// npm run create, what is printed, and what never is.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -9,9 +9,10 @@ import { describe, it } from "node:test";
 
 import { decodePack } from "../lib/pack.mjs";
 import { loadTable, TABLE_FILE } from "../lib/templates.mjs";
+import { shellQuote } from "../lib/verdict.mjs";
 import {
   git,
-  makeRecord,
+  npmRecord,
   packs,
   runEnv,
   runInitializer,
@@ -30,7 +31,7 @@ function workspace() {
 }
 
 describe("a run", () => {
-  it("forwards every create value to make as one NAME=value word, in the contract's order", async () => {
+  it("installs, then forwards every create value to npm run create as one argument, in the contract's order", async () => {
     const { root, work } = workspace();
     const tricky = (name) => `${name} Bob's "$5" \`x\` $(no) 'q'`;
     const flags = [
@@ -53,37 +54,58 @@ describe("a run", () => {
       ...flags.reverse().flatMap(([flag, , value]) => [flag, value]),
       "--dry-run",
     ];
-    const env = { ...runEnv(root), MAKEFLAGS: "NAME=from-an-enclosing-make", MAKELEVEL: "1" };
-    const { verdict, output } = await runInitializer(argv, { cwd: work, env });
+    const { verdict, output } = await runInitializer(argv, { cwd: work, env: runEnv(root) });
     assert.equal(verdict, "copied", output);
-    const record = makeRecord(root);
-    assert.deepEqual(record.args, [
-      "create",
-      "METHOD=mt_forward",
-      "NAME=my-pkg",
-      `TITLE=${tricky("TITLE")}`,
-      `DESCRIPTION=${tricky("DESCRIPTION")}`,
-      "PIPE=main_pipe",
-      `AUTHOR_NAME=${tricky("AUTHOR_NAME")}`,
-      "AUTHOR_EMAIL=a@example.com",
-      "REPO_URL=https://example.com/r",
-      "LICENSE=mit",
-      `LICENSE_HOLDER=${tricky("LICENSE_HOLDER")}`,
-      "LICENSE_YEAR=2026",
-      "DRY_RUN=1",
-      "METHOD_NAME=receipts",
-      `LABEL=${tricky("LABEL")}`,
-    ]);
-    assert.equal(record.cwd, path.join(work, "app"));
-    assert.equal(
-      record.makeflags,
-      "unset",
-      "an enclosing make's variables do not reach make create",
+    const record = npmRecord(root);
+    assert.deepEqual(
+      record.calls.map((call) => call.args[0]),
+      ["install", "run"],
+      "npm install runs first, once",
     );
-    assert.equal(record.sawKey, true);
+    assert.deepEqual(record.install.args, ["install"]);
+    const words = [
+      "mt_forward",
+      "--name",
+      "my-pkg",
+      "--title",
+      tricky("TITLE"),
+      "--description",
+      tricky("DESCRIPTION"),
+      "--pipe",
+      "main_pipe",
+      "--author-name",
+      tricky("AUTHOR_NAME"),
+      "--author-email",
+      "a@example.com",
+      "--repo-url",
+      "https://example.com/r",
+      "--license",
+      "mit",
+      "--license-holder",
+      tricky("LICENSE_HOLDER"),
+      "--license-year",
+      "2026",
+      "--dry-run",
+      "--method-name",
+      "receipts",
+      "--label",
+      tricky("LABEL"),
+    ];
+    assert.deepEqual(record.create.args, ["run", "create", "--", ...words]);
+    for (const call of record.calls) {
+      assert.equal(call.cwd, path.join(work, "app"));
+      assert.equal(call.sawKey, true);
+    }
+    const dest = path.join(work, "app");
+    const next = words.filter((word) => word !== "--dry-run").map(shellQuote);
+    assert.equal(
+      output.trimEnd().split("\n").at(-1),
+      `copied ${dest} (npm run create --dry-run changed nothing); next: cd ${dest} && npm run create -- ${next.join(" ")}`,
+      "the next command drops --dry-run, and needs no install again",
+    );
   });
 
-  it("keeps a caller's GIT_DIR from make create, and from the repository it makes", async () => {
+  it("keeps a caller's GIT_DIR from npm, and from the repository it makes", async () => {
     const { root, work } = workspace();
     const theirs = path.join(root, "theirs");
     fs.mkdirSync(theirs);
@@ -94,7 +116,7 @@ describe("a run", () => {
       env,
     });
     assert.equal(verdict, "created", output);
-    assert.equal(makeRecord(root).gitDir, "unset");
+    for (const call of npmRecord(root).calls) assert.equal(call.gitDir, "unset");
     assert.equal(git(path.join(work, "app"), ["rev-list", "--count", "HEAD"], runEnv(root)), "1");
     assert.equal(fs.readdirSync(path.join(theirs, ".git", "refs", "heads")).length, 0);
   });
@@ -107,9 +129,7 @@ describe("a run", () => {
       cwd: work,
       env: runEnv(root),
     });
-    assert.ok(
-      makeRecord(root).args.includes(`METHOD=${path.join(work, "methods", "receipt.mthds")}`),
-    );
+    assert.ok(npmRecord(root).create.args.includes(path.join(work, "methods", "receipt.mthds")));
 
     for (const method of [
       "mt_abc123",
@@ -121,7 +141,7 @@ describe("a run", () => {
         cwd: again.work,
         env: runEnv(again.root),
       });
-      assert.ok(makeRecord(again.root).args.includes(`METHOD=${method}`), method);
+      assert.ok(npmRecord(again.root).create.args.includes(method), method);
     }
   });
 
@@ -132,9 +152,9 @@ describe("a run", () => {
       env: runEnv(root),
     });
     const lines = output.trimEnd().split("\n");
-    const summary = lines.slice(lines.indexOf("warnings from make create:"));
+    const summary = lines.slice(lines.indexOf("warnings from npm run create:"));
     assert.deepEqual(summary.slice(0, 3), [
-      "warnings from make create:",
+      "warnings from npm run create:",
       "  ! the method declares no description",
       "  warning: LICENSE copyright line left untouched — pass --license-holder to claim it.",
     ]);
@@ -144,13 +164,13 @@ describe("a run", () => {
     );
     assert.equal(
       summary[4],
-      `created ${path.join(work, "app")}; next: cd ${path.join(work, "app")} && make serve`,
+      `created ${path.join(work, "app")}; next: cd ${path.join(work, "app")} && npm run serve`,
     );
     assert.equal(summary.length, 5);
-    assert.ok(output.includes("create: 5/6 run make all"), "the stream reaches the output");
+    assert.ok(output.includes("create: 5/6 run npm run all"), "the stream reaches the output");
   });
 
-  it("with --quiet, writes make create's output to a log and prints its path", async () => {
+  it("with --quiet, writes npm's output to a log and prints its path", async () => {
     const { root, work } = workspace();
     const tmpDir = tempRoot();
     const { output, verdict } = await runInitializer(["app", "--method", "mt_1", "--quiet"], {
@@ -159,39 +179,76 @@ describe("a run", () => {
       tmpDir,
     });
     assert.equal(verdict, "created");
-    assert.ok(!output.includes("create: 5/6 run make all"), "the stream stays out of the output");
-    const logFile = /its output goes to (\S+)$/m.exec(output)[1];
+    assert.ok(
+      !output.includes("create: 5/6 run npm run all"),
+      "the stream stays out of the output",
+    );
+    const logFile = /their output goes to (\S+)$/m.exec(output)[1];
     assert.ok(logFile.startsWith(tmpDir));
     const log = fs.readFileSync(logFile, "utf8");
-    assert.ok(log.includes("create: 5/6 run make all"));
+    assert.ok(log.includes("stub npm: installed"), "the install's output is in the log too");
+    assert.ok(log.includes("create: 5/6 run npm run all"));
     assert.ok(
       output.includes("  ! the method declares no description"),
       "the warnings still reach the summary",
     );
   });
 
-  it("with --quiet, names the log when make create fails", async () => {
+  it("with --quiet, names the log when npm run create fails", async () => {
     const { root, work } = workspace();
     const { output, verdict } = await runInitializer(["app", "--method", "mt_1", "--quiet"], {
       cwd: work,
-      env: runEnv(root, { makeExit: 2 }),
+      env: runEnv(root, { createExit: 2 }),
       tmpDir: tempRoot(),
     });
     assert.equal(verdict, "failed: create");
     assert.match(
       output.trimEnd().split("\n").at(-1),
-      /make create exited 2\. The copy and its commit stand in .*the end of its log, \/.*make-create\.log, says what to run next/,
+      /npm run create exited 2\. The copy and its commit stand in .*the end of its log, .*create\.log, says what to run next/,
     );
+  });
+
+  it("runs no npm run create when npm install fails, and names both commands to run", async () => {
+    const { root, work } = workspace();
+    const { output, verdict } = await runInitializer(["app", "--method", "mt_1"], {
+      cwd: work,
+      env: runEnv(root, { installExit: 1 }),
+    });
+    assert.equal(verdict, "failed: create", output);
+    const record = npmRecord(root);
+    assert.notEqual(record.install, null);
+    assert.equal(record.create, null, "npm run create did not run");
+    const dest = path.join(work, "app");
+    assert.equal(
+      output.trimEnd().split("\n").at(-1),
+      `failed: create — npm install exited 1, so npm run create did not start. The copy and its commit stand in ${dest}, and its own message above says why; once that is fixed, run cd ${dest} && npm install && npm run create -- mt_1`,
+    );
+    assert.ok(fs.existsSync(path.join(dest, "package.json")), "the copy stands");
+  });
+
+  it("leaves the install's stamp newer than the lock the gesture re-syncs, as make create does", async () => {
+    const { root, work } = workspace();
+    const env = { ...runEnv(root), STUB_NPM_MODULES: "1" };
+    const { output, verdict } = await runInitializer(["app", "--method", "mt_1"], {
+      cwd: work,
+      env,
+    });
+    assert.equal(verdict, "created", output);
+    const dest = path.join(work, "app");
+    const stamp = fs.statSync(path.join(dest, "node_modules", ".lock-installed"));
+    const lock = fs.statSync(path.join(dest, "package-lock.json"));
+    assert.ok(stamp.mtimeMs >= lock.mtimeMs, "the stamp is not older than the lock");
   });
 
   it("never prints the key, whatever the verdict", async () => {
     const runs = [
       [["app", "--method", "mt_1"], {}],
       [["app", "--method", "mt_1", "--quiet"], {}],
-      [["app", "--method", "mt_1"], { makeExit: 2 }],
+      [["app", "--method", "mt_1"], { createExit: 2 }],
+      [["app", "--method", "mt_1"], { installExit: 1 }],
       [["app"], {}],
       [["app", "--method", "mt_1", "--colour", "x"], {}],
-      [["app", "--method", "mt_1"], { tools: ["git"] }],
+      [["app", "--method", "mt_1"], { npm: false }],
     ];
     for (const [argv, options] of runs) {
       const { root, work } = workspace();
@@ -203,7 +260,7 @@ describe("a run", () => {
       });
       assert.ok(!output.includes(KEY), `${argv.join(" ")} printed the key`);
       for (const dir of fs.readdirSync(tmpDir)) {
-        const log = path.join(tmpDir, dir, "make-create.log");
+        const log = path.join(tmpDir, dir, "create.log");
         if (fs.existsSync(log)) assert.ok(!fs.readFileSync(log, "utf8").includes(KEY));
       }
     }
@@ -244,10 +301,10 @@ describe("a run", () => {
     assert.ok(output.includes("a global hook said no"));
     assert.match(
       output.trimEnd().split("\n").at(-1),
-      /commit it with git -C (\S+) init -q && git -C \1 symbolic-ref HEAD refs\/heads\/main && git -C \1 add --force -A && git -C \1 commit -m 'Start from .*', then run cd .* && make create METHOD=mt_1$/,
+      /commit it with git -C (\S+) init -q && git -C \1 symbolic-ref HEAD refs\/heads\/main && git -C \1 add --force -A && git -C \1 commit -m 'Start from .*', then run cd .* && npm install && npm run create -- mt_1$/,
     );
     assert.ok(fs.existsSync(path.join(work, "app", "package.json")), "the copy stands");
-    assert.equal(makeRecord(root), null, "make create did not run");
+    assert.equal(npmRecord(root), null, "npm did not run");
   });
 
   it("commits every file of the template, whatever git is told to ignore", async () => {
@@ -414,7 +471,7 @@ describe("a run", () => {
     assert.doesNotMatch(said, /under no version control/);
   });
 
-  it("names the copy and the next make create after --no-create", async () => {
+  it("names the copy and the next npm install and npm run create after --no-create", async () => {
     const { root, work } = workspace();
     const { output } = await runInitializer(["my app", "--no-create", "--title", "Bob's app"], {
       cwd: work,
@@ -423,7 +480,7 @@ describe("a run", () => {
     const dest = path.join(work, "my app");
     assert.equal(
       output.trimEnd().split("\n").at(-1),
-      `copied ${dest}; next: cd '${dest}' && make create METHOD=<method> 'TITLE=Bob'\\''s app'`,
+      `copied ${dest}; next: cd '${dest}' && npm install && npm run create -- <method> --title 'Bob'\\''s app'`,
     );
   });
 
@@ -515,7 +572,7 @@ describe("a run", () => {
         fs.chmodSync(locked, 0o755);
       }
       assert.deepEqual(fs.readdirSync(locked), []);
-      assert.equal(makeRecord(root), null);
+      assert.equal(npmRecord(root), null);
     },
   );
 
@@ -542,7 +599,7 @@ describe("a run", () => {
     })();
     assert.equal(verdict, "failed: write", output);
     assert.deepEqual(fs.readdirSync(work), []);
-    assert.equal(makeRecord(root), null);
+    assert.equal(npmRecord(root), null);
   });
 
   it("ends in failed: write when the package carries no pack", async () => {

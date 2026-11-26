@@ -1,27 +1,29 @@
 /**
  * `create-method-app`: write a template of the family into a directory, make
  * the pristine commit where nothing of the user's is at stake, and run the
- * copy's own `make create`.
+ * copy's own gesture: `npm install`, then `npm run create`. Nothing it runs
+ * needs `make` or a POSIX shell, so it runs on Windows as elsewhere.
  *
  * The order is the safety story:
  *
  *  1. **A preflight that leaves nothing behind.** The arguments and the
- *     template; Node at or above the template's `engines` floor; `make`, and
- *     `git` unless `--no-git`; `--method` and `PIPELEX_API_KEY` unless
- *     `--no-create`, the key tested for presence and never printed; the
- *     destination rule; git's reading of the destination, and an identity when
- *     a commit will be made. It writes nothing but a missing destination inside
- *     another repository's work tree, made so that git reads it as the
- *     directory it will be, and the throwaway repository in which a new
- *     repository's identity is read when none shows outside one, or always
- *     under a path another repository ignores, and removes each before going
- *     on. Each failure is a `refused:` verdict naming the fix.
+ *     template; Node at or above the template's `engines` floor; npm unless
+ *     `--no-create`, and `git` unless `--no-git`; `--method` and
+ *     `PIPELEX_API_KEY` unless `--no-create`, the key tested for presence and
+ *     never printed; the destination rule; git's reading of the destination,
+ *     and an identity when a commit will be made. It writes nothing but a
+ *     missing destination inside another repository's work tree, made so that
+ *     git reads it as the directory it will be, and the throwaway repository
+ *     in which a new repository's identity is read when none shows outside
+ *     one, or always under a path another repository ignores, and removes
+ *     each before going on. Each failure is a `refused:` verdict naming the fix.
  *  2. **The write**, exclusive, removing what it created when it cannot finish.
  *  3. **Git**: a new repository on `main` outside any work tree or where the
  *     enclosing repository ignores the destination, then the pristine commit;
  *     the commit alone at the root of a repository with no commit yet; nothing
  *     inside another repository's work tree, or with `--no-git`.
- *  4. **`make create`**, unless `--no-create`, streamed or logged.
+ *  4. **`npm install`, then `npm run create`**, unless `--no-create`, streamed
+ *     or logged.
  *  5. **The report**: the gesture's warnings, the git outcome, and the verdict
  *     line, last.
  *
@@ -45,7 +47,15 @@ import {
   readGit,
   templateOrigin,
 } from "./git.mjs";
-import { extractWarnings, makeArgs, runMake } from "./make.mjs";
+import {
+  createWords,
+  extractWarnings,
+  npmInvocation,
+  npmProblem,
+  onPath,
+  runCreate,
+  stampInstall,
+} from "./npm.mjs";
 import { decodePack, PackError } from "./pack.mjs";
 import { loadTable, PACKAGE_ROOT } from "./templates.mjs";
 import { EXIT_OK, shellQuote, Verdict } from "./verdict.mjs";
@@ -56,21 +66,6 @@ export const PACKS_DIR = path.join(PACKAGE_ROOT, "templates");
 /** This package's own version. */
 export function ownVersion() {
   return JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8")).version;
-}
-
-/** Whether an executable named `tool` is on the `PATH` `env` carries. */
-export function onPath(tool, env) {
-  for (const dir of (env.PATH ?? "").split(path.delimiter)) {
-    if (dir === "") continue;
-    const candidate = path.join(dir, tool);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) return true;
-    } catch {
-      // not here
-    }
-  }
-  return false;
 }
 
 /** Compare two `X.Y.Z` versions. */
@@ -121,9 +116,11 @@ function nodeFloor(pack) {
 
 /** Everything a run reads from outside, so a test can substitute each. */
 export function resolveDeps(deps = {}) {
+  const env = deps.env ?? process.env;
   return {
     cwd: deps.cwd ?? process.cwd(),
-    env: deps.env ?? process.env,
+    env,
+    npm: deps.npm ?? npmInvocation(env),
     out: deps.out ?? process.stdout,
     packDir: deps.packDir ?? PACKS_DIR,
     nodeVersion: deps.nodeVersion ?? process.versions.node,
@@ -160,7 +157,7 @@ function chooseTemplate(args, table) {
     if (!takes.has(variable)) {
       throw Verdict.refused(
         "unknown-option",
-        `${flag} is not an option of ${template}'s make create`,
+        `${flag} is not an option of ${template}'s npm run create`,
       );
     }
   }
@@ -248,13 +245,22 @@ function planGit(args, dest, found, env) {
   return plan;
 }
 
-/** The make create line to run next, without --dry-run, quoted for a shell. */
-function nextCreate(table, template, values) {
+/**
+ * The commands to run next in the copy, without --dry-run, quoted for a shell:
+ * `npm run create`, after the `npm install` it needs unless `installed`.
+ */
+function nextCreate(table, template, values, { installed = false } = {}) {
   const forwarded = { ...values };
   delete forwarded.DRY_RUN;
-  const words = makeArgs(table.variablesOf(template), forwarded, table.switches).map(shellQuote);
-  if (values[table.required] === undefined) words.splice(1, 0, `${table.required}=<method>`);
-  return `make ${words.join(" ")}`;
+  const words = createWords(
+    table.variablesOf(template),
+    forwarded,
+    table.switches,
+    table.required,
+  ).map(shellQuote);
+  if (values[table.required] === undefined) words.unshift("<method>");
+  const create = `npm run create -- ${words.join(" ")}`;
+  return installed ? create : `npm install && ${create}`;
 }
 
 async function create(argv, d, say, state) {
@@ -277,13 +283,15 @@ async function create(argv, d, say, state) {
       `${template} needs Node ${floor} or later, and this is Node ${d.nodeVersion}: switch to a newer Node, then run this again`,
     );
   }
-  const missing = ["make", ...(args.noGit ? [] : ["git"])].filter((tool) => !onPath(tool, d.env));
-  if (missing.length > 0) {
-    throw Verdict.refused(
-      "missing-tool",
-      `${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not on the PATH: install ${missing.length > 1 ? "them" : "it"}${missing.includes("git") ? ", or pass --no-git to make no repository" : ""}`,
-    );
+  const missing = [];
+  if (!args.noCreate) {
+    const npmMissing = npmProblem(d.npm, d.env);
+    if (npmMissing !== null) missing.push(npmMissing);
   }
+  if (!args.noGit && !onPath("git", d.env)) {
+    missing.push("git is not on the PATH: install it, or pass --no-git to make no repository");
+  }
+  if (missing.length > 0) throw Verdict.refused("missing-tool", missing.join("; "));
   if (!args.noCreate && args.values[table.required] === undefined) {
     throw Verdict.refused(
       "no-method",
@@ -293,7 +301,7 @@ async function create(argv, d, say, state) {
   if (!args.noCreate && !d.env.PIPELEX_API_KEY?.trim()) {
     throw Verdict.refused(
       "no-key",
-      "PIPELEX_API_KEY is not set: export it in this shell for make create, which never copies it into the project, or pass --no-create and write .env.local yourself before running make create",
+      "PIPELEX_API_KEY is not set: export it in this shell for npm run create, which never copies it into the project, or pass --no-create and write .env.local yourself before running npm run create",
     );
   }
 
@@ -385,28 +393,28 @@ async function create(argv, d, say, state) {
     return { line: `copied ${dest}; next: cd ${where} && ${nextCreate(table, template, values)}` };
   }
 
-  // ── make create ──
+  // ── npm install, then npm run create ──
   state.phase = "create";
   const stands = git.commit ? "The copy and its commit stand" : "The copy stands";
   if (d.signal?.aborted) {
     say(gitLine);
     throw Verdict.failed(
       "create",
-      `${d.signal.reason ?? "a signal"} interrupted the run before make create started. ${stands} in ${dest}; run cd ${where} && ${nextCreate(table, template, values)}`,
+      `${d.signal.reason ?? "a signal"} interrupted the run before npm install started. ${stands} in ${dest}; run cd ${where} && ${nextCreate(table, template, values)}`,
     );
   }
   let logFile;
   if (args.quiet) {
-    logFile = path.join(
-      fs.mkdtempSync(path.join(d.tmpDir, "create-method-app-")),
-      "make-create.log",
+    logFile = path.join(fs.mkdtempSync(path.join(d.tmpDir, "create-method-app-")), "create.log");
+    say(
+      `create-method-app: running npm install and npm run create in ${dest}; their output goes to ${logFile}`,
     );
-    say(`create-method-app: running make create in ${dest}; its output goes to ${logFile}`);
   } else {
-    say(`create-method-app: running make create in ${dest}\n`);
+    say(`create-method-app: running npm install and npm run create in ${dest}\n`);
   }
-  const argvMake = makeArgs(table.variablesOf(template), values, table.switches);
-  const result = await runMake(argvMake, {
+  const words = createWords(table.variablesOf(template), values, table.switches, table.required);
+  const result = await runCreate(words, {
+    npm: d.npm,
     cwd: dest,
     env: d.env,
     out: d.out,
@@ -416,30 +424,48 @@ async function create(argv, d, say, state) {
 
   const warnings = extractWarnings(result.output);
   say("");
-  say(warnings.length > 0 ? "warnings from make create:" : "warnings from make create: none");
+  say(warnings.length > 0 ? "warnings from npm run create:" : "warnings from npm run create: none");
   for (const warning of warnings) say(`  ${warning}`);
   say(gitLine);
   if (result.error !== null) {
     throw Verdict.failed(
       "create",
-      `make could not be run: ${result.error.message}. ${stands} in ${dest}.`,
+      `npm could not be run: ${result.error.message}. ${stands} in ${dest}.`,
     );
   }
+  const interrupted = d.signal?.aborted ? (d.signal.reason ?? "a signal") : null;
   if (result.status !== 0) {
-    const how =
-      result.status === null ? `was stopped by ${result.signal}` : `exited ${result.status}`;
+    // Elsewhere a stopped step ends by a signal; on Windows, which has none,
+    // it ends with a status, and the interruption is what stopped it.
+    let how = `exited ${result.status}`;
+    if (result.status === null) how = `was stopped by ${result.signal}`;
+    else if (interrupted !== null) how = `was stopped by ${interrupted}`;
     const said = args.quiet ? `the end of its log, ${logFile},` : "its own message above";
+    if (result.step === "install") {
+      throw Verdict.failed(
+        "create",
+        `npm install ${how}, so npm run create did not start. ${stands} in ${dest}, and ${said} says why; once that is fixed, run cd ${where} && ${nextCreate(table, template, values)}`,
+      );
+    }
     throw Verdict.failed(
       "create",
-      `make create ${how}. ${stands} in ${dest}, and ${said} says what to run next: a refusal before it wrote anything can be fixed and run again, and a failure after it cannot.`,
+      `npm run create ${how}. ${stands} in ${dest}, and ${said} says what to run next: a refusal before it wrote anything can be fixed and run again, and a failure after it cannot.`,
+    );
+  }
+  if (result.step === "install") {
+    // The install succeeded, and an interruption came before the gesture.
+    throw Verdict.failed(
+      "create",
+      `${interrupted ?? "a signal"} interrupted the run before npm run create started. ${stands} in ${dest}, its dependencies installed; run cd ${where} && ${nextCreate(table, template, values, { installed: true })}`,
     );
   }
   if (values.DRY_RUN) {
     return {
-      line: `copied ${dest} (make create --dry-run changed nothing); next: cd ${where} && ${nextCreate(table, template, values)}`,
+      line: `copied ${dest} (npm run create --dry-run changed nothing); next: cd ${where} && ${nextCreate(table, template, values, { installed: true })}`,
     };
   }
-  return { line: `created ${dest}; next: cd ${where} && make serve` };
+  stampInstall(dest);
+  return { line: `created ${dest}; next: cd ${where} && npm run serve` };
 }
 
 /**

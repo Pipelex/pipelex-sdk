@@ -6,13 +6,14 @@
  * `npm error` lines on standard error after a run that exits 1. The exit code
  * is presentation: 0 for `created` and `copied`, 1 otherwise.
  *
- *   created <dir>            the copy, the git outcome, and a green make create
+ *   created <dir>            the copy, the git outcome, and a green npm run create
  *   copied <dir>             --no-create or --dry-run: the copy and the git outcome only
  *   refused: <why>           the preflight stopped, and nothing was written
  *   failed: write            the copy failed or was interrupted, and what it created was removed
  *   failed: commit           git refused the pristine commit; the copy stands
- *   failed: create           make create did not succeed; the copy and the commit stand, and its
- *                            own message says what to run next
+ *   failed: create           npm install or npm run create did not succeed; the copy and the
+ *                            commit stand, and npm's or the gesture's own message says what to
+ *                            run next
  */
 
 export const EXIT_OK = 0;

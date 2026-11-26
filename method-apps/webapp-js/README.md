@@ -8,7 +8,7 @@ Looking for worked examples instead? [`pipelex-starter-js`](https://github.com/P
 
 ## Use this template
 
-This template is the `webapp-js/` directory of the [method-app family](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps), `method-apps/` in the `Pipelex/pipelex-sdk` repository, which holds one template per shape and language. A project starts as a copy of this directory alone. The family's initializer writes it into a new directory, commits it as it came, and runs `make create` there with the method you have:
+This template is the `webapp-js/` directory of the [method-app family](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps), `method-apps/` in the `Pipelex/pipelex-sdk` repository, which holds one template per shape and language. A project starts as a copy of this directory alone. The family's initializer writes it into a new directory, commits it as it came, and runs `npm install` and `npm run create` there with the method you have, with no make, on every system:
 
 ```bash
 export PIPELEX_API_KEY=…                               # from app.pipelex.com
@@ -18,9 +18,9 @@ cd my-app && npm run serve                             # the URL, once the page 
 
 `npm run serve` starts the dev server in the background, prints its URL once the page answers, and `npm run serve -- stop` stops it; `npm run dev` runs the same server in this terminal instead, on http://127.0.0.1:4300. The npm scripts are the commands on every system, Windows included, and with `make` they are also `make serve`, `make stop` and `make dev`, as the [table below](#make-targets) lists. The initializer's [README](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/initializers/js#readme) lists its options, one per `make create` variable below.
 
-`--method`, which the initializer hands to `make create` as `METHOD`, is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, from [app.pipelex.com](https://app.pipelex.com), or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address (`github.com/Pipelex/methods/text_stats@v0.2.0`).
+`--method`, which the initializer hands to `npm run create` as its first argument (`METHOD` to `make create`), is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, from [app.pipelex.com](https://app.pipelex.com), or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address (`github.com/Pipelex/methods/text_stats@v0.2.0`).
 
-`make create` scaffolds the method, names the project after it (the package name, the title and the description all come from the method, and `--name`, `--title` and `--description` override them, which are `NAME=`, `TITLE=` and `DESCRIPTION=` to `make create` itself), writes `.env.local` with the base URL it ran against and, unless another env file holds a key, an empty key line for your own key, since it never copies the key your shell exports, and runs `make all`. It commits nothing, so `git diff` against the initializer's pristine commit shows everything it did. `--dry-run` (`DRY_RUN=1`) prints the plan first. [`docs/create.md`](docs/create.md) is the reference.
+`npm run create` scaffolds the method, names the project after it (the package name, the title and the description all come from the method, and `--name`, `--title` and `--description` override them, which are `NAME=`, `TITLE=` and `DESCRIPTION=` to `make create` itself), writes `.env.local` with the base URL it ran against and, unless another env file holds a key, an empty key line for your own key, since it never copies the key your shell exports, and runs `npm run all`. It commits nothing, so `git diff` against the initializer's pristine commit shows everything it did. `--dry-run` (`DRY_RUN=1`) prints the plan first. [`docs/create.md`](docs/create.md) is the reference.
 
 To choose every value yourself instead, open the repository in [Claude Code](https://claude.com/claude-code), run `/bootstrap`, then `make add-method METHOD=…`.
 
