@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ../standalone/method-apps-webapp-js
     steps:
       - uses: actions/checkout@v5
@@ -63,11 +64,13 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
+        shell: bash
         working-directory: ../standalone/method-apps-webapp-js
     steps:
       - uses: actions/checkout@v5
 
       - name: Extract method-apps/webapp-js as the export ships it
+        shell: bash
         working-directory: .
         run: |
           rm -rf ../standalone/method-apps-webapp-js && mkdir -p ../standalone/method-apps-webapp-js

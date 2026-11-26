@@ -544,6 +544,32 @@ describe("what Windows says", () => {
   });
 });
 
+// On the Windows CI runner every case that starts a server must run: were
+// netstat or PowerShell unusable there, the job would pass with those cases
+// skipped and prove nothing. The message carries what each tool answered.
+describe.runIf(WINDOWS && process.env.CI === "true")("the tools serve reads on Windows CI", () => {
+  it("are usable, so no case that starts a server is skipped", () => {
+    const probe = (command: string, args: string[]) => {
+      const result = spawnSync(command, args, { encoding: "utf-8", windowsHide: true });
+      return {
+        command: [command, ...args].join(" "),
+        status: result.status,
+        error: result.error?.message,
+        stdout: (result.stdout ?? "").slice(0, 400),
+        stderr: (result.stderr ?? "").slice(0, 400),
+      };
+    };
+    const diagnosis = [
+      probe(DEFAULT_CONFIG.lsof, ["-ano", "-p", "TCP"]),
+      probe(DEFAULT_CONFIG.ps, ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable"]),
+    ];
+    expect({ lsof: HAS_LSOF, ps: HAS_PS }, JSON.stringify(diagnosis, null, 2)).toEqual({
+      lsof: true,
+      ps: true,
+    });
+  });
+});
+
 describe("what is refused or answered before a server is looked for", () => {
   it("refuses a host beyond loopback before starting anything", async () => {
     const checkout = checkoutWith();
