@@ -26,6 +26,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Extract method-apps/webapp-js as the export ships it
+        shell: bash
         working-directory: .
         run: |
           rm -rf ../standalone/method-apps-webapp-js && mkdir -p ../standalone/method-apps-webapp-js
@@ -46,6 +47,7 @@ jobs:
         run: npm ci
 
       - name: Install @pipelex/sdk built from this commit
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/next-sdk"
           (cd "$GITHUB_WORKSPACE/js" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")
