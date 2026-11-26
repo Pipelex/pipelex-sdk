@@ -5,11 +5,11 @@ description: Bootstrap this pipelex-method-webapp-js template into a real projec
 
 # Bootstrap Workflow
 
-This directory is a **template**, copied out of the `method-apps/webapp-js/` directory of the `pipelex-sdk` mono-repo. A fresh copy still carries the template's identity: the npm package name `pipelex-method-webapp-js` (in `package.json`, `package-lock.json`, and the headings of `CLAUDE.md` and `AGENTS.md`), the display title `Pipelex Method App` and the template's description (in `src/site.ts`, which the page heading, the browser title and the meta description all read), a README about the template, a changelog pointing at the family's, the template's MIT license, and the `make create` gesture. This skill turns all of that into the user's project identity in one reviewable pass, then proves the result still passes CI's gates. It adds no method; `make add-method` does that afterwards.
+This directory is a **template**, copied out of the `method-apps/webapp-js/` directory of the `pipelex-sdk` mono-repo. A fresh copy still carries the template's identity: the npm package name `pipelex-method-webapp-js` (in `package.json`, `package-lock.json`, and the headings of `CLAUDE.md` and `AGENTS.md`), the display title `Pipelex Method App` and the template's description (in `src/site.ts`, which the page heading, the browser title and the meta description all read), a README about the template, a changelog pointing at the family's, the template's MIT license, and the `make create` gesture. This skill turns all of that into the user's project identity in one reviewable pass, then proves the result still passes CI's gates. It adds no method; `npm run add-method` does that afterwards.
 
 The mechanical part is done by a bundled script, `scripts/bootstrap.mjs`. It is deterministic, needs nothing beyond Node and the repo's own Prettier, and supports `--dry-run`, so you can show the plan before touching anything. **Your job in this skill is to collect good inputs, preview, run the script, and verify.** Walk the user through it; confirm before the steps that change files.
 
-**`make create` runs this same workflow with no conversation at all.** `make create METHOD=<method>` derives the package name, title and description from the method, adds the method, runs this script with those values and `--clean` (a `--dry-run` first, to check them), writes `.env.local`, re-syncs `package-lock.json`, runs `make all`, and removes this skill once the checks are green — Steps 3 to 6 below, in one command that refuses rather than asks. [`docs/create.md`](../../../docs/create.md) is its reference. When the user already has the method and wants the app, point them to it, or run it for them. This skill is the path for naming the project first and adding a method afterwards, or for choosing each value with the user.
+**`npm run create` runs this same workflow with no conversation at all.** `npm run create -- <method>`, or `make create METHOD=<method>`, derives the package name, title and description from the method, adds the method, runs this script with those values and `--clean` (a `--dry-run` first, to check them), writes `.env.local`, re-syncs `package-lock.json`, runs `npm run all`, and removes this skill once the checks are green — Steps 3 to 6 below, in one command that refuses rather than asks. [`docs/create.md`](../../../docs/create.md) is its reference. When the user already has the method and wants the app, point them to it, or run it for them. This skill is the path for naming the project first and adding a method afterwards, or for choosing each value with the user.
 
 ## Step 1 — Preflight
 
@@ -19,7 +19,7 @@ Confirm this is an un-bootstrapped template and the tree is clean enough to work
    - If it is `"pipelex-method-webapp-js"`: this is a fresh template — continue.
    - If it is anything else: it looks **already bootstrapped**, and the script refuses to run unless `--force` is passed. Tell the user and ask whether to proceed; only add `--force` to the commands below after they explicitly confirm. Warn them what a re-run means: the README and the changelog are rendered again from scratch, and a license **type** change does not restore the LICENSE wording the first run already replaced.
 2. Run `git status --short`. If the tree is dirty, mention it — bootstrap leaves its edits **unstaged** for the user's own review, so a noisy starting point is worth flagging.
-3. Check that `node_modules/` exists; if not, run `make install` first. The script formats what it writes with the repo's Prettier, and Step 5's `make all` needs the whole toolchain.
+3. Check that `node_modules/` exists; if not, run `npm install` first. The script formats what it writes with the repo's Prettier, and Step 5's `npm run all` needs the whole toolchain.
 
 ## Step 2 — Collect the project details
 
@@ -81,7 +81,7 @@ Re-run the exact same command **without** `--dry-run`. The script:
 
 - sets `package.json`'s name, description, license, and (if given) author and repository, and resets its version to `0.1.0`
 - renders a new `README.md` for the project: its title, its description, how to run it and work on it, the docs, and its license
-- replaces `CLAUDE.md`'s description line, given `--method-dir <name>` (the method's directory under `methods/`, which `make create` passes), with a fixed sentence naming that directory, and otherwise keeps the template's line; with `--clean`, strips the charter paragraph; the template's name, which appears only in the headings of `CLAUDE.md` and `AGENTS.md`, becomes the package name. Neither file ever receives the description or the title
+- replaces `CLAUDE.md`'s description line, given `--method-dir <name>` (the method's directory under `methods/`, which `npm run create` passes), with a fixed sentence naming that directory, and otherwise keeps the template's line; with `--clean`, strips the charter paragraph; the template's name, which appears only in the headings of `CLAUDE.md` and `AGENTS.md`, becomes the package name. Neither file ever receives the description or the title
 - writes the title and description into `src/site.ts`
 - applies the license choice to `LICENSE`
 - rewrites `CHANGELOG.md` to a fresh `v0.1.0` entry dated today
@@ -99,35 +99,35 @@ It deliberately does **not** touch git, run `npm install`, run the checks, add a
 
 ```bash
 npm install --package-lock-only   # syncs the renamed name/version into package-lock.json
-make all                          # lint + format-check + typecheck + codegen-check + unit tests + build
+npm run all                       # lint + format-check + typecheck + codegen-check + unit tests + build
 ```
 
 - **On success**: report it and continue.
-- **On failure**: show the output and fix the cause, then re-run. If `eslint` or `next` isn't found, `node_modules/` is absent: run `make install`. If `make format-check` is what failed, run `make format` and re-run `make all` rather than hand-editing. Don't move on with a red check — the project's first pull request would be red too.
+- **On failure**: show the output and fix the cause, then re-run. If `eslint` or `next` isn't found, `node_modules/` is absent: run `npm install`. If `format:check` is what failed, run `npm run format` and re-run `npm run all` rather than hand-editing. Don't move on with a red check — the project's first pull request would be red too.
 
 ## Step 6 — Clean up the bootstrap scaffolding & hand off
 
 Bootstrap is a one-shot, so it removes itself **last**, only after the checks are green:
 
 ```bash
-rm -rf .claude/skills/bootstrap
+node -e "require('fs').rmSync('.claude/skills/bootstrap', { recursive: true })"
 ```
 
-Run it from the repo root, and use a plain `rm` (not `git rm`) so the deletion stays unstaged, like every other change. This also removes the script's own test, which guards the template's files and has no job in a project.
+Run it from the repo root, in any shell, Windows PowerShell included. It deletes the files without `git rm`, so the deletion stays unstaged, like every other change. This also removes the script's own test, which guards the template's files and has no job in a project.
 
 Finally, give the user a short summary:
 
 - the package name and title that were applied, and the license that was set
 - that the version was reset to `0.1.0`, `CHANGELOG.md` restarted and `README.md` rewritten for the project
-- that `package-lock.json` was re-synced and `make all` passes
+- that `package-lock.json` was re-synced and `npm run all` passes
 - that **nothing is committed and nothing is staged** — they should review with `git status` and `git diff`, then commit when ready
-- that the app has no method yet, and the page says so: the next step is `make add-method METHOD=<method>`, where the method is a path to a `.mthds` file or to a directory of them (copied into `methods/<name>/`), a catalog id from [app.pipelex.com](https://app.pipelex.com), or a published package address. It needs `PIPELEX_API_KEY` in `.env.local`. [`docs/add-method.md`](../../../docs/add-method.md) is the reference. Offer to run it with them.
+- that the app has no method yet, and the page says so: the next step is `npm run add-method -- <method>` (`make add-method METHOD=<method>` with make), where the method is a path to a `.mthds` file or to a directory of them (copied into `methods/<name>/`), a catalog id from [app.pipelex.com](https://app.pipelex.com), or a published package address. It needs `PIPELEX_API_KEY` in `.env.local`. [`docs/add-method.md`](../../../docs/add-method.md) is the reference. Offer to run it with them.
 
 ## Rules
 
-- **Never commit; let the user review and commit.** Don't `git commit` or `git add` anything — all changes, including the self-removal (`rm`, not `git rm`), stay unstaged for the user's review.
+- **Never commit; let the user review and commit.** Don't `git commit` or `git add` anything — all changes, including the self-removal (never `git rm`), stay unstaged for the user's review.
 - **Always dry-run before the real run.** When the user supplied every input up front and asked to proceed, the dry-run output still gets shown.
 - **Re-sync `package-lock.json`.** Renaming the package makes the lock stale; `npm install --package-lock-only` is what keeps CI's `npm ci` green.
-- **Don't stop on a red check.** A failing `make all` here means CI will fail too — fix the root cause and re-run.
+- **Don't stop on a red check.** A failing `npm run all` here means CI will fail too — fix the root cause and re-run.
 - **Don't edit `.github/` workflows.** They are generic to any project created from the template, and the script leaves them alone.
 - If any step fails or the user wants to abort, stop immediately and leave the tree in a state they can inspect — don't push forward through errors.

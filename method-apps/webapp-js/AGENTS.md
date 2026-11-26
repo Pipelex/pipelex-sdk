@@ -4,16 +4,17 @@ The full project guide for AI coding agents is [`CLAUDE.md`](CLAUDE.md) — read
 
 <!-- template-only:begin -->
 
-- **In a fresh copy of the template, `make create METHOD=<bundle path | mt_… | address>` is the whole setup**: it scaffolds the method, names the project after it, writes `.env.local` and runs `make all`. It asks nothing; pass `NAME=`, `TITLE=` and `DESCRIPTION=` only for values the method should not decide. [`docs/create.md`](docs/create.md) is the reference.
+- **In a fresh copy of the template, `npm run create -- <bundle path | mt_… | address>` is the whole setup**, or `make create METHOD=…` where make is installed: it scaffolds the method, names the project after it, writes `.env.local` and runs `npm run all`. It asks nothing; pass `--name`, `--title` and `--description` (`NAME=`, `TITLE=` and `DESCRIPTION=` to make) only for values the method should not decide. [`docs/create.md`](docs/create.md) is the reference.
 
 <!-- template-only:end -->
 
-- **Add a method with `make add-method METHOD=<method>`**, never by hand — a `.mthds` file or a directory of them, a catalog id, or a published address. It refuses rather than overwriting; [`docs/add-method.md`](docs/add-method.md) is the reference.
+- **Add a method with `npm run add-method -- <method>`** (`make add-method METHOD=<method>` with make), never by hand — a `.mthds` file or a directory of them, a catalog id, or a published address. It refuses rather than overwriting; [`docs/add-method.md`](docs/add-method.md) is the reference.
 - **Never edit anything under `src/generated/`** — not even a reformat. Every file carries a stamp, and any edit makes `make check` fail with `hand-edited`. Customize by wrapping from `src/types/` instead. Relatedly, `src/generated/` is excluded from Prettier and ESLint on purpose — do not "fix" that exclusion.
 - **After editing anything under `methods/`, run `npm run codegen`** and commit the regenerated `src/generated/` tree in the same commit. `make check` fails until you do. Regeneration needs `PIPELEX_API_KEY`.
 - **Never move or reword the `add-method:` marker tokens in `src/methods.ts`.** The scaffold inserts at them and refuses when either is missing.
-- **After any code change, run `make all`** (lint + format-check + typecheck + offline codegen check + unit tests + build). Do not declare a task done until it passes. If formatting fails, run `make format` — don't hand-edit to satisfy Prettier.
-- **Prefer `make agent-test` over `make test`** — silent on success, full output on failure.
+- **After any code change, run `npm run all`**, or `make all` (lint + format-check + typecheck + offline codegen check + unit tests + build). Do not declare a task done until it passes. If formatting fails, run `npm run format` — don't hand-edit to satisfy Prettier.
+- **Prefer `make agent-test` over `make test`** — silent on success, full output on failure. Without make, on Windows for one, run `npm run test`.
+- **Start the dev server with `npm run serve`** (or `make serve`), never `npm run dev` in the background: it proves the page answers and ends with one verdict line; `npm run serve -- stop` (or `make stop`) stops it.
 - **No hand-written output shapes, no `as` casts on SDK output** — go through the `parseXxx()` narrowers in `src/types/`, which wrap the generated binders.
 - **Server Actions return classified errors** (`{ ok: false, error }`), never throw across the server→client boundary.
 

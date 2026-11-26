@@ -1,11 +1,11 @@
-# `make add-method`: adding a method to the app
+# `npm run add-method`: adding a method to the app
 
-This app ships no method. `make add-method` is how one arrives: it fetches the method's projection from the Pipelex API and writes everything the app needs around it — the method's directory, the generated tree, the typed narrower, the Server Action trio, a test, the form and the registry entry — so no app file is written by hand.
+This app ships no method. `npm run add-method` is how one arrives, on every system, Windows included, and `make add-method` runs the same gesture with make's variables: it fetches the method's projection from the Pipelex API and writes everything the app needs around it — the method's directory, the generated tree, the typed narrower, the Server Action trio, a test, the form and the registry entry — so no app file is written by hand.
 
 ```bash
-make add-method METHOD=path/to/cv_screening/                        # a bundle
-make add-method METHOD=github.com/Pipelex/methods/text_stats@v0.2.0  # a published method
-make add-method METHOD=mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df       # a method in your catalog
+npm run add-method -- path/to/cv_screening/                        # a bundle
+npm run add-method -- github.com/Pipelex/methods/text_stats@v0.2.0  # a published method
+npm run add-method -- mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df       # a method in your catalog
 ```
 
 ## The gesture
@@ -19,7 +19,7 @@ make add-method METHOD=mt_ca0aa9d3-61ac-4db1-8b46-fb0cc75787df       # a method 
 
 It is out of `make all` for the same reason `codegen` and `test-e2e` are: it needs a key and a network.
 
-`METHOD` is the one required argument, and it is one of three forms:
+The method, `npm run add-method`'s first argument and `METHOD` to make, is the one required argument, and it is one of three forms:
 
 - **A bundle** — a path to a `.mthds` file, or to a directory holding several (at any depth). The files are copied into `methods/<name>/`, keeping their paths relative to what you named, and the action sends them as the method's tree, `contents`, each under its path in `methods/<name>/`. A path inside `methods/<name>/` — the directory or any file in it — scaffolds that directory **in place**, all of its `.mthds` files, since that is what `npm run codegen` reads. A relative path is read from the directory the command was typed in (for `make`, the app's root), and `~/` is your home directory.
 - **A catalog id** — `mt_…`, a method saved under your key's organization on [app.pipelex.com](https://app.pipelex.com). Sent as `method_id`. A bare id runs the method's latest published version, `mt_…@3` its version 3 for good and `mt_…@draft` its draft; the suffix stays in `method.json`, so the app keeps running the version it was scaffolded against, and the slug and the label come from the method's catalog name, read by the bare id. Any other suffix (`@0`, `@03`, `@Draft`, two of them) is refused before anything is sent.
@@ -174,7 +174,7 @@ In one commit, delete:
 2. `src/types/<camel>Pipeline.ts`, `src/types/<camel>Uploads.ts` when the method takes a file, `src/actions/run<Name>Pipeline.ts` and its `.test.ts`, `src/components/<Name>Form.tsx` and any test or e2e spec you wrote for it.
 3. The import line and the `METHODS` entry in `src/methods.ts` — leaving both anchors in place.
 
-Then `make all`. `tsc` names any dangling reference itself. Removing the last method brings the page back to its empty state.
+Then `npm run all`, or `make all`. `tsc` names any dangling reference itself. Removing the last method brings the page back to its empty state.
 
 ## What this deliberately does not do
 

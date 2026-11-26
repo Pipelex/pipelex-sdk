@@ -1,12 +1,14 @@
 /**
- * `make create` — turn this template into the app for one method, in one
- * gesture.
+ * `npm run create` — turn this template into the app for one method, in one
+ * gesture. `make create` runs it for those who have `make`; npm is the command
+ * every system runs, Windows included, so everything this gesture runs and
+ * every command it names is an npm script.
  *
  * A fresh copy of the template is an app with no method and the template's own
  * name. This gesture takes the method the person has — a bundle path, a catalog
  * id or a published address — and leaves the app for it: the method scaffolded
  * by `add-method`, the project named after the method by the bootstrap, an env
- * file naming the base URL the gesture ran against, and `make all` green. The
+ * file naming the base URL the gesture ran against, and `npm run all` green. The
  * key the gesture runs with is never copied into a file. Everything is decided by
  * this script; nothing asks a question. A value that cannot be derived is a
  * refusal naming the flag that supplies it.
@@ -22,7 +24,7 @@
  *  2. **Write.** `add-method`'s write half first — it removes what it wrote if
  *     it fails, so a failure there leaves the template exactly as it was and
  *     the gesture can simply be run again. Then the bootstrap, the env file,
- *     the lock file re-sync, `make all`, and last the bootstrap skill's own
+ *     the lock file re-sync, `npm run all`, and last the bootstrap skill's own
  *     removal, which happens only once the checks are green.
  *
  * The gesture is one-shot, and the template's alone: the bootstrap removes it,
@@ -51,6 +53,7 @@ import {
   type AddMethodPlan,
 } from "./add-method.mts";
 import { methodVocabulary } from "./generate.mts";
+import { npmInvocation, type NpmInvocation } from "./npm.mts";
 import { REPO_ROOT } from "./shared.mts";
 
 const { loadEnvConfig } = nextEnv;
@@ -164,7 +167,7 @@ export function parseCreateArgs(argv: readonly string[]): CreateArgs {
     } else {
       throw new CreateError(
         `unexpected second method ${JSON.stringify(arg)} — an app is created for one; ` +
-          `add more afterwards with make add-method.\n  ${USAGE}`,
+          `add more afterwards with npm run add-method.\n  ${USAGE}`,
       );
     }
   }
@@ -348,7 +351,7 @@ const DEV_SERVER_ENV_FILES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether `make dev` reads this env file. The gesture loads the files a
+ * Whether `npm run dev` reads this env file. The gesture loads the files a
  * production build reads, as every script here does, so a value can come from
  * `.env.production` or `.env.production.local`, which the dev server never opens.
  */
@@ -357,7 +360,7 @@ export function devServerReads(file: string): boolean {
 }
 
 /**
- * The URL `make dev` will answer on, read from the `APP_HOST` and `APP_PORT`
+ * The URL `npm run dev` will answer on, read from the `APP_HOST` and `APP_PORT`
  * the Makefile exports, with the scripts' own fallbacks for a missing or blank
  * value. A wildcard bind answers on loopback, and an IPv6 address needs
  * brackets. `playwright.config.ts` derives its base URL the same way.
@@ -371,7 +374,7 @@ export function appUrl(env: NodeJS.ProcessEnv): string {
 }
 
 /** Where the dev server can find a key that only a production build reads. */
-const DEV_KEY_HINT = "put it in .env or .env.development.local before `make dev`";
+const DEV_KEY_HINT = "put it in .env or .env.development.local before `npm run dev`";
 
 /**
  * The env file, written from the example. `.env.local` is read before every
@@ -435,7 +438,7 @@ export async function planEnvFile(
         : "the default";
   const keyNote =
     keyFile === undefined
-      ? `, and an empty ${API_KEY_KEY} line: put your own key there before \`make dev\`` +
+      ? `, and an empty ${API_KEY_KEY} line: put your own key there before \`npm run dev\`` +
         (shell.key !== undefined
           ? ". The key your shell exports is used for this run only, and never copied; while " +
             "a shell exports one, it wins over the file, so start the app from one that does not."
@@ -467,8 +470,8 @@ export interface CreateDeps {
   /** The client, base URL and bundle-path base `add-method` runs with. */
   addMethod: AddMethodDeps;
   run: RunCommand;
-  /** How to invoke npm: the `npm_execpath` a `npm run` sets, or `npm` on the PATH. */
-  npm: { command: string; args: string[] };
+  /** How to invoke npm, on every system: `npmInvocation`'s answer. */
+  npm: NpmInvocation;
 }
 
 /** Refuse anything but the un-bootstrapped template, before any fetch. */
@@ -489,13 +492,13 @@ export async function assertTemplate(repoRoot: string): Promise<void> {
     throw new CreateError(
       `this is not the un-bootstrapped template: package.json names ${JSON.stringify(name)}, ` +
         `not "${TEMPLATE_NAME}". create is one-shot and has already run, or the project was ` +
-        "bootstrapped by hand — add a method to it with `make add-method` instead.",
+        "bootstrapped by hand — add a method to it with `npm run add-method` instead.",
     );
   }
   if (!existsSync(path.join(repoRoot, BOOTSTRAP_SCRIPT))) {
     throw new CreateError(
       `${BOOTSTRAP_SCRIPT} is missing, and create runs it to name the project. ` +
-        "Restore it from the template, or add the method with `make add-method`.",
+        "Restore it from the template, or add the method with `npm run add-method`.",
     );
   }
 }
@@ -535,7 +538,7 @@ export function bootstrapArgs(
 }
 
 /**
- * The whole `make create` behavior, exit code included. Never throws: a
+ * The whole `npm run create` behavior, exit code included. Never throws: a
  * refusal is a printed message and exit 1.
  */
 export async function runCreate(argv: readonly string[], deps?: CreateDeps): Promise<number> {
@@ -606,17 +609,13 @@ export function resolveCreateDeps(repoRoot: string = REPO_ROOT): CreateDeps {
         "your shell for this run: create reads it from either, and never copies it into a file.",
     );
   }
-  const npmExecPath = process.env.npm_execpath;
   return {
     repoRoot,
     shell,
     envFiles,
     addMethod: resolveDeps(repoRoot),
     run: runInherited,
-    npm:
-      npmExecPath !== undefined && npmExecPath.endsWith(".js")
-        ? { command: process.execPath, args: [npmExecPath] }
-        : { command: "npm", args: [] },
+    npm: npmInvocation(),
   };
 }
 
@@ -664,8 +663,8 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
     "run the bootstrap with the values above",
     envPlan.action === "write" ? `write ${ENV_FILE}` : `leave ${ENV_FILE} as it is`,
     "re-sync package-lock.json (npm install --package-lock-only)",
-    "run make all",
-    `remove ${BOOTSTRAP_DIR}/ once make all is green`,
+    "run the checks (npm run all)",
+    `remove ${BOOTSTRAP_DIR}/ once npm run all is green`,
   ];
   if (args.dryRun) {
     console.log("\nWould then:");
@@ -683,7 +682,7 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
     throw new CreateError(
       "the bootstrap failed after the method was added (see above). The slice is in place; " +
         `fix the cause, then run the bootstrap by hand:\n  node ${bootstrap.map(quote).join(" ")}\n` +
-        `  then \`npm install --package-lock-only\`, \`make all\`, and \`rm -rf ${BOOTSTRAP_DIR}\`.`,
+        `  then \`npm install --package-lock-only\`, \`npm run all\`, and remove ${BOOTSTRAP_DIR}/.`,
     );
   }
 
@@ -698,8 +697,8 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
   const remaining = (from: number): string =>
     [
       "npm install --package-lock-only",
-      "make all",
-      `rm -rf ${BOOTSTRAP_DIR}   # once make all is green`,
+      "npm run all",
+      `then remove ${BOOTSTRAP_DIR}/, once npm run all is green`,
     ]
       .slice(from)
       .map((line) => `  ${line}`)
@@ -714,9 +713,9 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
   }
 
   console.log(`\ncreate: 5/${steps.length} ${steps[4]}\n`);
-  if (run("make", ["all"], repoRoot) !== 0) {
+  if (run(deps.npm.command, [...deps.npm.args, "run", "all"], repoRoot) !== 0) {
     throw new CreateError(
-      "make all is red (see above). The project is created and nothing is committed; fix the " +
+      "npm run all is red (see above). The project is created and nothing is committed; fix the " +
         "cause — never by editing src/generated/ — then finish with:\n" +
         remaining(1),
     );
@@ -734,17 +733,17 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
       ...(envPlan.action === "write" && envPlan.keyNeeded
         ? [
             "",
-            `Put your own ${API_KEY_KEY} in ${ENV_FILE} before \`make dev\`: create never copies ` +
+            `Put your own ${API_KEY_KEY} in ${ENV_FILE} before \`npm run dev\`: create never copies ` +
               "the key your shell exports into the project, and while a shell exports one it " +
               "wins over the file.",
           ]
         : []),
       "",
       "Next:",
-      `  make dev                  # ${appUrl(process.env)}`,
-      "  make serve                # the same server in the background, proven; make stop stops it",
-      "  make add-method METHOD=…  # a second method, as a tab beside the first",
-      "  npm run codegen           # after editing the method, or bumping its tag",
+      `  npm run dev                     # ${appUrl(process.env)}`,
+      "  npm run serve                   # the same server in the background, proven; npm run serve -- stop stops it",
+      "  npm run add-method -- <method>  # a second method, as a tab beside the first",
+      "  npm run codegen                 # after editing the method, or bumping its tag",
     ].join("\n"),
   );
   return EXIT_OK;

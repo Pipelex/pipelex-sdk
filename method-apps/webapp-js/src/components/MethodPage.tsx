@@ -38,7 +38,7 @@ function EmptyState() {
         is. Add one from your shell, then reload this page:
       </p>
       <pre className="mt-3 overflow-x-auto rounded bg-slate-900 px-3 py-2 text-xs text-slate-100">
-        <code>make add-method METHOD=&lt;your method&gt;</code>
+        <code>npm run add-method -- &lt;your method&gt;</code>
       </pre>
       <p className="mt-3 text-sm text-slate-600">
         <code className="rounded bg-slate-200 px-1.5 py-0.5 text-xs">docs/add-method.md</code> lists

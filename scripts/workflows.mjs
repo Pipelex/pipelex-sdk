@@ -37,10 +37,20 @@
  * `env` when it has one, adds the template to
  * the workflow's name and to each job's, and changes nothing in a job that
  * does not check out, such as an aggregator reading only `needs`. In a job
- * that checks out, it sets the job's run steps to the extracted folder, adds
- * the extraction step right after the checkout, points every
- * `${{ github.workspace }}` at the extracted folder, and gives an npm cache the
- * template's lock file, the monorepo's copy of the one the extraction carries.
+ * that checks out, it sets the job's run steps to the extracted folder through
+ * a job-level `defaults.run`, adds the extraction step right after the
+ * checkout, points every `${{ github.workspace }}` at the extracted folder,
+ * and gives an npm cache the template's lock file, the monorepo's copy of the
+ * one the extraction carries. GitHub was observed to replace a workflow-level
+ * `defaults.run` whole with a job's (job 140028022927 on pipelex-sdk#202, at
+ * af63310, ran the extraction step under pwsh though its workflow set
+ * `shell: bash`), so that job-level `defaults.run` carries the template's
+ * workflow-level entries, such as `shell`, beside the working directory, and
+ * the template's own steps run as they do in the template. Every step it
+ * inserts, the extraction and the next SDK's install, also names
+ * `shell: bash` itself, since each is a bash script whatever the template's
+ * shell, and a step that finds no shell anywhere runs under PowerShell on a
+ * Windows runner.
  * A setup-uv step that sets `enable-cache: true` gets the same: its cache is
  * keyed on the template's `uv.lock` through `cache-dependency-glob`, since
  * the action runs at the repository root, where its default glob reads every
@@ -58,8 +68,11 @@
  * anywhere the rewrite cannot reach, the shell's `GITHUB_WORKSPACE`, a workflow
  * with no job that checks out, and everything GitHub resolves from the
  * repository root rather than from the template's directory — a key named for
- * a path, a file, a directory or a glob, a local action, and `hashFiles`. For
- * a next-SDK twin, it also refuses a job with more than one install step, and
+ * a path, a file, a directory or a glob, a workflow-level `working-directory`
+ * among them, a local action, and `hashFiles`. It refuses a workflow-level
+ * `defaults` other than one `run:` mapping whose values are written on their
+ * lines, which is what a job's `defaults.run` can carry. For a next-SDK twin,
+ * it also refuses a job with more than one install step, and
  * an install written inside a multi-line `run:`. It refuses a workflow-level
  * `env` written on its line, which the twin's variables cannot join, and any
  * line that names one of those variables, which would repeat or override it. An
@@ -192,6 +205,9 @@ function parseWorkflow(origin, source) {
   let on = null;
   // The workflow-level `env:` line, and the column its entries start at once the first is read.
   let env = null;
+  // The workflow-level `defaults:` block: the column of its one `run:` key, and that mapping's
+  // entries, each a key and its value as written, which every job that checks out carries.
+  let defaults = null;
   let top = null;
   let job = null;
   // The job's steps list, once its `steps:` key is read: the key's column,
@@ -271,6 +287,13 @@ function parseWorkflow(origin, source) {
         }
         env = { start: at, column: null };
       }
+      if (top === "defaults") {
+        if (defaults) refuse(line, "a second defaults: block");
+        if (scalar(key[2] ?? "") !== "") {
+          refuse(line, "a workflow-level defaults written on its line, which the twin cannot carry");
+        }
+        defaults = { column: null, run: false, entries: [] };
+      }
       if (BLOCK_SCALAR.test(key[2] ?? "")) block = 0;
       continue;
     }
@@ -293,6 +316,22 @@ function parseWorkflow(origin, source) {
     const key = keyOf(line);
     if (key && BLOCK_SCALAR.test(key.value)) block = key.column;
     if (top === "env" && key) env.column ??= key.column;
+    if (top === "defaults") {
+      // A workflow-level `working-directory` was refused above, as a key naming a path.
+      if (!key || key.dash) refuse(line, "a workflow-level defaults line that is not a key");
+      defaults.column ??= key.column;
+      if (key.column === defaults.column) {
+        if (key.key !== "run" || key.value !== "" || defaults.run) {
+          refuse(line, "a workflow-level defaults other than one run: mapping");
+        }
+        defaults.run = true;
+      } else if (key.value === "" || BLOCK_SCALAR.test(key.value)) {
+        refuse(line, "a defaults.run entry whose value is not written on its line");
+      } else {
+        defaults.entries.push({ key: key.key, value: key.value });
+      }
+      continue;
+    }
     if (top !== "jobs") continue;
 
     if (indent === 2 && key && !key.dash) {
@@ -390,8 +429,18 @@ function parseWorkflow(origin, source) {
       each.checkout = candidate;
     }
   }
-  return { lines, names, on, env, jobs, workspace };
+  const defaultsRun = defaults?.entries ?? [];
+  return { lines, names, on, env, defaultsRun, jobs, workspace };
 }
+
+/**
+ * The shell every step the twin inserts names for itself. Each inserted step is
+ * a bash script, so it says so whatever shell the template's `defaults.run`
+ * names, which the twin's jobs carry, and runs under bash on every runner,
+ * where a step that names no shell, and finds none in its job's defaults, runs
+ * under PowerShell on Windows.
+ */
+const INSERTED_SHELL = "bash";
 
 /** The step that extracts the template as the export ships it, at a steps list's dash column. */
 function extractionStep(template, dash) {
@@ -399,6 +448,7 @@ function extractionStep(template, dash) {
   const dir = extractedDir(template);
   return [
     `${at}- name: Extract ${template} as the export ships it`,
+    `${at}  shell: ${INSERTED_SHELL}`,
     `${at}  working-directory: .`,
     `${at}  run: |`,
     `${at}    rm -rf ${dir} && mkdir -p ${dir}`,
@@ -416,14 +466,17 @@ function extractionStep(template, dash) {
  * with `npm ci`, which the runner's bundled npm refuses on the SDK's lockfile. A Python SDK's
  * locked base is exported from its `uv.lock` and reinstalled with the wheel, since the template's
  * environment already holds the registry's release of that version, which the wheel's metadata
- * alone would keep.
+ * alone would keep. The environment is named by its directory, `.venv`, which uv resolves to
+ * `bin/python` or, on Windows, `Scripts/python.exe`.
  */
 function nextSdkStep(sdk, dash) {
   const at = " ".repeat(dash);
   const name = `${at}- name: Install ${sdk.package} built from this commit`;
+  const shell = `${at}  shell: ${INSERTED_SHELL}`;
   if (sdk.ecosystem === "npm") {
     return [
       name,
+      shell,
       `${at}  run: |`,
       `${at}    mkdir -p "$RUNNER_TEMP/next-sdk"`,
       `${at}    (cd "$GITHUB_WORKSPACE/${sdk.dir}" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")`,
@@ -433,17 +486,18 @@ function nextSdkStep(sdk, dash) {
   const base = sdk.lockedBase;
   return [
     name,
+    shell,
     `${at}  run: |`,
     `${at}    uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/${sdk.dir}"`,
     `${at}    uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/${sdk.dir}" | grep -E '^${base}( |=|@)' > "$RUNNER_TEMP/next-sdk/${base}.txt"`,
-    `${at}    uv pip install --python .venv/bin/python --reinstall-package ${sdk.package} --reinstall-package ${base} -r "$RUNNER_TEMP/next-sdk/${base}.txt" "$RUNNER_TEMP"/next-sdk/*.whl`,
+    `${at}    uv pip install --python .venv --reinstall-package ${sdk.package} --reinstall-package ${base} -r "$RUNNER_TEMP/next-sdk/${base}.txt" "$RUNNER_TEMP"/next-sdk/*.whl`,
   ];
 }
 
 /** Render one twin; `sdk` is null for the standalone twin. */
 function render(template, file, source, sdk) {
   const origin = `${template}/${WORKFLOWS_DIR}/${file}`;
-  const { lines, names, on, env, jobs, workspace } = parseWorkflow(origin, source);
+  const { lines, names, on, env, defaultsRun, jobs, workspace } = parseWorkflow(origin, source);
   const refuse = (at, why) => {
     throw new TwinError(`${origin}: cannot render "${lines[at].trim()}": ${why}`);
   };
@@ -499,7 +553,14 @@ function render(template, file, source, sdk) {
     if (scalar(keyOf(lines[job.runsOn]).value) === "") {
       refuse(job.runsOn, "a runs-on value that is not inline");
     }
-    after[job.runsOn].push("    defaults:", "      run:", `        working-directory: ${dir}`);
+    // GitHub replaces the workflow-level defaults.run whole with a job's, so the job carries the
+    // template's own entries beside the working directory, and its steps run as the template's do.
+    after[job.runsOn].push(
+      "    defaults:",
+      "      run:",
+      ...defaultsRun.map(({ key, value }) => `        ${key}: ${value}`),
+      `        working-directory: ${dir}`,
+    );
     for (const cache of job.caches) {
       after[cache.at].push(
         `${" ".repeat(cache.column)}cache-dependency-path: ${template}/package-lock.json`,

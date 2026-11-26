@@ -35,7 +35,8 @@ help: ## Show this help
 # Declared once here and exported, so package.json's `dev`/`start` scripts and
 # playwright.config.ts all read the same host and port. Each of them still
 # falls back to 127.0.0.1 and 4300 on its own, so `npm run dev` outside make
-# keeps working.
+# keeps working: the scripts run scripts/run-next.mts, which reads them on
+# every system, Windows included.
 #
 # APP_HOST is loopback by default because the app must not be reachable from
 # the network. Its Server Actions run methods with the PIPELEX_API_KEY in the
@@ -108,6 +109,9 @@ run: port-check ## Start the dev server on 127.0.0.1:4300 (APP_HOST=, APP_PORT= 
 
 dev: run ## Alias for run
 
+# `make serve` and `make stop` are `npm run serve -- serve` and
+# `npm run serve -- stop`, the commands every system runs, Windows included.
+#
 # `make serve` starts the same dev server in the background, detached from this
 # terminal and bound to loopback, waits for its port, checks that the listener
 # is the server it started and that it listens on this machine alone, proves
@@ -235,12 +239,16 @@ test-e2e-ui: confirm-live-e2e port-check ## Same as test-e2e, with the Playwrigh
 agent-test: install-if-needed ## Run tests, silent on success, installing first when node_modules is missing or older than package-lock.json (for agents)
 	@OUTPUT=$$(npm run test --silent 2>&1); STATUS=$$?; if [ $$STATUS -ne 0 ]; then echo "$$OUTPUT"; exit $$STATUS; fi
 
-check: lint format-check typecheck codegen-check ## Run lint, format check, type check, and the offline codegen check
+# `check` and `all` are npm scripts, so that a system without make, Windows
+# among them, runs the same gate with `npm run check` and `npm run all`.
+check: ## Run lint, format check, type check, and the offline codegen check
+	npm run check
 
 agent-check: install-if-needed ## Run check, installing first when node_modules is missing or older than package-lock.json (for agents)
 	@$(MAKE) --no-print-directory check
 
-all: check test build ## Full validation: check + test + build (excludes e2e — see test-e2e)
+all: ## Full validation: check + test + build (excludes e2e — see test-e2e)
+	npm run all
 
 install: ## Install dependencies
 	npm install

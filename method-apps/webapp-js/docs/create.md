@@ -1,13 +1,13 @@
-# `make create`: from the template to the app for your method
+# `npm run create`: from the template to the app for your method
 
-A fresh copy of this template is an app with no method, under the template's own name. `make create` turns it into the app for the method you have, in one command:
+A fresh copy of this template is an app with no method, under the template's own name. `npm run create` turns it into the app for the method you have, in one command, on every system, Windows included; `make create` runs the same gesture with make's variables:
 
 ```bash
-PIPELEX_API_KEY=… make create METHOD=path/to/my_method.mthds
-make dev   # http://127.0.0.1:4300
+PIPELEX_API_KEY=… npm run create -- path/to/my_method.mthds
+npm run dev   # http://127.0.0.1:4300
 ```
 
-When it finishes, the page is your method's input form and result view, the project is named after the method, `.env.local` points at the API the gesture ran against and waits for your own key, and `make all` is green. Nothing is committed: the whole result is a working-tree change for you to review.
+When it finishes, the page is your method's input form and result view, the project is named after the method, `.env.local` points at the API the gesture ran against and waits for your own key, and `npm run all` is green. Nothing is committed: the whole result is a working-tree change for you to review.
 
 This document is part of the template, not of the projects it creates: the gesture is one-shot, and the bootstrap removes it — with this document — once it has run.
 
@@ -75,17 +75,17 @@ The gesture runs in two halves, like `make add-method`, and nothing is written u
 2. **Run the bootstrap** with the derived values, `--method-dir` and `--clean`. It names the project, rewrites the README, `CLAUDE.md`, `AGENTS.md`, `src/site.ts`, the license and the changelog (the method's prose going only where the section above says), and removes what only the template needs — this gesture, its test, this document and the passages describing them.
 3. **Write `.env.local`**, unless it already exists (see below).
 4. **Re-sync `package-lock.json`** with `npm install --package-lock-only`, since the package was renamed and CI installs with `npm ci`.
-5. **Run `make all`.**
-6. **Remove the bootstrap skill**, only once `make all` is green.
+5. **Run `npm run all`**, the checks, the unit tests and the build, which `make all` runs too.
+6. **Remove the bootstrap skill**, only once `npm run all` is green.
 
-A failure after step 1 cannot be undone by running the gesture again, because the template has become a project and the gesture refuses it. The message names the steps that are left, and they are ordinary commands: fix the cause (never by editing `src/generated/`), then `npm install --package-lock-only`, `make all`, and `rm -rf .claude/skills/bootstrap`.
+A failure after step 1 cannot be undone by running the gesture again, because the template has become a project and the gesture refuses it. The message names the steps that are left, and they are ordinary commands: fix the cause (never by editing `src/generated/`), then `npm install --package-lock-only`, `npm run all`, and remove the `.claude/skills/bootstrap/` directory.
 
 ## The key and the base URL
 
 `.env.local` is written only when it does not exist, from `.env.example`. Next.js reads it before every other env file, and the first file that assigns a variable wins even when the value is empty, so the gesture writes it such that it hides nothing another file supplies:
 
 - **exactly one `PIPELEX_BASE_URL` line**, holding the base URL the gesture ran against — the one your shell exports, the one an env file such as `.env` sets, or the default when neither does. Any other assignment of it is dropped, so the file can never hold two;
-- **`PIPELEX_API_KEY` never copied**, not even the one your shell exports: an exported key is whichever key was exported last, often a test key or one of another organization, and copied into the project it would outlive the shell, bill whatever organization it belongs to, and escape every rotation. So `.env.local` carries an empty `PIPELEX_API_KEY` line, and the plan and the closing lines say to put your own key there before `make dev`; a key a shell exports still wins over the file, so start the app from a shell that does not export another. When an env file holds a key, whether or not your shell exports another, `.env.development` included although only the dev server reads it, `.env.local` carries no `PIPELEX_API_KEY` line at all, only a comment naming that file, so the file keeps supplying it. The gesture reads the env files a production build reads, as every script here does, so that file can be `.env.production` or `.env.production.local`, which `make dev` never opens. In that case the comment and the plan say that the dev server will not see the key, and tell you to put it in `.env` or `.env.development.local` before `make dev`.
+- **`PIPELEX_API_KEY` never copied**, not even the one your shell exports: an exported key is whichever key was exported last, often a test key or one of another organization, and copied into the project it would outlive the shell, bill whatever organization it belongs to, and escape every rotation. So `.env.local` carries an empty `PIPELEX_API_KEY` line, and the plan and the closing lines say to put your own key there before `npm run dev`; a key a shell exports still wins over the file, so start the app from a shell that does not export another. When an env file holds a key, whether or not your shell exports another, `.env.development` included although only the dev server reads it, `.env.local` carries no `PIPELEX_API_KEY` line at all, only a comment naming that file, so the file keeps supplying it. The gesture reads the env files a production build reads, as every script here does, so that file can be `.env.production` or `.env.production.local`, which `npm run dev` never opens. In that case the comment and the plan say that the dev server will not see the key, and tell you to put it in `.env` or `.env.development.local` before `npm run dev`.
 
 The file is created readable by you alone. An existing `.env.local` is yours and is never touched; when your shell exports a base URL the file disagrees with, the plan says so, because the app reads the file whenever the shell does not set the variable.
 

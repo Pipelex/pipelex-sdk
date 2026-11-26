@@ -54,7 +54,7 @@ Many breaking bullets in this changelog follow a rename pattern: an identifier o
 1. Grep the **whole repo** for the old name — don't scope this to `src/` only. An env var name in particular tends to leak everywhere: `.env.example`, `README.md`, `CLAUDE.md`, `docs/*.md`, `e2e/*.spec.ts` comments and fallback reads, test assertions, not just the runtime code path. A rerun of this skill against the gallery this template was extracted from found the old name in over a dozen files across several kinds of file, so treat the file-scope list in this repo's own `CLAUDE.md` as a starting point, not a ceiling. The one place to leave alone is `CHANGELOG.md`'s **already-dated release entries** (`## [vX.Y.Z] - YYYY-MM-DD`) — those are a historical record of what was true at that release and shouldn't be rewritten; Step 7 is where this repo's changelog gets a new entry for _this_ change.
 2. **If found**: this repo needs the migration. Apply it with `Edit` (rename the identifier / env var everywhere it appears), then show the diff. This matches the workspace's "no backward-compatibility shims — just change it" principle; there's no reason to keep the old name around once the SDK drops it.
 3. **If not found**: say so and move on — this repo is already using the new name (or never used the old surface), nothing to do.
-4. **Run `make format` right after any rename**, before moving on. A literal find-and-replace changes string lengths, and this repo's Prettier config re-flows Markdown tables to keep columns aligned — a raw rename of an env var name inside a `README.md` table will fail `make format-check` (and therefore `make all`) purely on column padding, which reads as a confusing false alarm if you hit it without knowing the rename is what caused it.
+4. **Run `npm run format` (`make format`) right after any rename**, before moving on. A literal find-and-replace changes string lengths, and this repo's Prettier config re-flows Markdown tables to keep columns aligned — a raw rename of an env var name inside a `README.md` table will fail `make format-check` (and therefore `make all`) purely on column padding, which reads as a confusing false alarm if you hit it without knowing the rename is what caused it.
 
 Not every breaking change is a mechanical rename — some are behavior changes (a different default, a removed method, a changed error shape) that need human judgment to migrate correctly. **Never guess at those.** List them clearly as a "needs manual review" checklist and let the user decide how (or whether) to adapt this repo's code before continuing. If any of these are unresolved and would break `make all`, say so explicitly — better to surface that now than have step 6 fail with a confusing error.
 
@@ -65,7 +65,7 @@ Not every breaking change is a mechanical rename — some are behavior changes (
 
 ## Step 6 — Run Checks
 
-Run `make all` (lint + format-check + typecheck + unit tests + build, per this repo's `CLAUDE.md`).
+Run `npm run all`, or `make all` (lint + format-check + typecheck + unit tests + build, per this repo's `CLAUDE.md`).
 
 - **On success**: report and continue.
 - **On failure**: show the errors. If they trace back to one of the "needs manual review" items from Step 4, connect the dots for the user rather than just dumping the error. Ask how to proceed (fix, skip, abort) — don't guess at a fix for a behavior change you flagged as needing human judgment.

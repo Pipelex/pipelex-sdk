@@ -2367,8 +2367,8 @@ async function runAddMethodInner(argv: readonly string[], deps?: AddMethodDeps):
     [
       "",
       "Next:",
-      "  1. `make all` — the slice compiles, lints and tests with the rest of the app.",
-      `  2. \`make dev\` and run it. The form and the result view both come from the`,
+      "  1. `npm run all` — the slice compiles, lints and tests with the rest of the app.",
+      `  2. \`npm run dev\` and run it. The form and the result view both come from the`,
       `     method's contract; ${plan.paths.form} is where you replace either with your own.`,
     ].join("\n"),
   );

@@ -15,17 +15,26 @@ env:
   DO_NOT_TRACK: "1"
   NEXT_TELEMETRY_DISABLED: "1"
 
+# A step with no shell of its own runs in bash on every runner, Windows
+# included, where Git for Windows provides it. The Windows job's own steps say
+# `shell: pwsh`, since they prove the app's scripts without bash.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   tests:
     name: Tests (method-apps/webapp-js, next SDK)
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ../standalone/method-apps-webapp-js
     steps:
       - uses: actions/checkout@v5
 
       - name: Extract method-apps/webapp-js as the export ships it
+        shell: bash
         working-directory: .
         run: |
           rm -rf ../standalone/method-apps-webapp-js && mkdir -p ../standalone/method-apps-webapp-js
@@ -46,6 +55,7 @@ jobs:
         run: npm ci
 
       - name: Install @pipelex/sdk built from this commit
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/next-sdk"
           (cd "$GITHUB_WORKSPACE/js" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")
@@ -56,3 +66,45 @@ jobs:
 
       - name: Build
         run: make build
+
+  # The tests of the scripts written for Windows, under PowerShell, with neither
+  # make nor bash: the dev server in the background (npm run serve), the dev and
+  # start scripts, and how the scripts run npm.
+  windows:
+    name: Scripts on Windows (method-apps/webapp-js, next SDK)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ../standalone/method-apps-webapp-js
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract method-apps/webapp-js as the export ships it
+        shell: bash
+        working-directory: .
+        run: |
+          rm -rf ../standalone/method-apps-webapp-js && mkdir -p ../standalone/method-apps-webapp-js
+          git archive HEAD:method-apps/webapp-js | tar -x -C ../standalone/method-apps-webapp-js
+          cd ../standalone/method-apps-webapp-js
+          git init -q -b main
+          git add -A -f
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "method-apps/webapp-js, as a project made from it starts"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: method-apps/webapp-js/package-lock.json
+
+      # npm clean-install is npm ci by its long name.
+      - name: Install dependencies
+        shell: pwsh
+        run: npm clean-install
+
+      - name: Run those tests, with Git's bash and its tools off the PATH
+        shell: pwsh
+        run: |
+          $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -notmatch '\\Git\\(usr\\)?bin' }) -join ';'
+          npx vitest run scripts/lib/serve scripts/lib/run-next scripts/lib/npm scripts/lib/create

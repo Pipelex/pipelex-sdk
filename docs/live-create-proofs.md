@@ -34,7 +34,7 @@ A Ctrl-C stops the whole run, never only the command it reached: the next step d
 
 ## What `webapp-js`'s proof checks
 
-The gesture runs `make all` itself, so a red check fails the proof. Then the copy must be what the gesture promised:
+The gesture runs `npm run all` itself, the checks `make all` runs too, so a red check fails the proof. Then the copy must be what the gesture promised:
 
 - `package.json` no longer carries the template's name;
 - the bootstrap skill, `scripts/create.mts` and `docs/create.md` are gone;

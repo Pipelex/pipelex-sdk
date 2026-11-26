@@ -333,21 +333,21 @@ A Next.js app that runs its methods through the [Pipelex](https://pipelex.com) A
 ## Run it
 
 \`\`\`bash
-make install   # once
-make dev       # http://127.0.0.1:4300, in this terminal
+npm install     # once
+npm run dev     # http://127.0.0.1:4300, in this terminal
 \`\`\`
 
-\`make serve\` starts the same server in the background instead, prints its URL once the page answers, and \`make stop\` stops it.
+\`npm run serve\` starts the same server in the background instead, prints its URL once the page answers, and \`npm run serve -- stop\` stops it. These commands run on every system, Windows included; with \`make\`, they are also \`make install\`, \`make dev\`, \`make serve\` and \`make stop\`.
 
 The app reads \`PIPELEX_API_KEY\` and \`PIPELEX_BASE_URL\` from \`.env.local\`; \`.env.example\` lists both.
 
-The server listens on loopback only, because anyone who can reach it runs methods billed to that key. \`make dev APP_HOST=0.0.0.0\` opens it to your network — do that only on a network you trust — and \`APP_PORT=4301\` moves it off port 4300. \`make help\` says where it listens.
+The server listens on loopback only, because anyone who can reach it runs methods billed to that key. \`APP_HOST=0.0.0.0\` in the environment opens it to your network — do that only on a network you trust — and \`APP_PORT=4301\` moves it off port 4300. \`npm run dev\` reads both from the environment, and \`make dev\` also takes them on its command line, as in \`make dev APP_HOST=0.0.0.0\`.
 
 ## Work on it
 
-- **Add a method** with \`make add-method METHOD=<method>\`. It writes the method's directory under \`methods/\`, its generated types, its Server Actions, its form and its registry entry. See [\`docs/add-method.md\`](docs/add-method.md).
+- **Add a method** with \`npm run add-method -- <method>\`, or \`make add-method METHOD=<method>\`. It writes the method's directory under \`methods/\`, its generated types, its Server Actions, its form and its registry entry. See [\`docs/add-method.md\`](docs/add-method.md).
 - **After editing a method's \`.mthds\` files or its \`method.json\`**, run \`npm run codegen\` and commit the regenerated \`src/generated/\` tree with the edit.
-- **Before committing**, run \`make all\`: lint, formatting, types, the offline codegen check, the unit tests and the production build.
+- **Before committing**, run \`npm run all\`, or \`make all\`: lint, formatting, types, the offline codegen check, the unit tests and the production build.
 
 ## Documentation
 
@@ -629,10 +629,13 @@ export async function run(root, names, opts) {
       `${removals.length} template-only path(s) ${opts.dryRun ? "would be " : ""}removed.`,
   );
   if (!opts.dryRun) {
+    // One command per line, run one after the other: Windows PowerShell 5.1 has
+    // no `&&` to chain them.
     console.log(
-      "\nNext: sync the lock file (npm ci in CI validates its name/version) and run the gates:",
+      "\nNext: sync the lock file (npm ci in CI validates its name/version), then run the gates:",
     );
-    console.log("  npm install --package-lock-only && make all");
+    console.log("  npm install --package-lock-only");
+    console.log("  npm run all");
     console.log("Then review with `git status` and `git diff` before committing.");
   }
 }

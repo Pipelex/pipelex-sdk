@@ -1,6 +1,6 @@
 // @vitest-environment node
 //
-// Pins `make create`, in two layers, the way `add-method.test.mts` pins
+// Pins `npm run create`, which `make create` runs, in two layers, the way `add-method.test.mts` pins
 // `add-method`.
 //
 // The pure helpers are tabled: each turns the method's own report, or the
@@ -9,7 +9,8 @@
 // client and a fake command runner, and what it pins is the order: every
 // refusal before anything is written, the bootstrap validating its values
 // before the method is scaffolded, and the bootstrap skill removed only once
-// `make all` is green.
+// `npm run all` is green. It reads no make and no shell, so it runs on Windows
+// as it does elsewhere.
 
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -284,7 +285,7 @@ describe("the env file", () => {
     expect(written).not.toMatch(/^\s*(export\s+)?PIPELEX_API_KEY\s*=/m);
     expect(written).toContain(
       "# PIPELEX_API_KEY is read from .env.production.local by a production build only — " +
-        "put it in .env or .env.development.local before `make dev`.",
+        "put it in .env or .env.development.local before `npm run dev`.",
     );
 
     const root = await mkdtemp(path.join(tmpdir(), "create-env-"));
@@ -323,7 +324,7 @@ describe("the env file", () => {
       const fromShell = await planEnvFile(root, { baseUrl: DEV, key: "sk-1" }, DEV, {});
       const said = fromShell.notes.join("\n");
       expect(said).toContain("(from your shell), and an empty PIPELEX_API_KEY line");
-      expect(said).toContain("put your own key there before `make dev`");
+      expect(said).toContain("put your own key there before `npm run dev`");
       expect(said).toContain(
         "The key your shell exports is used for this run only, and never copied;",
       );
@@ -532,7 +533,7 @@ describe("runCreate", () => {
    * `package.json` is imitated, which is what `make create` refuses to repeat.
    */
   function deps(
-    statuses: { bootstrap?: number; dryRun?: number; npm?: number; make?: number } = {},
+    statuses: { bootstrap?: number; dryRun?: number; npm?: number; all?: number } = {},
     shell: CreateDeps["shell"] = { baseUrl: "https://api-dev.pipelex.com", key: "sk-test" },
   ): CreateDeps & { calls: Call[] } {
     const calls: Call[] = [];
@@ -558,8 +559,10 @@ describe("runCreate", () => {
         const isBootstrap = args[0]?.endsWith("bootstrap.mjs") ?? false;
         if (isBootstrap && args.includes("--dry-run")) return statuses.dryRun ?? 0;
         if (isBootstrap) return statuses.bootstrap ?? 0;
+        if (command === "npm" && args.join(" ") === "run all") return statuses.all ?? 0;
         if (command === "npm") return statuses.npm ?? 0;
-        return statuses.make ?? 0;
+        // Nothing else is run: a command create should not run fails it.
+        return 127;
       },
     };
   }
@@ -581,7 +584,7 @@ describe("runCreate", () => {
       "bootstrap --dry-run",
       "bootstrap",
       "npm install --package-lock-only",
-      "make all",
+      "npm run all",
     ]);
     // The values are checked before anything is written, and the slice is in
     // place before the project is named after it.
@@ -603,7 +606,7 @@ describe("runCreate", () => {
     expect(env).not.toContain("sk-test");
     expect(env.match(/PIPELEX_BASE_URL=/g)).toHaveLength(1);
     expect(output.join("\n")).toContain(
-      "Put your own PIPELEX_API_KEY in .env.local before `make dev`: create never copies the " +
+      "Put your own PIPELEX_API_KEY in .env.local before `npm run dev`: create never copies the " +
         "key your shell exports into the project, and while a shell exports one it wins over the file.",
     );
 
@@ -655,7 +658,7 @@ describe("runCreate", () => {
     expect(await runCreate([RECEIPTS_DIR], d)).toBe(1);
 
     expect(d.calls).toEqual([]);
-    expect(output.join("\n")).toContain("make add-method");
+    expect(output.join("\n")).toContain("npm run add-method");
   });
 
   it("names --method-name when no directory name can be derived", async () => {
@@ -694,14 +697,14 @@ describe("runCreate", () => {
     expect(output.join("\n")).not.toContain("Put your own PIPELEX_API_KEY");
   });
 
-  it("keeps the bootstrap and names what is left when make all is red", async () => {
-    const d = deps({ make: 2 });
+  it("keeps the bootstrap and names what is left when npm run all is red", async () => {
+    const d = deps({ all: 2 });
     expect(await runCreate([RECEIPTS_DIR], d)).toBe(1);
 
     expect(existsSync(path.join(root, BOOTSTRAP_DIR))).toBe(true);
     const printed = output.join("\n");
-    expect(printed).toContain("make all is red");
-    expect(printed).toContain(`rm -rf ${BOOTSTRAP_DIR}`);
-    expect(printed).not.toContain("npm install --package-lock-only\n  make all");
+    expect(printed).toContain("npm run all is red");
+    expect(printed).toContain(`then remove ${BOOTSTRAP_DIR}/, once npm run all is green`);
+    expect(printed).not.toContain("npm install --package-lock-only\n  npm run all");
   });
 });
