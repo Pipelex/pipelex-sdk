@@ -15,6 +15,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -27,7 +28,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   commandRunsIn,
@@ -125,37 +126,86 @@ if (role === "parent") {
 
 const dirs: string[] = [];
 const holders: ChildProcess[] = [];
+let caseStarted = new Date();
+
+beforeEach(() => {
+  caseStarted = new Date();
+});
 
 // Every process a case left running is killed, and waited for, before its
 // directories are removed: Windows refuses to remove a directory a process
 // still runs in, or a file it holds open, and a killed process lets go of them
-// only once it has ended.
+// only once it has ended. On Windows each one is ended with everything under
+// it, as `make stop` ends a server there: a console program's own console host
+// runs as its child, in its directory, and outlives a process killed alone.
 afterEach(async () => {
   const killed: number[] = [];
-  for (const dir of dirs) {
-    for (const pid of pidsIn(dir)) {
-      kill(pid, "SIGKILL");
-      killed.push(pid);
+  for (const dir of dirs) killed.push(...pidsIn(dir));
+  for (const holder of holders.splice(0)) {
+    if (holder.pid !== undefined) killed.push(WINDOWS ? holder.pid : -holder.pid);
+  }
+  if (WINDOWS) {
+    const running = killed.filter(alive);
+    if (running.length > 0) {
+      spawnSync("taskkill", ["/T", "/F", ...running.flatMap((pid) => ["/PID", String(pid)])], {
+        windowsHide: true,
+      });
     }
   }
-  for (const holder of holders.splice(0)) {
-    if (holder.pid === undefined) continue;
-    kill(WINDOWS ? holder.pid : -holder.pid, "SIGKILL");
-    killed.push(holder.pid);
-  }
-  const ended = await allGone(killed, 10_000);
+  for (const pid of killed) kill(pid, "SIGKILL");
+  const ended = await allGone(
+    killed.map((pid) => Math.abs(pid)),
+    10_000,
+  );
   for (const dir of dirs.splice(0)) {
     try {
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     } catch (error) {
       throw new Error(
         `could not remove ${dir}${ended ? "" : ", where a process the case started still runs"}: ` +
-          `${(error as Error).message}`,
+          `${(error as Error).message}${leftovers(dir, caseStarted)}`,
         { cause: error },
       );
     }
   }
 }, 30_000);
+
+/**
+ * What may hold a directory that cannot be removed: what is left in it, and on
+ * Windows, where a process's directory cannot be read, every process started
+ * since the case began.
+ */
+function leftovers(dir: string, since: Date): string {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir, { recursive: true }).map(String);
+  } catch (error) {
+    entries = [`(unreadable: ${(error as Error).message})`];
+  }
+  let lines = `\nleft in it: ${entries.length === 0 ? "nothing" : entries.join(", ")}`;
+  if (WINDOWS) {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `$since = [datetime]::Parse('${since.toISOString()}').ToLocalTime().AddSeconds(-1)`,
+      "Get-CimInstance -ClassName Win32_Process | Where-Object { $_.CreationDate -ge $since } |",
+      "  ForEach-Object { '{0} (parent {1}) {2}: {3}' -f $_.ProcessId, $_.ParentProcessId, $_.Name, $_.CommandLine }",
+    ].join("\n");
+    const result = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(script, "utf16le").toString("base64"),
+      ],
+      { encoding: "utf-8", windowsHide: true },
+    );
+    lines +=
+      `\nprocesses started since the case began:\n${(result.stdout ?? "").trim() || "none"}` +
+      (result.status === 0 ? "" : `\n(PowerShell: ${result.error?.message ?? result.stderr})`);
+  }
+  return lines;
+}
 
 function kill(pid: number, signal: NodeJS.Signals): void {
   try {
