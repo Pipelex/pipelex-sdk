@@ -128,6 +128,7 @@ jobs:
 
 /** The extraction step a twin of `template` (slug `slug`) adds after the checkout. */
 const extraction = (template, slug) => `      - name: Extract ${template} as the export ships it
+        shell: bash
         working-directory: .
         run: |
           rm -rf ../standalone/${slug} && mkdir -p ../standalone/${slug}
@@ -376,6 +377,43 @@ describe("renderStandaloneTwin", () => {
     assert.match(twin, /enable-cache: true\n {10}cache-dependency-glob: app-py\/uv\.lock\n/);
   });
 
+  it("carries the source's workflow-level defaults.run into each job's, beside the working directory", () => {
+    // GitHub replaces the workflow-level defaults.run whole with a job's, as job
+    // 140028022927 on pipelex-sdk#202 at af63310 was observed to: its extraction
+    // step ran under pwsh though the workflow set shell: bash.
+    const withShell = SOURCE.replace(
+      "on:\n  pull_request:\n",
+      "on:\n  pull_request:\n\ndefaults:\n  run:\n    shell: bash  # every runner\n",
+    );
+    const rendered = renderStandaloneTwin("app-js", "lint-check.yml", withShell);
+    assert.ok(rendered.includes("\ndefaults:\n  run:\n    shell: bash  # every runner\n"));
+    assert.ok(
+      rendered.includes(
+        "    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: bash  # every runner\n        working-directory: ../standalone/app-js\n",
+      ),
+    );
+    const nextSdk = renderNextSdkTwin(
+      "app-js",
+      "lint-check.yml",
+      withShell.replace(
+        "      - name: Run check",
+        "      - name: Install dependencies\n        run: npm ci\n\n      - name: Run check",
+      ),
+      NPM,
+    );
+    assert.match(nextSdk, /^ {4}defaults:\n {6}run:\n {8}shell: bash {2}# every runner\n {8}working-directory: /m);
+  });
+
+  it("gives a job no shell when the source's workflow sets none", () => {
+    for (const rendered of [
+      renderStandaloneTwin("app-js", "lint-check.yml", SOURCE),
+      renderNextSdkTwin("app-py", "lint-check.yml", PY_SOURCE, PYPI),
+    ]) {
+      assert.doesNotMatch(rendered, /^ {4}defaults:\n {6}run:\n {8}shell:/m);
+      assert.match(rendered, /^ {4}defaults:\n {6}run:\n {8}working-directory: /m);
+    }
+  });
+
   it("runs every job that checks out in the extracted folder", () => {
     const twoJobs = `${SOURCE}  build:\n    runs-on: \${{ matrix.os }}\n    steps:\n      - uses: actions/checkout@v4\n      - run: make build\n`;
     const rendered = renderStandaloneTwin("app-js", "lint-check.yml", twoJobs);
@@ -409,6 +447,26 @@ describe("renderStandaloneTwin", () => {
       "a job that sets defaults": SOURCE.replace(
         "    runs-on: ubuntu-latest",
         "    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: bash",
+      ),
+      "a workflow-level defaults written on its line": SOURCE.replace(
+        "jobs:",
+        "defaults: { run: { shell: bash } }\n\njobs:",
+      ),
+      "a workflow-level defaults other than run": SOURCE.replace(
+        "jobs:",
+        "defaults:\n  other:\n    shell: bash\n\njobs:",
+      ),
+      "a workflow-level defaults.run written on its line": SOURCE.replace(
+        "jobs:",
+        "defaults:\n  run: { shell: bash }\n\njobs:",
+      ),
+      "a workflow-level working directory": SOURCE.replace(
+        "jobs:",
+        "defaults:\n  run:\n    working-directory: sub\n\njobs:",
+      ),
+      "a workflow-level shell as a block scalar": SOURCE.replace(
+        "jobs:",
+        "defaults:\n  run:\n    shell: >\n      bash\n\njobs:",
       ),
       "a cache-dependency-glob": SOURCE.replace(
         '          cache: "npm"',
@@ -546,6 +604,7 @@ describe("renderNextSdkTwin", () => {
         run: npm ci
 
       - name: Install @pipelex/sdk built from this commit
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/next-sdk"
           (cd "$GITHUB_WORKSPACE/js" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")
@@ -563,10 +622,11 @@ describe("renderNextSdkTwin", () => {
         run: PYTHON_VERSION=\${{ matrix.python-version }} make install
 
       - name: Install pipelex-sdk built from this commit
+        shell: bash
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/python"
           uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/python" | grep -E '^mthds( |=|@)' > "$RUNNER_TEMP/next-sdk/mthds.txt"
-          uv pip install --python .venv/bin/python --reinstall-package pipelex-sdk --reinstall-package mthds -r "$RUNNER_TEMP/next-sdk/mthds.txt" "$RUNNER_TEMP"/next-sdk/*.whl
+          uv pip install --python .venv --reinstall-package pipelex-sdk --reinstall-package mthds -r "$RUNNER_TEMP/next-sdk/mthds.txt" "$RUNNER_TEMP"/next-sdk/*.whl
 
       - name: Run ruff lint merge check
 `),
@@ -581,6 +641,31 @@ describe("renderNextSdkTwin", () => {
     );
     assert.match(python, /\$\{\{ github\.workspace \}\}\/\.\.\/standalone\/app-py\/\.venv$/m);
     assert.match(python, /^ {4}name: Lint \(all versions\) \(app-py, next SDK\)$/m);
+  });
+
+  it("names bash for every step it inserts, which a job's defaults would otherwise leave to a Windows runner's PowerShell", () => {
+    // An inserted step is a bash script whatever shell the template's defaults
+    // name, and a step that names none, in a job whose defaults name none, runs
+    // under PowerShell on a Windows runner.
+    const windows = NPM_SOURCE.replace(
+      "on:\n  pull_request:\n",
+      "on:\n  pull_request:\n\ndefaults:\n  run:\n    shell: bash\n",
+    ).replace("runs-on: ubuntu-latest", "runs-on: windows-latest");
+    for (const rendered of [
+      renderStandaloneTwin("app-js", "tests-check.yml", windows),
+      renderNextSdkTwin("app-js", "tests-check.yml", windows, NPM),
+      renderNextSdkTwin("app-py", "lint-check.yml", PY_SOURCE, PYPI),
+    ]) {
+      const inserted = rendered
+        .split(/\n(?= {6}- )/)
+        .filter((step) =>
+          /- name: (Extract .* as the export ships it|Install .* built from this commit)$/m.test(
+            step,
+          ),
+        );
+      assert.ok(inserted.length > 0);
+      for (const step of inserted) assert.match(step, /^ {8}shell: bash$/m);
+    }
   });
 
   it("is not rendered for a workflow with no install step", () => {

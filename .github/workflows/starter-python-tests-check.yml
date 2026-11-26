@@ -32,6 +32,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Extract starter-python as the export ships it
+        shell: bash
         working-directory: .
         run: |
           rm -rf ../standalone/starter-python && mkdir -p ../standalone/starter-python
