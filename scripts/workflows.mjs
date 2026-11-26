@@ -41,6 +41,10 @@
  * the extraction step right after the checkout, points every
  * `${{ github.workspace }}` at the extracted folder, and gives an npm cache the
  * template's lock file, the monorepo's copy of the one the extraction carries.
+ * Every step it inserts, the extraction and the next SDK's install, names
+ * `shell: bash`, since the job's `defaults.run` replaces the workflow's whole,
+ * so a template's workflow-level shell never reaches them, and a Windows runner
+ * would otherwise run them under PowerShell.
  * A setup-uv step that sets `enable-cache: true` gets the same: its cache is
  * keyed on the template's `uv.lock` through `cache-dependency-glob`, since
  * the action runs at the repository root, where its default glob reads every
@@ -393,12 +397,22 @@ function parseWorkflow(origin, source) {
   return { lines, names, on, env, jobs, workspace };
 }
 
+/**
+ * The shell every step the twin inserts names for itself. The twin's job-level
+ * `defaults.run` replaces the workflow-level one whole, so a template's
+ * `shell: bash` there does not reach the job, and a step that names no shell
+ * runs under PowerShell on a Windows runner. Each inserted step is a bash
+ * script, so it says so, and runs the same on every runner.
+ */
+const INSERTED_SHELL = "bash";
+
 /** The step that extracts the template as the export ships it, at a steps list's dash column. */
 function extractionStep(template, dash) {
   const at = " ".repeat(dash);
   const dir = extractedDir(template);
   return [
     `${at}- name: Extract ${template} as the export ships it`,
+    `${at}  shell: ${INSERTED_SHELL}`,
     `${at}  working-directory: .`,
     `${at}  run: |`,
     `${at}    rm -rf ${dir} && mkdir -p ${dir}`,
@@ -421,9 +435,11 @@ function extractionStep(template, dash) {
 function nextSdkStep(sdk, dash) {
   const at = " ".repeat(dash);
   const name = `${at}- name: Install ${sdk.package} built from this commit`;
+  const shell = `${at}  shell: ${INSERTED_SHELL}`;
   if (sdk.ecosystem === "npm") {
     return [
       name,
+      shell,
       `${at}  run: |`,
       `${at}    mkdir -p "$RUNNER_TEMP/next-sdk"`,
       `${at}    (cd "$GITHUB_WORKSPACE/${sdk.dir}" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")`,
@@ -433,6 +449,7 @@ function nextSdkStep(sdk, dash) {
   const base = sdk.lockedBase;
   return [
     name,
+    shell,
     `${at}  run: |`,
     `${at}    uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/${sdk.dir}"`,
     `${at}    uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/${sdk.dir}" | grep -E '^${base}( |=|@)' > "$RUNNER_TEMP/next-sdk/${base}.txt"`,

@@ -128,6 +128,7 @@ jobs:
 
 /** The extraction step a twin of `template` (slug `slug`) adds after the checkout. */
 const extraction = (template, slug) => `      - name: Extract ${template} as the export ships it
+        shell: bash
         working-directory: .
         run: |
           rm -rf ../standalone/${slug} && mkdir -p ../standalone/${slug}
@@ -546,6 +547,7 @@ describe("renderNextSdkTwin", () => {
         run: npm ci
 
       - name: Install @pipelex/sdk built from this commit
+        shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/next-sdk"
           (cd "$GITHUB_WORKSPACE/js" && make install && npm pack --pack-destination "$RUNNER_TEMP/next-sdk")
@@ -563,6 +565,7 @@ describe("renderNextSdkTwin", () => {
         run: PYTHON_VERSION=\${{ matrix.python-version }} make install
 
       - name: Install pipelex-sdk built from this commit
+        shell: bash
         run: |
           uv build --wheel --out-dir "$RUNNER_TEMP/next-sdk" "$GITHUB_WORKSPACE/python"
           uv export --frozen --no-hashes --no-header --no-annotate --no-dev --no-emit-project --project "$GITHUB_WORKSPACE/python" | grep -E '^mthds( |=|@)' > "$RUNNER_TEMP/next-sdk/mthds.txt"
@@ -581,6 +584,31 @@ describe("renderNextSdkTwin", () => {
     );
     assert.match(python, /\$\{\{ github\.workspace \}\}\/\.\.\/standalone\/app-py\/\.venv$/m);
     assert.match(python, /^ {4}name: Lint \(all versions\) \(app-py, next SDK\)$/m);
+  });
+
+  it("names bash for every step it inserts, which a job's defaults would otherwise leave to a Windows runner's PowerShell", () => {
+    // The twin's job-level defaults.run replaces a workflow-level one whole, so the
+    // source's workflow-level shell never reaches the job, and only a step's own
+    // shell keeps it off PowerShell on a Windows runner.
+    const windows = NPM_SOURCE.replace(
+      "on:\n  pull_request:\n",
+      "on:\n  pull_request:\n\ndefaults:\n  run:\n    shell: bash\n",
+    ).replace("runs-on: ubuntu-latest", "runs-on: windows-latest");
+    for (const rendered of [
+      renderStandaloneTwin("app-js", "tests-check.yml", windows),
+      renderNextSdkTwin("app-js", "tests-check.yml", windows, NPM),
+      renderNextSdkTwin("app-py", "lint-check.yml", PY_SOURCE, PYPI),
+    ]) {
+      const inserted = rendered
+        .split(/\n(?= {6}- )/)
+        .filter((step) =>
+          /- name: (Extract .* as the export ships it|Install .* built from this commit)$/m.test(
+            step,
+          ),
+        );
+      assert.ok(inserted.length > 0);
+      for (const step of inserted) assert.match(step, /^ {8}shell: bash$/m);
+    }
   });
 
   it("is not rendered for a workflow with no install step", () => {
