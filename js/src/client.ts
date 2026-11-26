@@ -93,6 +93,8 @@ import type {
   FileLinkTarget,
   FileLinksResult,
   FilePage,
+  FilePreview,
+  FilePreviewState,
   FileRecord,
   FileRecordList,
   FileRenameInput,
@@ -1161,6 +1163,14 @@ const isString = (value: unknown): boolean => typeof value === "string";
 
 /** The states an archive is in, the field a caller branches on, in the order a refusal lists them. */
 const FILE_ARCHIVE_STATES: readonly FileArchiveState[] = ["queued", "building", "ready", "failed"];
+
+/** The states a file's preview is in, the field a caller branches on, in the order a refusal lists them. */
+const FILE_PREVIEW_STATES: readonly FilePreviewState[] = [
+  "ready",
+  "preparing",
+  "failed",
+  "unavailable",
+];
 
 /** What a copy into a draft did in the blob store, the field its answer is discriminated on. */
 const DRAFT_FILE_BLOBS: readonly DraftFileBlob[] = ["copied", "already_held"];
@@ -5590,6 +5600,80 @@ export class PipelexApiClient implements HostedProtocolSurface {
       );
     }
     return archive as unknown as FileArchive;
+  }
+
+  /**
+   * Where the PDF preview of an Office file stands — `GET /v1/files/preview?uri=` — naming the file
+   * by its `pipelex-storage://` address. The platform converts Word, Excel and PowerPoint files and
+   * their OpenDocument and older counterparts (`docx`, `xlsx`, `pptx`, `doc`, `xls`, `ppt`, `odt`,
+   * `ods`, `odp`), chosen by the address's extension.
+   *
+   * **The answer is always a `200`: branch on `state`.** The platform never waits on a conversion:
+   * the first ask queues one and answers `preparing` at once, and asking again queues nothing more,
+   * so polling is safe (the app polls for up to three minutes). `ready` carries `url`, a presigned
+   * `GET` of the PDF signed fresh on each read and valid for fifteen minutes, with its
+   * `url_expires_at`; it is a bearer capability, so keep it out of logs. `failed` carries
+   * `failure`, `{ code, detail }`, which stands for a day from when it failed, asking again within
+   * it answering the same failure. `unavailable` means the file gets no preview: a type that is not
+   * converted, a file over 50 MB, or an address holding nothing. The SDK has no waiting helper,
+   * since how long to wait and how to show it is the caller's.
+   *
+   * Throws `RequestArgumentError` for a `uri` that is not a non-empty string, before any request.
+   * Throws `ApiResponseError`: `422` `pipelex.storage.uri_invalid` for a malformed address, `403`
+   * `pipelex.org.mismatch` for another organization's, `422` `request.invalid` for an address over
+   * 512 characters, and `503` `runtime.unavailable`, `retry` `yes`, when the conversion could not
+   * be queued, so the same request can be sent again. An
+   * answer that is not a preview, an object with a known `state` and the members that state fills,
+   * is an answer the SDK cannot read, thrown as an `ApiResponseError` whose body hides the link.
+   */
+  async getFilePreview(uri: string): Promise<FilePreview> {
+    const checkedUri = requireNonEmptyId(uri, "getFilePreview", STORAGE_URI_ARGUMENT);
+    const endpoint = `files/preview${productQuery({ uri: checkedUri })}`;
+    const res = withLinks(await this.requestProductAnswer("GET", endpoint, undefined));
+    const answer = this.readObjectAnswer<Record<string, unknown>>("GET", endpoint, res);
+    const unreadable = (what: string): ApiResponseError =>
+      this.unreadableAnswer("GET", `/${API_PREFIX}/${endpoint}`, res, what);
+    switch (answer.state) {
+      case "ready":
+        if (typeof answer.url !== "string" || answer.url === "") {
+          throw unreadable("a ready preview whose `url` is not a non-empty string");
+        }
+        if (typeof answer.url_expires_at !== "string") {
+          throw unreadable("a ready preview whose `url_expires_at` is not a string");
+        }
+        return {
+          state: "ready",
+          url: answer.url,
+          url_expires_at: answer.url_expires_at,
+          failure: null,
+        };
+      case "failed": {
+        const failure = answer.failure;
+        if (
+          !isPlainObject(failure) ||
+          typeof failure.code !== "string" ||
+          typeof failure.detail !== "string"
+        ) {
+          throw unreadable("a failed preview whose `failure` is not a `code` and a `detail`");
+        }
+        return {
+          state: "failed",
+          url: null,
+          url_expires_at: null,
+          failure: { code: failure.code, detail: failure.detail },
+        };
+      }
+      case "preparing":
+      case "unavailable":
+        return { state: answer.state, url: null, url_expires_at: null, failure: null };
+      default:
+        throw unreadable(
+          `a preview whose \`state\` is not ${inWords(
+            FILE_PREVIEW_STATES.map((state) => `\`${state}\``),
+            "or",
+          )}`,
+        );
+    }
   }
 
   /**

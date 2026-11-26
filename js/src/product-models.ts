@@ -1801,6 +1801,61 @@ export interface FileArchiveLimit {
 }
 
 /**
+ * Where the PDF preview of an Office file stands — what `getFilePreview` answers, the field a
+ * caller branches on: `ready`, its `url` reads the PDF; `preparing`, a conversion is on its way,
+ * so ask again shortly; `failed`, the last conversion failed and `failure` says why; `unavailable`,
+ * the file gets no preview (a type that is not converted, a file over 50 MB, or an address holding
+ * nothing).
+ */
+export type FilePreviewState = "ready" | "preparing" | "failed" | "unavailable";
+
+/**
+ * Why a conversion failed, as the platform names it today:
+ *
+ * - `file_unreadable`, the converter could not open the file, damaged or protected by a password,
+ *   which cannot be told apart; the file will fail the same way.
+ * - `file_too_large`, the converter refused the file as over its input cap; it will fail the same
+ *   way.
+ * - `conversion_too_slow`, the conversion ran out of the converter's two minutes; it will almost
+ *   certainly fail the same way.
+ * - `file_gone`, the bytes were deleted between the request and the conversion.
+ * - `conversion_failed`, the cause is not the file's; a later ask tries again once the failure's
+ *   day has passed.
+ */
+export type FilePreviewFailureCode =
+  "file_unreadable" | "file_too_large" | "conversion_too_slow" | "file_gone" | "conversion_failed";
+
+/** What a failed preview says about its failure. A failure stands for a day from when it failed. */
+export interface FilePreviewFailure {
+  /** One of `FilePreviewFailureCode`, typed open so that a code a later platform adds still reads. */
+  code: FilePreviewFailureCode | (string & {});
+  /** A sentence for a person. */
+  detail: string;
+}
+
+/**
+ * The PDF preview of an Office file — what `getFilePreview`, `GET /v1/files/preview`, answers: a
+ * `200` discriminated on `state`. Every arm carries all four members, the ones its state does not
+ * fill `null`.
+ */
+export type FilePreview =
+  | {
+      state: "ready";
+      /**
+       * A presigned `GET` of the PDF, signed fresh on each read, valid for fifteen minutes and
+       * answered `inline` under the file's name with its extension swapped to `.pdf`. A bearer
+       * capability: keep it out of logs and ask again rather than store it.
+       */
+      url: string;
+      /** ISO-8601 UTC instant `url` stops working. */
+      url_expires_at: string;
+      failure: null;
+    }
+  | { state: "preparing"; url: null; url_expires_at: null; failure: null }
+  | { state: "failed"; url: null; url_expires_at: null; failure: FilePreviewFailure }
+  | { state: "unavailable"; url: null; url_expires_at: null; failure: null };
+
+/**
  * The copy of a file into a method's draft — `copyFileIntoDraft`,
  * `POST /v1/methods/{id}/draft/files/from-file`, "Add to method files".
  */

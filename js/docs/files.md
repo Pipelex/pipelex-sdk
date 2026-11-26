@@ -1,6 +1,6 @@
 # An organization's files
 
-A **file** is the record the hosted platform keeps of a stored object: a member's upload, a test file made for a method, or a file a run made that reached its result. The bytes stay where they were written, and a run, a form or an example still points at them by their `pipelex-storage://` address; the record adds what the bytes lack, the name a person sees, a kind, a type, a size and where the file came from. A file belongs to the organization: every role of it reads every file of it, as every role reads every run. The client reaches them on the hosted API's `/v1/files` routes, a run's files on `GET /v1/runs/{run_id}/files` and the copy into a method's draft on `POST /v1/methods/{method_id}/draft/files/from-file`, and the types are in `src/product-models.ts`. The platform's own contract is `platform/docs/files.md` in `pipelex-server`.
+A **file** is the record the hosted platform keeps of a stored object: a member's upload, a test file made for a method, or a file a run made that reached its result. The bytes stay where they were written, and a run, a form or an example still points at them by their `pipelex-storage://` address; the record adds what the bytes lack, the name a person sees, a kind, a type, a size and where the file came from. A file belongs to the organization: every role of it reads every file of it, as every role reads every run. The client reaches them on the hosted API's `/v1/files` routes, the PDF preview of an Office file on `GET /v1/files/preview`, a run's files on `GET /v1/runs/{run_id}/files` and the copy into a method's draft on `POST /v1/methods/{method_id}/draft/files/from-file`, and the types are in `src/product-models.ts`. The platform's own contract is `platform/docs/files.md` in `pipelex-server`.
 
 The point of the list for a program is the `uri` on every row: a run's inputs take it as they take any address, so an agent or an app can find "the invoice uploaded this morning" and run a method on it without uploading it again.
 
@@ -45,6 +45,7 @@ A file read by its id or its address, renamed, or listed among a run's files is 
 | `linkFiles(files)` | `POST /v1/files/links` | A `FileLinksResult`, `{ items }`: one `FileLink` per requested file, in order, each a link or an error. |
 | `requestFileArchive(request)` | `POST /v1/files/archives` | The `FileArchive`, `queued`. |
 | `getFileArchive(archiveId)` | `GET /v1/files/archives/{archive_id}` | The `FileArchive` as it stands, with a link to the zip once it is `ready`. |
+| `getFilePreview(uri)` | `GET /v1/files/preview` | A `FilePreview`, discriminated on `state`: the PDF preview of an Office file, with a link to it once it is `ready`. |
 | `listRunFiles(runId, { limit?, cursor? })` | `GET /v1/runs/{run_id}/files` | One `RunFilesPage`: the run's inputs, outputs, intermediate files and web links, with `nextCursor`. |
 | `copyFileIntoDraft(methodId, { file_id, path, expected_updated_at? })` | `POST /v1/methods/{method_id}/draft/files/from-file` | A `DraftFileFromFileResult`, discriminated on `blob`. |
 
@@ -197,6 +198,45 @@ try {
 ```
 
 The other refusals of a request: `422` `request.invalid` for more than 1,000 ids listed or an id longer than one can be; `404` `pipelex.storage.not_found` for a file that is not the organization's, the `detail` naming up to five of them, or a run whose files hold nothing stored to zip; `404` `run.not_found` for a run that is not the organization's; `409` `run.not_finished`, `retry` `yes`, for a run whose files are not all recorded yet, which the same request clears a few seconds after the run ends, and a `409` with `retry` `no` for a selected file whose upload has not finished; and `503` `runtime.unavailable`, `retry` `yes`, when the archive could not be queued. Each is an `ApiResponseError` whose problem's `domain` and `retry` say what to do ([errors.md](./errors.md)).
+
+## The PDF preview of an Office file
+
+A browser cannot draw a Word, Excel or PowerPoint file, so the platform keeps a PDF of it. `getFilePreview` asks where that PDF stands, naming the file by its `pipelex-storage://` address. The platform converts the files whose address ends in `docx`, `xlsx`, `pptx`, `doc`, `xls`, `ppt`, `odt`, `ods` or `odp`.
+
+**The answer is always a `200`: branch on `state`.** The platform never waits on a conversion: the first ask queues one and answers `preparing` at once, and asking again queues nothing more, so polling is safe; the app polls for up to three minutes. The SDK has no waiting helper, since how long to wait and how to show it is the caller's.
+
+```ts
+let preview = await client.getFilePreview(output.uri);
+while (preview.state === "preparing") {
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  preview = await client.getFilePreview(output.uri);
+}
+if (preview.state === "ready") frame.src = preview.url;
+else if (preview.state === "failed") console.warn(preview.failure.code, preview.failure.detail);
+```
+
+A `FilePreview` carries all four members in every state, those its state does not fill `null`, and the type narrows on `state`, so a `ready` preview's `url` is a `string` and a `failed` one's `failure` is never `null`.
+
+| `state` | What it means | The other members |
+|---|---|---|
+| `ready` | The PDF is there. | `url`, a presigned `GET` of the PDF signed fresh on each read, valid for fifteen minutes and answered `inline` under the file's name with its extension swapped to `.pdf`, and `url_expires_at`, the UTC instant it lapses. |
+| `preparing` | A conversion is on its way: ask again shortly. | All `null`. |
+| `failed` | The last conversion failed. | `failure`, a `FilePreviewFailure` `{ code, detail }`, `detail` being a sentence for a person. |
+| `unavailable` | The file gets no preview: a type that is not converted, a file over 50 MB, or an address holding nothing. | All `null`. |
+
+**A failure stands for a day** from the moment it failed: asking again within that day answers the same failure and queues nothing, and after it the next ask starts a new conversion. `FilePreviewFailureCode` names the codes the platform answers today, and `code` is typed open, so a code a later platform adds still reads.
+
+| `failure.code` | Why | What happens next |
+|---|---|---|
+| `file_unreadable` | The converter could not open the file. A damaged file and one protected by a password cannot be told apart reliably, so the sentence names both. | The file will fail the same way. |
+| `file_too_large` | The converter refused the file as over its input cap. | The file will fail the same way. |
+| `conversion_too_slow` | The conversion ran out of the converter's two minutes, as a hostile or very large file does. | The file will almost certainly fail the same way. |
+| `file_gone` | The bytes were deleted between the request and the conversion. | Nothing to retry. |
+| `conversion_failed` | The worker's last attempt failed, or the job was not done within the hour it has; the cause is not the file's. | A later ask tries again once the failure's day has passed. |
+
+**The link is a bearer capability.** Keep it out of logs and ask again for a fresh one rather than storing it. The SDK keeps it out of its own errors: an answer it cannot read, one whose `state` it does not know, a `ready` one without a non-empty `url` and a string `url_expires_at`, or a `failed` one whose `failure` is not a `code` and a `detail`, is an `ApiResponseError` of `client.response_unreadable` whose `responseBody` replaces every `url` member and every link's query with `[redacted]`, and which carries no `cause` ([errors.md](./errors.md)). The answer it hands back holds the four members and nothing else the platform may add.
+
+A `uri` that is not a non-empty string is refused before any request with a `RequestArgumentError`. The platform answers `422` `pipelex.storage.uri_invalid` for a malformed address, `403` `pipelex.org.mismatch` for another organization's, `422` `request.invalid` for an address over 512 characters, and `503` `runtime.unavailable`, `retry` `yes`, when the conversion could not be queued, so the same request can be sent again. Each is an `ApiResponseError` whose problem's `domain` and `retry` say what to do.
 
 ## A run's files
 
