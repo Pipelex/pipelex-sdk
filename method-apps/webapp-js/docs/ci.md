@@ -2,10 +2,12 @@
 
 Two workflows run on every pull request, and neither needs a key or a network beyond the package registry.
 
-| Workflow                            | Runs                            | What it proves                                                                                                               |
-| ----------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/lint-check.yml`  | `make check`                    | ESLint, Prettier, `tsc` over the app, the e2e specs and the scripts, and the offline codegen check over every generated tree |
-| `.github/workflows/tests-check.yml` | `make agent-test`, `make build` | The unit tests, and a production build                                                                                       |
+| Workflow                            | Runs                                                  | What it proves                                                                                                                                           |
+| ----------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/lint-check.yml`  | `make check`                                          | ESLint, Prettier, `tsc` over the app, the e2e specs and the scripts, and the offline codegen check over every generated tree                             |
+| `.github/workflows/tests-check.yml` | `make agent-test`, `make build`, and a job on Windows | The unit tests and a production build on Linux; on Windows, under PowerShell with no make and no bash, the tests of the scripts written for every system |
+
+The Windows job proves what a person on Windows runs without make: `npm run serve` and its stop, which read `netstat` and PowerShell there, the `dev` and `start` scripts, which bind the server through `scripts/run-next.mts`, and how the scripts run npm. It installs with `npm clean-install`, npm's long name for `npm ci`, and takes Git's bash and its tools off the `PATH` before the tests, so a test that leans on a POSIX tool fails there rather than passing by accident. `.gitattributes` checks every text file out with LF line endings, which Prettier and the bootstrap expect, on Windows as elsewhere.
 
 ## What the unit tests prove about `make add-method`
 
@@ -23,7 +25,7 @@ The recorded responses are real, stamps included: each codegen response keeps th
 
 ## Where these workflows run (template only)
 
-This template is developed as the `method-apps/webapp-js/` directory of the `pipelex-sdk` mono-repo, and GitHub reads a repository's workflows only at its root, so the workflow files above never run from there. The repository's root carries twins of each, rendered from them by its `make workflows`. The standalone twin, which the root CI calls, extracts this directory with `git archive` into a folder outside the checkout, gives it a repository of its own and runs the same jobs and steps there, installed from the registry with this directory's own lockfile, exactly as a project made from it would be. The next-SDK twin runs them again with `@pipelex/sdk` built from the same commit installed after `npm ci`, and is reported, not required. The root's `make check-workflows` fails when a twin no longer matches its source, so a change to a workflow here is carried to the root by re-rendering it in the same commit. A project copied out of the mono-repo runs these files as they are.
+This template is developed as the `method-apps/webapp-js/` directory of the `pipelex-sdk` mono-repo, and GitHub reads a repository's workflows only at its root, so the workflow files above never run from there. The repository's root carries twins of each, rendered from them by its `make workflows`. The standalone twin, which the root CI calls, extracts this directory with `git archive` into a folder outside the checkout, gives it a repository of its own and runs the same jobs and steps there, installed from the registry with this directory's own lockfile, exactly as a project made from it would be. The next-SDK twin runs them again with `@pipelex/sdk` built from the same commit installed after `npm ci`, and is reported, not required; its Windows job installs with `npm clean-install`, so it runs on the registry's SDK, since building the SDK there would take make. The root's `make check-workflows` fails when a twin no longer matches its source, so a change to a workflow here is carried to the root by re-rendering it in the same commit. A project copied out of the mono-repo runs these files as they are.
 
 ## The live proof of `make create` (template only)
 

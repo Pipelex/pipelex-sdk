@@ -4,7 +4,7 @@ The full project guide for AI coding agents is [`CLAUDE.md`](CLAUDE.md) — read
 
 <!-- template-only:begin -->
 
-- **In a fresh copy of the template, `make create METHOD=<bundle path | mt_… | address>` is the whole setup**: it scaffolds the method, names the project after it, writes `.env.local` and runs `make all`. It asks nothing; pass `NAME=`, `TITLE=` and `DESCRIPTION=` only for values the method should not decide. [`docs/create.md`](docs/create.md) is the reference.
+- **In a fresh copy of the template, `npm run create -- <bundle path | mt_… | address>` is the whole setup**, or `make create METHOD=…` where make is installed: it scaffolds the method, names the project after it, writes `.env.local` and runs `npm run all`. It asks nothing; pass `--name`, `--title` and `--description` (`NAME=`, `TITLE=` and `DESCRIPTION=` to make) only for values the method should not decide. [`docs/create.md`](docs/create.md) is the reference.
 
 <!-- template-only:end -->
 
@@ -14,6 +14,7 @@ The full project guide for AI coding agents is [`CLAUDE.md`](CLAUDE.md) — read
 - **Never move or reword the `add-method:` marker tokens in `src/methods.ts`.** The scaffold inserts at them and refuses when either is missing.
 - **After any code change, run `make all`** (lint + format-check + typecheck + offline codegen check + unit tests + build). Do not declare a task done until it passes. If formatting fails, run `make format` — don't hand-edit to satisfy Prettier.
 - **Prefer `make agent-test` over `make test`** — silent on success, full output on failure.
+- **Start the dev server with `npm run serve`** (or `make serve`), never `npm run dev` in the background: it proves the page answers and ends with one verdict line; `npm run serve -- stop` (or `make stop`) stops it. Without make, on Windows for one, `npm run all` is the gate `make all` runs.
 - **No hand-written output shapes, no `as` casts on SDK output** — go through the `parseXxx()` narrowers in `src/types/`, which wrap the generated binders.
 - **Server Actions return classified errors** (`{ ok: false, error }`), never throw across the server→client boundary.
 

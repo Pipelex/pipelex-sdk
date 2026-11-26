@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The web app template creates, serves and checks an app on Windows, with npm alone**: `npm run create -- <method>`, `npm run serve`, `npm run serve -- stop`, `npm run check` and the new `npm run all` are the commands on every system, and `make create`, `make serve`, `make stop`, `make check` and `make all` run them where make is installed. On Windows, serve reads the port's listeners with `netstat` and the processes with PowerShell, both part of Windows, takes the server to be the process tree under the one it started, each child admitted only if it started after its parent, stops that whole tree at once, and knows a server a person started in the checkout by its command line, since Windows does not say which directory a process runs in. The server is started detached and hidden, so it outlives serve without opening a window. Every verdict names the command it came from, npm's or make's. The template's `tests-check.yml` gains a Windows job, which runs the tests of those scripts under PowerShell with neither make nor bash, so a project made from the template carries it too, and `.gitattributes` checks every text file out with LF line endings on Windows as elsewhere.
+
+### Changed
+
+- **The web app template's `npm run dev` and `npm run start` bind the server through `scripts/run-next.mts`**: the scripts read `APP_HOST` and `APP_PORT` themselves and hand them to `next` as `-H` and `-p`, defaulting to `127.0.0.1` and `4300` as before, where `package.json` expanded `${APP_HOST:-127.0.0.1}` in a shell, which npm on Windows runs with `cmd.exe`, so `next` received the text unexpanded. A project's `dev` script that still passes `-H ${APP_HOST:-127.0.0.1}` is still accepted by serve.
+- **`make create` runs `npm run all` and names npm's commands**: the gesture's last check is `npm run all` where it was `make all`, and its closing lines name `npm run dev`, `npm run serve` and `npm run add-method -- <method>`, which run on every system, where they named make's targets.
+
 ## [v0.71.0] - 2026-11-26
 
 ### Fixed

@@ -4,9 +4,9 @@
   "private": true,
   "description": "A Next.js app that runs MTHDS methods through the Pipelex API, with each method's input form and result view generated from its own contract.",
   "scripts": {
-    "dev": "next dev -H ${APP_HOST:-127.0.0.1} -p ${APP_PORT:-4300}",
+    "dev": "node --experimental-strip-types scripts/run-next.mts dev",
     "build": "next build",
-    "start": "next start -H ${APP_HOST:-127.0.0.1} -p ${APP_PORT:-4300}",
+    "start": "node --experimental-strip-types scripts/run-next.mts start",
     "lint": "eslint .",
     "format": "prettier --write --no-error-on-unmatched-pattern \"**/*.{ts,tsx,mts,mjs,js,css,json,md}\" \".claude/skills/bootstrap/scripts/*.mjs\"",
     "format:check": "prettier --check --no-error-on-unmatched-pattern \"**/*.{ts,tsx,mts,mjs,js,css,json,md}\" \".claude/skills/bootstrap/scripts/*.mjs\"",
@@ -23,6 +23,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm run typecheck:e2e && npm run typecheck:scripts && npm run codegen:check",
+    "all": "npm run check && npm run test && npm run build",
     "prepare": "husky"
   },
   "dependencies": {
