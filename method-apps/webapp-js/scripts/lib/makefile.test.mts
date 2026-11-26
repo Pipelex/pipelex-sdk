@@ -10,7 +10,7 @@
 // they do.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -23,6 +23,11 @@ import { REPO_ROOT } from "./shared.mts";
 // whatever machine created it, so vitest's 5-second default would fail that run
 // whenever the machine is loaded: each block takes a budget sized for that.
 const SPAWNS = { timeout: 60_000 };
+
+// The Makefile is for systems that have make and a POSIX shell. Windows has
+// neither, and runs the npm scripts the Makefile wraps, whose own tests run
+// there too.
+const HAS_MAKE = process.platform !== "win32";
 
 /** Run make in the repo with a clean make environment, plus `env`. */
 function make(args: readonly string[], env: Record<string, string> = {}) {
@@ -55,7 +60,7 @@ function npmLine(vars: readonly string[], env: Record<string, string> = {}): str
   return line!.replace(/\s+/g, " ").trim();
 }
 
-describe("the Makefile's gesture arguments", SPAWNS, () => {
+describe.skipIf(!HAS_MAKE)("the Makefile's gesture arguments", SPAWNS, () => {
   it("passes the values given on the command line, as flags", () => {
     expect(npmLine(["METHOD=bundles/cv", "NAME=cv", "PIPE=screen", "DRY_RUN=1"])).toBe(
       "npm run add-method -- 'bundles/cv' --pipe 'screen' --name 'cv' --dry-run",
@@ -91,7 +96,7 @@ describe("the Makefile's gesture arguments", SPAWNS, () => {
   });
 });
 
-describe("the Makefile's sibling checkouts", SPAWNS, () => {
+describe.skipIf(!HAS_MAKE)("the Makefile's sibling checkouts", SPAWNS, () => {
   /** The directories `make <target> <vars>` would build and pack, in order. */
   function builtDirs(
     target: "use-local" | "use-local-form",
@@ -137,7 +142,7 @@ describe("the Makefile's sibling checkouts", SPAWNS, () => {
   });
 });
 
-describe("the Makefile's local mode", SPAWNS, () => {
+describe.skipIf(!HAS_MAKE)("the Makefile's local mode", SPAWNS, () => {
   // The targets read npm's hidden lockfile from the directory make runs in, so
   // each case runs the real Makefile (`-f`) inside a directory (`-C`) holding a
   // hand-written one, and nothing in the repo's own node_modules is touched.
@@ -199,7 +204,7 @@ describe("the Makefile's local mode", SPAWNS, () => {
   });
 });
 
-describe("where the servers listen", SPAWNS, () => {
+describe.skipIf(!HAS_MAKE)("where the servers listen", SPAWNS, () => {
   // A makefile read after the real one, whose target prints what the Makefile
   // exports — the environment `npm run dev` and `npm run start` start from.
   const probeDir = mkdtempSync(path.join(tmpdir(), "makefile-listen-"));
@@ -217,22 +222,6 @@ describe("where the servers listen", SPAWNS, () => {
     return stdout.trim();
   }
 
-  /** The arguments `npm run <name>` hands to `next`, in the environment `env`. */
-  function nextArgs(name: "dev" | "start", env: Record<string, string> = {}): string {
-    const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf-8")) as {
-      scripts: Record<string, string>;
-    };
-    const script = pkg.scripts[name];
-    expect(script).toMatch(/^next /);
-    // npm runs a script with sh; echoing it shows what the shell expanded.
-    const result = spawnSync("sh", ["-c", `echo ${script}`], {
-      env: { PATH: process.env.PATH, ...env },
-      encoding: "utf-8",
-    });
-    expect(result.status, result.stderr).toBe(0);
-    return result.stdout.trim();
-  }
-
   it("exports loopback and 4300 by default", () => {
     expect(exported([])).toBe("[127.0.0.1]:[4300]");
   });
@@ -240,18 +229,6 @@ describe("where the servers listen", SPAWNS, () => {
   it("exports the host and port given on the command line, or by the shell", () => {
     expect(exported(["APP_HOST=0.0.0.0", "APP_PORT=4301"])).toBe("[0.0.0.0]:[4301]");
     expect(exported([], { APP_HOST: "::1" })).toBe("[::1]:[4300]");
-  });
-
-  it("binds both scripts to loopback unless the environment says otherwise", () => {
-    for (const name of ["dev", "start"] as const) {
-      expect(nextArgs(name)).toBe(`next ${name} -H 127.0.0.1 -p 4300`);
-      expect(nextArgs(name, { APP_HOST: "", APP_PORT: "" })).toBe(
-        `next ${name} -H 127.0.0.1 -p 4300`,
-      );
-      expect(nextArgs(name, { APP_HOST: "0.0.0.0", APP_PORT: "4301" })).toBe(
-        `next ${name} -H 0.0.0.0 -p 4301`,
-      );
-    }
   });
 
   /** What the warning line `make -n <target>` prints would say, run by the shell. */
@@ -330,7 +307,7 @@ describe("where the servers listen", SPAWNS, () => {
   });
 });
 
-describe("what make serve is handed", SPAWNS, () => {
+describe.skipIf(!HAS_MAKE)("what make serve is handed", SPAWNS, () => {
   /** The npm line `make serve <vars>` would run, with its spacing collapsed. */
   function serveLine(vars: readonly string[], env: Record<string, string> = {}): string {
     const { status, stdout, stderr } = make(["-n", "serve", ...vars], env);

@@ -8,34 +8,35 @@ Looking for worked examples instead? [`pipelex-starter-js`](https://github.com/P
 
 ## Use this template
 
-This template is the `webapp-js/` directory of the [method-app family](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps), `method-apps/` in the `Pipelex/pipelex-sdk` repository, which holds one template per shape and language. A project starts as a copy of this directory alone. The family's initializer writes it into a new directory, commits it as it came, and runs `make create` there with the method you have:
+This template is the `webapp-js/` directory of the [method-app family](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps), `method-apps/` in the `Pipelex/pipelex-sdk` repository, which holds one template per shape and language. A project starts as a copy of this directory alone. The family's initializer writes it into a new directory, commits it as it came, and runs `npm install` and `npm run create` there with the method you have, with no make, on every system:
 
 ```bash
 export PIPELEX_API_KEY=…                               # from app.pipelex.com
 npm create @pipelex/method-app@latest my-app -- --method path/to/my_method.mthds
-make -C my-app serve                                   # the URL, once the page answers
+cd my-app
+npm run serve                                          # the URL, once the page answers
 ```
 
-`make serve` starts the dev server in the background, prints its URL once the page answers, and `make stop` stops it; `make dev` runs the same server in this terminal instead, on http://127.0.0.1:4300. The initializer's [README](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/initializers/js#readme) lists its options, one per `make create` variable below.
+`npm run serve` starts the dev server in the background, prints its URL once the page answers, and `npm run serve -- stop` stops it; `npm run dev` runs the same server in this terminal instead, on http://127.0.0.1:4300. The npm scripts are the commands on every system, Windows included, and with `make` they are also `make serve`, `make stop` and `make dev`, as the [table below](#make-targets) lists. The initializer's [README](https://github.com/Pipelex/pipelex-sdk/tree/main/method-apps/initializers/js#readme) lists its options, one per `make create` variable below.
 
-`--method`, which the initializer hands to `make create` as `METHOD`, is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, from [app.pipelex.com](https://app.pipelex.com), or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address (`github.com/Pipelex/methods/text_stats@v0.2.0`).
+`--method`, which the initializer hands to `npm run create` as its first argument (`METHOD` to `make create`), is a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, from [app.pipelex.com](https://app.pipelex.com), or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address (`github.com/Pipelex/methods/text_stats@v0.2.0`).
 
-`make create` scaffolds the method, names the project after it (the package name, the title and the description all come from the method, and `--name`, `--title` and `--description` override them, which are `NAME=`, `TITLE=` and `DESCRIPTION=` to `make create` itself), writes `.env.local` with the base URL it ran against and, unless another env file holds a key, an empty key line for your own key, since it never copies the key your shell exports, and runs `make all`. It commits nothing, so `git diff` against the initializer's pristine commit shows everything it did. `--dry-run` (`DRY_RUN=1`) prints the plan first. [`docs/create.md`](docs/create.md) is the reference.
+`npm run create` scaffolds the method, names the project after it (the package name, the title and the description all come from the method, and `--name`, `--title` and `--description` override them, which are `NAME=`, `TITLE=` and `DESCRIPTION=` to `make create` itself), writes `.env.local` with the base URL it ran against and, unless another env file holds a key, an empty key line for your own key, since it never copies the key your shell exports, and runs `npm run all`. It commits nothing, so `git diff` against the initializer's pristine commit shows everything it did. `--dry-run` (`DRY_RUN=1`) prints the plan first. [`docs/create.md`](docs/create.md) is the reference.
 
-To choose every value yourself instead, open the repository in [Claude Code](https://claude.com/claude-code), run `/bootstrap`, then `make add-method METHOD=…`.
+To choose every value yourself instead, open the repository in [Claude Code](https://claude.com/claude-code), run `/bootstrap`, then `npm run add-method -- <method>`.
 
 ## What a method looks like here
 
-With no method, the page shows an empty state that names `make add-method`. With one method, its form is the page. With several, they are tabs. The registry is `src/methods.ts`.
+With no method, the page shows an empty state that names `npm run add-method`. With one method, its form is the page. With several, they are tabs. The registry is `src/methods.ts`.
 
-`make add-method` writes one vertical slice per method, and `make create` runs it for the first one:
+`npm run add-method` (`make add-method`) writes one vertical slice per method, and `npm run create` runs it for the first one:
 
 - `methods/<name>/` — the method's own `.mthds` files, or a `method.json` naming a method that lives elsewhere. Changing the method is editing the files, or the tag, and running `npm run codegen`.
 - `src/generated/<name>/` — the method's zod schemas, binders, input and output contracts, and the codegen lock. Committed, and never edited by hand.
 - `src/types/`, `src/actions/`, `src/components/` — a typed narrower, the Server Actions for both execution modes with a test, and the form.
 - `src/methods.ts` — one import and one registry entry.
 
-The command refuses rather than overwriting a slice that already exists, and `DRY_RUN=1` prints the plan without writing anything. [`docs/add-method.md`](docs/add-method.md) is the reference, including how to remove a method.
+The command refuses rather than overwriting a slice that already exists, and `--dry-run` (`DRY_RUN=1` to make) prints the plan without writing anything. [`docs/add-method.md`](docs/add-method.md) is the reference, including how to remove a method.
 
 ## How it works
 
@@ -62,24 +63,26 @@ The page wears the branding of the organization the API key belongs to, when an 
 | `PIPELEX_BASE_URL`           | Pipelex API base URL                                                                  | `https://api.pipelex.com` |
 | `NEXT_PUBLIC_EXECUTION_MODE` | Execution mode for every method — `durable` or `blocking`. The page offers no switch. | `durable`                 |
 
-**`make create`, `make add-method`, `npm run codegen` and `npm run codegen:verify` need `PIPELEX_API_KEY` and the network.** Each one asks the API for the method's typed artifacts (`POST /v1/codegen`) and for its contracts and form descriptors (`POST /v1/pipe-io`) and, for a catalog id or a package address, checks that the base URL resolves that kind of method, naming the missing route or capability when one is not served. A method whose pipes are still declared as signatures is refused, naming them, since it cannot run yet. `make all` needs neither a key nor a network.
+**`npm run create`, `npm run add-method`, `npm run codegen` and `npm run codegen:verify`, and their make targets, need `PIPELEX_API_KEY` and the network.** Each one asks the API for the method's typed artifacts (`POST /v1/codegen`) and for its contracts and form descriptors (`POST /v1/pipe-io`) and, for a catalog id or a package address, checks that the base URL resolves that kind of method, naming the missing route or capability when one is not served. A method whose pipes are still declared as signatures is refused, naming them, since it cannot run yet. `make all` needs neither a key nor a network.
 
 A variable already exported in your shell wins over `.env.local`.
 
 ## Where the app listens
 
-`make dev` and `make start` listen on `127.0.0.1:4300`, which only this machine can reach. That is deliberate. The app's Server Actions run methods with the `PIPELEX_API_KEY` in the server's environment, and nothing authenticates the browser that calls them, so anyone who can reach the server runs methods billed to your key. Two variables change it, on the command line or from the shell:
+`npm run dev` and `npm run start`, or `make dev` and `make start`, listen on `127.0.0.1:4300`, which only this machine can reach. That is deliberate. The app's Server Actions run methods with the `PIPELEX_API_KEY` in the server's environment, and nothing authenticates the browser that calls them, so anyone who can reach the server runs methods billed to your key. Two variables change it, on the command line or from the shell:
 
 | Variable   | Purpose                                                                                          | Default     |
 | ---------- | ------------------------------------------------------------------------------------------------ | ----------- |
 | `APP_HOST` | The interface the server binds. `0.0.0.0` opens it to your network.                              | `127.0.0.1` |
 | `APP_PORT` | The port, to run a second checkout beside one that already holds 4300: `make dev APP_PORT=4301`. | `4300`      |
 
-Widen the host only on a network you trust, for a container or to open the app on another device: `make dev APP_HOST=0.0.0.0`. The Makefile prints a warning each time a server starts beyond loopback. `npm run dev` and `npm run start` read the same two variables and fall back to the same defaults.
+Widen the host only on a network you trust, for a container or to open the app on another device: `make dev APP_HOST=0.0.0.0`. The Makefile prints a warning each time a server starts beyond loopback. `npm run dev` and `npm run start` read the same two variables from the environment and fall back to the same defaults, on every system: they run `scripts/run-next.mts`, which hands them to `next` as `-H` and `-p`. In PowerShell, set one for the session with `$env:APP_PORT = "4301"` before `npm run dev`.
 
-`make serve` runs the dev server in the background and never beyond loopback: it refuses an `APP_HOST` that is not, and it stops a server that turns out to listen anywhere else before a page can compile. It takes `APP_PORT` when you give one, and otherwise the first port from 4300 to 4309 that no other directory holds. It then checks that the listener is the server it started, requests the page, and ends with one line: `serving http://127.0.0.1:4300/ — "<title>"`, or a refusal or a failure naming its cause. The server's log is `.serve/server.log`. Running it again reports the same server as `already-serving`, and a server you started here with `make dev` is reported too and left alone. Two runs in one checkout take turns, the second waiting for the first. `make stop` stops only what `make serve` started. It needs `lsof`, which macOS ships; on Linux, install it from your distribution's packages if `make serve` says it is missing, BusyBox's included. Outside Linux it also needs to run `ps`, which a sandbox may refuse, as Codex's does on macOS: `make serve` then says `refused: no-ps` before starting anything, and so does `make stop` while the first process of the server it recorded still runs, leaving that server and its record as they were; both work once run outside the sandbox.
+`npm run serve`, or `make serve`, runs the dev server in the background and never beyond loopback: it refuses an `APP_HOST` that is not, and it stops a server that turns out to listen anywhere else before a page can compile. It takes `APP_PORT` when you give one, and otherwise the first port from 4300 to 4309 that no other directory holds. It then checks that the listener is the server it started, requests the page, and ends with one line: `serving http://127.0.0.1:4300/ — "<title>"`, or a refusal or a failure naming its cause. The server's log is `.serve/server.log`. Running it again reports the same server as `already-serving`, and a server you started here with `npm run dev` is reported too and left alone. Two runs in one checkout take turns, the second waiting for the first. `npm run serve -- stop`, or `make stop`, stops only what serve started. Every line names the command you ran, npm's or make's. On macOS and Linux serve needs `lsof`, which macOS ships; on Linux, install it from your distribution's packages if serve says it is missing, BusyBox's included. Outside Linux it also needs to run `ps`, which a sandbox may refuse, as Codex's does on macOS: serve then says `refused: no-ps` before starting anything, and so does stop while the first process of the server it recorded still runs, leaving that server and its record as they were; both work once run outside the sandbox. On Windows it asks the same questions of `netstat` and PowerShell, which Windows ships, and stopping ends the server's whole process tree at once rather than after a grace period. Windows does not say which directory a process runs in, so there serve knows the server it started by its record in this checkout, and a server you started here by its command line, which names a file of this checkout.
 
 ## Make targets
+
+Every target below that a person runs day to day is an npm script too, for a system without `make`, Windows among them: `npm run dev`, `npm run serve`, `npm run serve -- stop`, `npm run add-method -- <method>`, `npm run codegen`, `npm run check`, `npm run test` and `npm run all`. `make check` and `make all` run the same npm scripts.
 
 | Target                    | Purpose                                                                                                                             |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |

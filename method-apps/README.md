@@ -16,10 +16,11 @@ A project is a copy of one template directory, and nothing else from this reposi
 ```bash
 export PIPELEX_API_KEY=…                               # from app.pipelex.com
 npm create @pipelex/method-app@latest my-app -- --method path/to/my_method.mthds
-make -C my-app serve                                   # the URL, once the page answers; make stop stops it
+cd my-app
+npm run serve                                          # the URL, once the page answers
 ```
 
-`make serve` starts the dev server in the background and proves that the page answers; `make dev` runs it in the foreground instead. `--method` takes a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address. The initializer's [README](initializers/js/README.md) lists its options, what it does with git, and the verdict each run ends with. The template's own [README](webapp-js/README.md) and [`docs/create.md`](webapp-js/docs/create.md) say what the create gesture does and how to override what it derives.
+`npm run serve` starts the dev server in the background and proves that the page answers, and `npm run serve -- stop` stops it; `npm run dev` runs it in the foreground instead. They run on every system, Windows included, and with `make` they are also `make serve`, `make stop` and `make dev`. `--method` takes a `.mthds` file or a directory of them, a method id from your organization's catalog (`mt_…`, or `mt_…@<version>` and `mt_…@draft` to pin a version or run the draft), or a published package address. The initializer's [README](initializers/js/README.md) lists its options, what it does with git, and the verdict each run ends with. The template's own [README](webapp-js/README.md) and [`docs/create.md`](webapp-js/docs/create.md) say what the create gesture does and how to override what it derives.
 
 The Python templates have no initializer yet: the command-line template's own [README](cli-python/README.md) copies it out of a release's tag with `curl` and `tar`, and its [`docs/create.md`](cli-python/docs/create.md) says what its `make create` does with your method.
 

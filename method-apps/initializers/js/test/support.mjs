@@ -1,10 +1,13 @@
 // What the initializer's suites share: throwaway directories, the template
-// packed from this checkout, a stub `make` that records how it was called, a
-// PATH holding it beside the real git, and a git configuration of the suite's
+// packed from this checkout, a stub npm that records how it was called, named
+// to the initializer by `npm_execpath` as npm names itself under `npm create`,
+// a PATH holding the real git alone, and a git configuration of the suite's
 // own, so that no hook, identity or signing setting of the machine's reaches
-// a test.
+// a test. The stub is a Node script and every path is built with Node, so the
+// suites need no POSIX shell.
 
 import { execFileSync } from "node:child_process";
+import process from "node:process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,43 +40,99 @@ export function packs() {
   return packDir;
 }
 
-const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+/** Where `tool` is on this process's PATH, or null. */
+function which(tool) {
+  const windows = process.platform === "win32";
+  const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+  const names = windows
+    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => `${tool}${ext}`)
+    : [tool];
+  for (const dir of (process.env[pathKey] ?? "").split(path.delimiter)) {
+    if (dir === "") continue;
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    }
+  }
+  return null;
+}
+
+const REAL_GIT = which("git");
 
 /**
- * A stand-in for `make`. It records its arguments (NUL-separated), the
- * directory it ran in, what reached it through MAKEFLAGS and GIT_DIR, and
- * whether it saw a key, then prints the way `make create` does, warnings included, each of the
- * bootstrap's twice, and exits with STUB_MAKE_EXIT.
+ * A stand-in for npm, run as npm's own script is, with Node. Each call
+ * appends a line to `$STUB_NPM_RECORD.calls`: its arguments, the directory it
+ * ran in, what reached it through GIT_DIR, and whether it saw a key. Its
+ * `install` prints a line and exits with STUB_NPM_INSTALL_EXIT, having made
+ * `node_modules` with STUB_NPM_MODULES, with which its `run create` also
+ * rewrites `package-lock.json`, as the gesture's lock re-sync does. Its
+ * `run create` prints the way `npm run create` does, warnings included, each
+ * of the bootstrap's twice, and exits with STUB_NPM_EXIT, or, with
+ * STUB_NPM_HANG, says it is running and waits to be stopped.
  */
-const STUB_MAKE = `#!/bin/sh
-record="$STUB_MAKE_RECORD"
-printf '%s\\0' "$@" > "$record.args"
-pwd -P > "$record.cwd"
-printf '%s\\n' "\${MAKEFLAGS-unset}" > "$record.makeflags"
-printf '%s\\n' "\${GIT_DIR-unset}" > "$record.gitdir"
-[ -n "$PIPELEX_API_KEY" ] && echo present > "$record.key"
-echo "create: Stub Method"
-echo ""
-echo "! the method declares no description"
-echo "warning: LICENSE copyright line left untouched — pass --license-holder to claim it." >&2
-echo "create: 5/6 run make all"
-echo "warning: LICENSE copyright line left untouched — pass --license-holder to claim it." >&2
-echo "  a line that only mentions warning: inside it"
-exit "\${STUB_MAKE_EXIT:-0}"
+const STUB_NPM = `"use strict";
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(
+  process.env.STUB_NPM_RECORD + ".calls",
+  JSON.stringify({
+    args,
+    cwd: fs.realpathSync(process.cwd()),
+    gitDir: process.env.GIT_DIR ?? "unset",
+    sawKey: Boolean(process.env.PIPELEX_API_KEY),
+  }) + "\\n",
+);
+if (args[0] === "install") {
+  if (process.env.STUB_NPM_MODULES) fs.mkdirSync("node_modules", { recursive: true });
+  console.log("stub npm: installed");
+  process.exit(Number(process.env.STUB_NPM_INSTALL_EXIT ?? 0));
+}
+if (process.env.STUB_NPM_HANG) {
+  console.log("npm run create is running");
+  setTimeout(() => {}, 30000);
+} else {
+  if (process.env.STUB_NPM_MODULES) {
+    const now = new Date();
+    fs.utimesSync("package-lock.json", now, now);
+  }
+  console.log("create: Stub Method");
+  console.log("");
+  console.log("! the method declares no description");
+  console.error("warning: LICENSE copyright line left untouched — pass --license-holder to claim it.");
+  console.log("create: 5/6 run npm run all");
+  console.error("warning: LICENSE copyright line left untouched — pass --license-holder to claim it.");
+  console.log("  a line that only mentions warning: inside it");
+  process.exit(Number(process.env.STUB_NPM_EXIT ?? 0));
+}
 `;
 
-/** A directory for the PATH, holding the stub make and a link to the real git, as asked. */
-export function toolsDir(root, tools = ["make", "git"]) {
+/** The stub npm's script, `npm-cli.js` as npm's own is, in a directory of its own under `root`. */
+export function stubNpm(root) {
+  const dir = path.join(root, "npm");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "package.json"), '{ "type": "commonjs" }\n');
+  const script = path.join(dir, "npm-cli.js");
+  fs.writeFileSync(script, STUB_NPM);
+  return script;
+}
+
+/**
+ * The PATH a run gets: git alone when `tools` names it, and nothing else. On
+ * Windows, where a link to git.exe outside its installation does not run, it
+ * is git's own directory, which holds git and its siblings alone.
+ */
+export function toolsPath(root, tools = ["git"]) {
   const dir = path.join(root, "bin");
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir);
-  if (tools.includes("make")) fs.writeFileSync(path.join(dir, "make"), STUB_MAKE, { mode: 0o755 });
-  if (tools.includes("git")) fs.symlinkSync(REAL_GIT, path.join(dir, "git"));
+  if (!tools.includes("git")) return dir;
+  if (process.platform === "win32") return [dir, path.dirname(REAL_GIT)].join(path.delimiter);
+  fs.symlinkSync(REAL_GIT, path.join(dir, "git"));
   return dir;
 }
 
-/** Variables that would let the machine's git, make or key reach a test. */
-const AMBIENT = /^(GIT_|MAKE|MFLAGS$|EMAIL$|PIPELEX_|STUB_MAKE_)/;
+/** Variables that would let the machine's git, npm or key reach a test. */
+const AMBIENT = /^(GIT_|MAKE|MFLAGS$|EMAIL$|PIPELEX_|STUB_NPM_|npm_)/i;
 
 /** The environment without anything ambient, and git confined to `root`. */
 export function isolatedEnv(root, extra = {}) {
@@ -100,13 +159,22 @@ export function setupEnv(root) {
 }
 
 /**
- * The environment the initializer runs in: the tools on the PATH and nothing
- * else, a git configuration with an identity or one that refuses to guess,
- * and the key unless `key` is false.
+ * The environment the initializer runs in: git on the PATH unless `tools`
+ * leaves it out, and nothing else; the stub npm named in `npm_execpath`, or,
+ * when `npm` is false, a script there that does not exist; a git
+ * configuration with an identity or one that refuses to guess; and the key
+ * unless `key` is false.
  */
 export function runEnv(
   root,
-  { tools = ["make", "git"], identity = true, key = true, makeExit = 0 } = {},
+  {
+    tools = ["git"],
+    npm = true,
+    identity = true,
+    key = true,
+    installExit = 0,
+    createExit = 0,
+  } = {},
 ) {
   const config = path.join(root, "gitconfig");
   fs.writeFileSync(
@@ -115,13 +183,21 @@ export function runEnv(
       ? "[user]\n\tname = Case Runner\n\temail = cases@example.com\n"
       : "[user]\n\tuseConfigOnly = true\n",
   );
-  return isolatedEnv(root, {
-    PATH: toolsDir(root, tools),
+  // Windows spells the PATH `Path`, and a copy of the environment keeps that
+  // spelling, which would stand beside the one set here.
+  const env = Object.fromEntries(
+    Object.entries(isolatedEnv(root)).filter(([name]) => name.toUpperCase() !== "PATH"),
+  );
+  return {
+    ...env,
+    PATH: toolsPath(root, tools),
     GIT_CONFIG_GLOBAL: config,
-    STUB_MAKE_RECORD: path.join(root, "make-record"),
-    STUB_MAKE_EXIT: String(makeExit),
+    npm_execpath: npm ? stubNpm(root) : path.join(root, "no-npm", "npm-cli.js"),
+    STUB_NPM_RECORD: path.join(root, "npm-record"),
+    STUB_NPM_INSTALL_EXIT: String(installExit),
+    STUB_NPM_EXIT: String(createExit),
     ...(key ? { PIPELEX_API_KEY: "pk_test_never_printed_8d1f" } : {}),
-  });
+  };
 }
 
 /**
@@ -134,18 +210,23 @@ export function scopeIdentity(env, dir) {
   fs.appendFileSync(env.GIT_CONFIG_GLOBAL, `[includeIf "gitdir:${dir}/"]\n\tpath = ${scoped}\n`);
 }
 
-/** What the stub make recorded, or null when it never ran. */
-export function makeRecord(root) {
-  const base = path.join(root, "make-record");
-  if (!fs.existsSync(`${base}.args`)) return null;
-  const read = (suffix) =>
-    fs.existsSync(base + suffix) ? fs.readFileSync(base + suffix, "utf8") : null;
+/**
+ * What the stub npm recorded: every call, in order, and the `install` and the
+ * `run create` among them, each null when it never ran; or null when npm never
+ * ran at all.
+ */
+export function npmRecord(root) {
+  const file = path.join(root, "npm-record.calls");
+  if (!fs.existsSync(file)) return null;
+  const calls = fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
   return {
-    args: read(".args").split("\0").slice(0, -1),
-    cwd: read(".cwd").trim(),
-    makeflags: read(".makeflags").trim(),
-    gitDir: read(".gitdir").trim(),
-    sawKey: read(".key") !== null,
+    calls,
+    install: calls.find((call) => call.args[0] === "install") ?? null,
+    create: calls.find((call) => call.args[0] === "run" && call.args[1] === "create") ?? null,
   };
 }
 

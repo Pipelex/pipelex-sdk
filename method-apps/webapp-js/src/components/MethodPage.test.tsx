@@ -29,7 +29,7 @@ describe("MethodPage", () => {
   it("names the gesture that adds a method when none is registered", () => {
     render(<MethodPage methods={[]} />);
     expect(screen.getByRole("heading", { name: "No method yet" })).toBeVisible();
-    expect(screen.getByText(/make add-method/)).toBeVisible();
+    expect(screen.getByText(/npm run add-method -- <your method>/)).toBeVisible();
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
   });
 

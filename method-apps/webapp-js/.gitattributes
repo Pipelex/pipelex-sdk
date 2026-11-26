@@ -1,3 +1,8 @@
+# Every text file is checked out with LF line endings, Windows included, where
+# Git for Windows would otherwise write CRLF: Prettier checks for LF, and the
+# bootstrap edits files by exact lines. The rules below refine this one.
+* text=auto eol=lf
+
 # Generated codegen artifacts are committed and hashed against their stamps.
 # `-text` disables git's newline translation so a checkout on any platform holds
 # the bytes the API emitted. Diff hygiene rather than correctness — the SDK's

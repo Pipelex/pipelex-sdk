@@ -12,7 +12,7 @@ import { decodePack } from "../lib/pack.mjs";
 import {
   git,
   listTree,
-  makeRecord,
+  npmRecord,
   packs,
   runEnv,
   runInitializer,
@@ -160,7 +160,8 @@ describe("initializers/cases.json", () => {
         tools: c.tools,
         identity: identity === true,
         key: c.key !== false,
-        makeExit: c.make_exit ?? 0,
+        npm: c.npm !== false,
+        createExit: c.create_exit ?? 0,
       });
       if (identity === "under-parent") scopeIdentity(runsIn, parent);
       if (identity === "enclosing-only") {
@@ -190,10 +191,16 @@ describe("initializers/cases.json", () => {
         assert.deepEqual(snapshot(dest, env), before, output);
       }
 
-      const record = makeRecord(root);
-      assert.equal(record !== null, expect.make, output);
-      for (const arg of expect.forwarded ?? []) {
-        assert.ok(record.args.includes(arg), `${arg} not among ${JSON.stringify(record.args)}`);
+      const created = npmRecord(root)?.create ?? null;
+      assert.equal(created !== null, expect.create, output);
+      if (expect.forwarded !== undefined) {
+        const after = created.args.slice(created.args.indexOf("--") + 1);
+        const at = after.indexOf(expect.forwarded[0]);
+        assert.deepEqual(
+          after.slice(at, at + expect.forwarded.length),
+          expect.forwarded,
+          `${JSON.stringify(expect.forwarded)} not in ${JSON.stringify(after)}`,
+        );
       }
 
       const pristine =

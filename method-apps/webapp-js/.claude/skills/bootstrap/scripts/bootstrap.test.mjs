@@ -32,6 +32,7 @@ import {
   TEMPLATE_TITLE,
   TEMPLATE_URL,
   claudeDescriptionLine,
+  renderReadme,
   resolveLicense,
   stripTemplateOnly,
   stripTemplateParagraph,
@@ -219,6 +220,16 @@ describe.skipIf(!IS_TEMPLATE)("bootstrap.mjs against the template's files", SPAW
     // A doubled blank line is what a careless removal leaves in the one file
     // Prettier does not format.
     expect(read(root, "Makefile")).not.toMatch(/\n\n\n/);
+  });
+
+  it("prints the next commands as npm's, one per line, never chained", () => {
+    const root = makeTempRepo();
+    const res = runScript([...baseArgs(root), "--clean"]);
+    expect(res.status).toBe(0);
+    // Windows PowerShell 5.1 has no `&&`, so a person runs each line on its own.
+    expect(res.stdout).toContain("\n  npm install --package-lock-only\n  npm run all\n");
+    expect(res.stdout).not.toContain("&&");
+    expect(res.stdout).not.toMatch(/\bmake /);
   });
 
   it("names the create gesture, the mono-repo and every removed file only in what a project does not keep", () => {
@@ -437,6 +448,35 @@ describe("bootstrap.mjs input guards", SPAWNS, () => {
 });
 
 describe("bootstrap.mjs helpers", () => {
+  it("gives every command in the project's README as an npm script, make's only beside it", () => {
+    const readme = renderReadme(
+      "",
+      { title: "Invoice Extractor" },
+      {
+        description: "Extracts invoices.",
+        lic: resolveLicense(undefined, "Acme", 2026),
+      },
+    );
+    const scripts = JSON.parse(
+      fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"),
+    ).scripts;
+    const targets = new Set(
+      [...fs.readFileSync(path.join(REPO_ROOT, "Makefile"), "utf8").matchAll(/^([\w-]+):/gm)].map(
+        (match) => match[1],
+      ),
+    );
+    const named = [...readme.matchAll(/\bnpm run ([\w:-]+)/g)].map((match) => match[1]);
+    expect(new Set(named)).toEqual(new Set(["dev", "serve", "add-method", "codegen", "all"]));
+    for (const script of named) expect(scripts[script]).toBeDefined();
+    for (const [, target] of readme.matchAll(/\bmake ([\w-]+)/g)) expect(targets).toContain(target);
+    // A make target is the shorthand for whoever has make, never the only way.
+    for (const line of readme.split("\n").filter((each) => /`make /.test(each))) {
+      expect(line).toMatch(/`npm /);
+    }
+    // Windows PowerShell 5.1 has no `&&`, so nothing the README gives chains with it.
+    expect(readme).not.toContain("&&");
+  });
+
   it("derives titles from package names, scope stripped", () => {
     expect(titleFromName("invoice-extractor")).toBe("Invoice Extractor");
     expect(titleFromName("@acme/invoice-extractor")).toBe("Invoice Extractor");
