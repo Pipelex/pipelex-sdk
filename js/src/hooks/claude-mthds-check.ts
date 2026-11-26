@@ -7,7 +7,8 @@
  * the pipeline itself is identical:
  *
  *   1. local lint  (`@pipelex/tools-wasm` — offline, no credentials) → BLOCK on diagnostics
- *   2. local format (same engine) → write back in place when changed
+ *   2. local format (same engine) → when changed, replace the file atomically
+ *      (a temporary file beside it renamed over it, `format-write.ts`)
  *   3. API validate (`POST /v1/validate` via the SDK, `allow_signatures: true`)
  *      → BLOCK on an invalid verdict, non-blocking nudge on pending signatures
  *
@@ -67,6 +68,7 @@ import {
   type HookPlatform,
   type LintStage,
 } from "./check-core.js";
+import { writeBackFormatted } from "./format-write.js";
 import { runValidateStage } from "./validate-stage.js";
 
 type ToolsWasmModule = typeof import("@pipelex/tools-wasm");
@@ -187,12 +189,9 @@ async function checkOneFile(engine: ToolsWasmModule, filePath: string): Promise<
     return lintOutcome;
   }
 
-  // Stage 2 — local format, write back in place (mirrors `plxt fmt`)
+  // Stage 2 — local format (mirrors `plxt fmt`), written back atomically when it changed anything
   try {
-    const formatted = engine.formatMthds(content);
-    if (formatted.changed) {
-      writeFileSync(filePath, formatted.formatted);
-    }
+    writeBackFormatted(filePath, content, engine.formatMthds(content));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     warn(`Warning: format failed: ${message}`);
