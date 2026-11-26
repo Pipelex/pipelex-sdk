@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **The `.mthds` hook no longer risks truncating the file it formats**: the hook's format stage writes the formatted text to a temporary file beside the edited file and renames it over the original, keeping the original's permission bits, instead of truncating the file and writing into it, so a hook killed mid-write leaves the original or the formatted file, never a truncated one. A file the formatter leaves unchanged is still not written. On Windows, a rename refused while another process holds the file is retried briefly, then given up with a warning and the original left as it was (`docs/hook-bundle.md`, "How the format is written").
+- **The `.mthds` hook no longer risks truncating the file it formats**: the hook's format stage writes the formatted text to a temporary file beside the edited file and renames it over the original, keeping the original's permission bits, owner and group, instead of truncating the file and writing into it, so a hook killed mid-write leaves the original or the formatted file, never a truncated one. A file the formatter leaves unchanged is still not written. A file with several hard links, or one whose owner and group the hook cannot give the new file, is still written in place, so a format never breaks a hard link or hands a user's file to another owner; extended attributes, ACL entries set on the file itself and, on Windows, explicit permission entries are not kept by the rename. On Windows, a rename refused while another process holds the file is retried briefly, and given up with a warning and the file left as it was when the hold lasts or a newer save lands meanwhile (`docs/hook-bundle.md`, "How the format is written").
 
 ## [v0.71.0] - 2026-11-26
 

@@ -191,7 +191,7 @@ async function checkOneFile(engine: ToolsWasmModule, filePath: string): Promise<
 
   // Stage 2 — local format (mirrors `plxt fmt`), written back atomically when it changed anything
   try {
-    writeBackFormatted(filePath, engine.formatMthds(content));
+    writeBackFormatted(filePath, content, engine.formatMthds(content));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     warn(`Warning: format failed: ${message}`);
