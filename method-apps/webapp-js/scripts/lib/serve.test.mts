@@ -729,7 +729,7 @@ describe("stopping what a start spawned when no tool answers", () => {
     const stopped = await stopSpawned(config, { pgid: child.pid! }, () => true, failing);
     expect(stopped.outcome).toBe("unknown");
     expect(stopped.unproven).toMatch(
-      /^no start time, so it was ended by force \((taskkill \/T \/F \/PID|kill -- -)\d+\) unread$/,
+      /^no start time, so it was ended by force \((taskkill \/T \/F \/PID |kill -- -)\d+\) unread$/,
     );
     expect(await allGone([child.pid!])).toBe(true);
   });
@@ -1453,23 +1453,30 @@ describe.skipIf(!CAN_SERVE)("make stop", SPAWNS, () => {
     },
   );
 
-  it("stops a server whose first process has ended, with what it left", async () => {
-    // On Windows a process's children outlive it, and their parent's id may be
-    // given to another process: the record names them, so they are still found.
-    const checkout = checkoutWith();
-    const config = configFor(checkout, "ok", await freePorts(1));
-    const started = await run(serve, config);
-    expect(started.code, started.lines.join("\n")).toBe(0);
-    const [parent, child] = pidsIn(checkout);
-    kill(parent, "SIGKILL");
-    expect(await allGone([parent])).toBe(true);
-    expect(alive(child)).toBe(true);
+  // On Windows, Node ends the children it spawned when it ends (they run in a
+  // job it closes), so the fake server's child cannot outlive its parent there;
+  // the tree's rule for a member whose parents have ended is tested on every
+  // system against a recorded table, above.
+  it.skipIf(WINDOWS)(
+    "stops a server whose first process has ended, with what it left",
+    async () => {
+      // The group's first process has ended, and its id may be given to another
+      // process: the group is still found by what it left.
+      const checkout = checkoutWith();
+      const config = configFor(checkout, "ok", await freePorts(1));
+      const started = await run(serve, config);
+      expect(started.code, started.lines.join("\n")).toBe(0);
+      const [parent, child] = pidsIn(checkout);
+      kill(parent, "SIGKILL");
+      expect(await allGone([parent])).toBe(true);
+      expect(alive(child)).toBe(true);
 
-    const result = await run(stop, config);
-    expect(result.verdict, result.lines.join("\n")).toMatch(/^stopped /);
-    expect(await allGone([child])).toBe(true);
-    expect(stateOf(checkout)).toBeUndefined();
-  });
+      const result = await run(stop, config);
+      expect(result.verdict, result.lines.join("\n")).toMatch(/^stopped /);
+      expect(await allGone([child])).toBe(true);
+      expect(stateOf(checkout)).toBeUndefined();
+    },
+  );
 
   it("never signals a recorded group whose first process is another one, even here", async () => {
     // A stale record whose id now names a process started in this checkout —
