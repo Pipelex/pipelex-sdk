@@ -1,12 +1,13 @@
 {
-  "about": "The cases every initializer of the family executes, so that each prints the same verdict for the same destination, git state and flags. Each suite runs its initializer with a stub npm, named to it the way npm names itself to what it runs, that records its arguments, succeeds at npm install and exits with create_exit from npm run create; a PATH holding the real git alone; a git configuration of its own; and PIPELEX_API_KEY set unless key is false.",
+  "about": "The cases every initializer of the family executes, so that each prints the same verdict for the same destination, git state and flags. Each suite runs its initializer with a stub npm, named to it the way npm names itself to what it runs, that records its arguments, succeeds at npm install and exits with create_exit from npm run create; a PATH holding the real git alone; a git configuration of its own; PIPELEX_API_KEY set unless key is false; and PIPELEX_HOME naming a directory of the run's own, which holds a .env saving a key only when login is true, so the machine's own login never reaches a case.",
   "legend": {
     "destination": "What stands at the destination before the run. missing: nothing; empty: an empty directory; git-without-commit: a directory holding only the .git of git init; git-with-history: a directory holding only the .git of a repository with a commit, its files deleted; git-with-staged-file: a directory holding only the .git of git init whose index holds notes.txt, added and then deleted from the directory; ds-store: a directory holding .DS_Store; user-file: a directory holding notes.txt; beneath-a-file: the destination is typed as notes.txt/my-app, notes.txt being a file, so nothing can stand there.",
     "spelled": "How the destination is typed. name: my-app, from its parent; space: my app, from its parent; dot: ., from inside it (the destination must exist); absent: no directory at all.",
     "within": "Where the destination's parent is. nothing: a directory no repository tracks; work-tree: inside the work tree of a repository with a commit and an origin of its own; template-checkout: inside the work tree of a repository whose origin is https://github.com/Pipelex/pipelex-sdk.git; ignored-parent: under the tmp/ directory of a repository as in work-tree, whose committed .gitignore holds tmp/; ignored-by-name: at the root of a repository as in work-tree, whose committed .gitignore holds the directory-only pattern my-app/, which matches the destination only when it is read as a directory; re-included: under the apps/ directory of a repository as in work-tree, whose committed .gitignore holds apps/* and then !apps/my-app/, so that the destination itself is not ignored when it is read as a directory; ignores-everything: at the root of a repository as in work-tree, whose committed .gitignore holds *, as a home directory kept as a repository often does; ignores-files-only: at the root of a repository as in work-tree, whose committed .gitignore holds * and then !*/, which ignores every file but no directory; contents-ignored: at the root of a repository as in work-tree, whose committed .gitignore holds my-app/* and then !my-app/package.json, which ignores what the destination holds but not the destination itself.",
     "args": "The arguments after the destination. {other-ecosystem} stands for a template of another ecosystem, which this initializer refuses by naming that ecosystem's initializer or, while the ecosystem has none, the template's copy-out instructions.",
     "method": "Whether --method mt_case is passed. Defaults to true.",
-    "key": "Whether PIPELEX_API_KEY is set. Defaults to true.",
+    "key": "Whether PIPELEX_API_KEY is set in the environment. Defaults to true.",
+    "login": "Whether the Pipelex login saved a key: a PIPELEX_API_KEY line in the .env of PIPELEX_HOME, which the initializer reads when the environment holds no key, as npm run create does. Defaults to false.",
     "tools": "Which tools are on the PATH: [\"git\"] or none. Defaults to [\"git\"].",
     "npm": "Whether npm can be found. false: the npm the initializer is told to run does not exist. Defaults to true.",
     "git_identity": "Whether git has an identity to commit with. true: in its global configuration; false: none, and git refuses to guess one; under-parent: only through an includeIf \"gitdir:<the destination's parent>/\" section, git refusing to guess one elsewhere; enclosing-only: only in the enclosing repository's own .git/config, git refusing to guess one elsewhere. Defaults to true.",
@@ -268,6 +269,13 @@
       "destination": "missing",
       "key": false,
       "expect": { "verdict": "refused: no-key", "written": false, "create": false }
+    },
+    {
+      "name": "no key in the environment, but the one the login saved",
+      "destination": "missing",
+      "key": false,
+      "login": true,
+      "expect": { "verdict": "created", "written": true, "git": "initialized", "create": true }
     },
     {
       "name": "no npm to run",

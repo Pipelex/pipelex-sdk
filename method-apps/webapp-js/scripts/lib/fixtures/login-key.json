@@ -1,0 +1,143 @@
+{
+  "about": "How the family reads the key the Pipelex login saved, executed by the initializer's suite and by the webapp-js template's, whose copy is scripts/lib/fixtures/login-key.json, written by the repository's make shared-files and never edited. Both readers follow pipelex-mcp's src/credentials.ts, which owns the file: PIPELEX_HOME's .env, or ~/.pipelex/.env, read only when the environment holds no key. Each case runs in a throwaway directory, written <root> below, whose home/ is the user's home directory.",
+  "legend": {
+    "pipelex_home": "The PIPELEX_HOME the reader is given, <root> standing for the throwaway directory. Absent: not set.",
+    "file": "Where something is put, as a path under <root>. Absent: nothing is put anywhere.",
+    "content": "What the file holds.",
+    "kind": "Instead of content: directory, a directory stands where the file would be; over-limit, a file of one byte more than the largest the reader reads, assigning a key.",
+    "expect.status": "key: a key was found; no-key: the file was read and holds no key; missing: there is no file; unreadable: something stands there that is not a readable file of at most the size limit; relative-home: PIPELEX_HOME is refused, and nothing is read.",
+    "expect.key": "The key found, with status key.",
+    "expect.base_url": "The file's PIPELEX_BASE_URL, which comes with its key alone; null when the file sets none or holds no key.",
+    "expect.file": "The file the reader looked at, as a message shows it: ~ for the home directory, <root> for the throwaway directory, / for the system's separator."
+  },
+  "cases": [
+    {
+      "name": "the default home holds a key",
+      "file": "home/.pipelex/.env",
+      "content": "PIPELEX_API_KEY=plx_sk_case_default\n",
+      "expect": {
+        "status": "key",
+        "key": "plx_sk_case_default",
+        "base_url": null,
+        "file": "~/.pipelex/.env"
+      }
+    },
+    {
+      "name": "the file's base URL comes with its key",
+      "file": "home/.pipelex/.env",
+      "content": "# saved by the login\nPIPELEX_BASE_URL=https://api-dev.example.com\nPIPELEX_API_KEY=\"plx_sk_case_dev\"\n",
+      "expect": {
+        "status": "key",
+        "key": "plx_sk_case_dev",
+        "base_url": "https://api-dev.example.com",
+        "file": "~/.pipelex/.env"
+      }
+    },
+    {
+      "name": "a leading byte-order mark is not part of the first name",
+      "file": "home/.pipelex/.env",
+      "content": "﻿PIPELEX_API_KEY=plx_sk_case_bom\n",
+      "expect": {
+        "status": "key",
+        "key": "plx_sk_case_bom",
+        "base_url": null,
+        "file": "~/.pipelex/.env"
+      }
+    },
+    {
+      "name": "no file",
+      "expect": { "status": "missing", "file": "~/.pipelex/.env" }
+    },
+    {
+      "name": "a file with a base URL and no key is no key, and its base URL is not taken",
+      "file": "home/.pipelex/.env",
+      "content": "PIPELEX_BASE_URL=https://api-dev.example.com\n",
+      "expect": { "status": "no-key", "file": "~/.pipelex/.env" }
+    },
+    {
+      "name": "an empty key is no key",
+      "file": "home/.pipelex/.env",
+      "content": "PIPELEX_API_KEY=\nPIPELEX_BASE_URL=https://api-dev.example.com\n",
+      "expect": { "status": "no-key", "file": "~/.pipelex/.env" }
+    },
+    {
+      "name": "an absolute PIPELEX_HOME is read instead of the default home",
+      "pipelex_home": "<root>/elsewhere",
+      "file": "elsewhere/.env",
+      "content": "PIPELEX_API_KEY=plx_sk_case_elsewhere\n",
+      "expect": {
+        "status": "key",
+        "key": "plx_sk_case_elsewhere",
+        "base_url": null,
+        "file": "<root>/elsewhere/.env"
+      }
+    },
+    {
+      "name": "an absolute PIPELEX_HOME with no file does not fall back to the default home",
+      "pipelex_home": "<root>/elsewhere",
+      "file": "home/.pipelex/.env",
+      "content": "PIPELEX_API_KEY=plx_sk_case_default\n",
+      "expect": { "status": "missing", "file": "<root>/elsewhere/.env" }
+    },
+    {
+      "name": "a PIPELEX_HOME starting with ~/ is under the home directory",
+      "pipelex_home": "~/custom",
+      "file": "home/custom/.env",
+      "content": "PIPELEX_API_KEY=plx_sk_case_custom\n",
+      "expect": {
+        "status": "key",
+        "key": "plx_sk_case_custom",
+        "base_url": null,
+        "file": "~/custom/.env"
+      }
+    },
+    {
+      "name": "a PIPELEX_HOME of ~ is the home directory itself",
+      "pipelex_home": "~",
+      "file": "home/.env",
+      "content": "PIPELEX_API_KEY=plx_sk_case_tilde\n",
+      "expect": {
+        "status": "key",
+        "key": "plx_sk_case_tilde",
+        "base_url": null,
+        "file": "~/.env"
+      }
+    },
+    {
+      "name": "an empty PIPELEX_HOME is not set",
+      "pipelex_home": "",
+      "file": "home/.pipelex/.env",
+      "content": "PIPELEX_API_KEY=plx_sk_case_default\n",
+      "expect": {
+        "status": "key",
+        "key": "plx_sk_case_default",
+        "base_url": null,
+        "file": "~/.pipelex/.env"
+      }
+    },
+    {
+      "name": "a relative PIPELEX_HOME is refused",
+      "pipelex_home": "elsewhere",
+      "file": "elsewhere/.env",
+      "content": "PIPELEX_API_KEY=plx_sk_case_elsewhere\n",
+      "expect": { "status": "relative-home" }
+    },
+    {
+      "name": "another user's home is refused",
+      "pipelex_home": "~someone/.pipelex",
+      "expect": { "status": "relative-home" }
+    },
+    {
+      "name": "a directory where the file would be is unreadable",
+      "file": "home/.pipelex/.env",
+      "kind": "directory",
+      "expect": { "status": "unreadable", "file": "~/.pipelex/.env" }
+    },
+    {
+      "name": "a file past the size limit is unreadable",
+      "file": "home/.pipelex/.env",
+      "kind": "over-limit",
+      "expect": { "status": "unreadable", "file": "~/.pipelex/.env" }
+    }
+  ]
+}
