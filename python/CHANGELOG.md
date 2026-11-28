@@ -1,17 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`OrganizationBranding` and `OrganizationBrandingUpdate` carry the branding kit, and `style` is gone (Breaking)**: both models gain `dark_square_logo` and `dark_wide_logo` (a dark-mode logo, `None` falling back to the slot's light logo), `preset` and `shell` (ids of the shape `^[a-z0-9-]{1,32}$`) and `design_system`, a DTCG token document typed by the new `BrandingDesignSystem` alias, which a write replaces whole and `None` removes; `style` is removed from both, since the platform no longer answers it and refuses a write naming it, so `OrganizationBrandingUpdate(style=…)` is now refused when it is built and a caller sets `preset` instead. `get_branding` and `update_organization_branding` read each new field as `None` when the answer leaves it out or, for the ids and the design system, sends another type (`docs/organization-branding.md`).
+
+### Fixed
+
+- **A refused logo is documented as the platform sends it**: `docs/organization-branding.md`, `docs/errors.md`, `update_organization_branding` and `LogoRefusalCode` now say that a logo the platform read and refused is a `422` `request.unsupported` naming the slot in `location.field` and `params.field` and the `LogoRefusalCode` in `params.reason`, with one item per broken rule in `errors` only when several rules are broken, and that a logo URI refused before any read names its slot on the problem itself; they used to promise an item per refused logo whose `code` was the `LogoRefusalCode` and whose `detail` was the sentence to show, which the platform never sends.
+
 ## [v0.72.0] - 2026-11-28
 
 ### Changed
 
 - **Requires `mthds` 0.29.0, the release that follows MTHDS standard 9.2.0 (Breaking)**: the exact pin moves from `mthds==0.28.0` to `mthds==0.29.0`, so every environment holding this `pipelex-sdk` installs exactly that `mthds`, and a project that also pins `mthds` itself has to move with it. `mthds` 0.29.0 reports `MTHDS_STANDARD_VERSION` `9.2.0`, so a manifest's `mthds_version` of an exact `9.0.0` or a `~9.1.0` no longer passes while `>=9.2.0` does, reads a manifest's `result_line` and `examples`, and reads problems against the core error registry `9.2.0`, which adds `method.contract_fact_invalid` and the warning `method.choice_option_dubious`; `PROTOCOL_VERSION` stays at `2.0.1`. The input- and output-form descriptors this client parses from `pipe_io`, `validate` and a run's results now carry a `number` node's `unit` and `aggregate` and an `enum` node's `options`, and are typed more closely: a text node's `format` must be one of the standard's `ContractFormat` values, its `min_length` and `max_length` non-negative integers and its `examples` a non-empty list of strings and numbers, so an answer carrying another shape no longer parses.
 - **`pipelex-sdk run --inputs-template` writes a `JSON` input as a bare object (Breaking)**: the template prints a `JSON` input, or one whose concept refines `JSON`, as the object it carries, `{}` to fill in, where it printed `{"concept": "native.JSON", "content": {"json_obj": {}}}`, since a run reads a bare object at a `JSON` position literally; inputs written in the explicit envelope still run.
-- **`OrganizationBranding` and `OrganizationBrandingUpdate` carry the branding kit, and `style` is gone (Breaking)**: both models gain `dark_square_logo` and `dark_wide_logo` (a dark-mode logo, `None` falling back to the slot's light logo), `preset` and `shell` (ids of the shape `^[a-z0-9-]{1,32}$`) and `design_system`, a DTCG token document typed by the new `BrandingDesignSystem` alias, which a write replaces whole and `None` removes; `style` is removed from both, since the platform no longer answers it and refuses a write naming it, so `OrganizationBrandingUpdate(style=…)` is now refused when it is built and a caller sets `preset` instead. `get_branding` and `update_organization_branding` read each new field as `None` when the answer leaves it out or, for the ids and the design system, sends another type (`docs/organization-branding.md`).
 
 ### Fixed
 
 - **A `JSON` input the inputs template cannot render is a malformed input form**: `pipelex-sdk run --inputs-template` and `pipelex-sdk script` refuse a pipe I/O answer describing a `JSON` input, or one whose concept refines `JSON`, as anything but an object carrying `json_obj`, with the malformed-input-form error, where `--inputs-template` ended in an unexpected failure and `script` wrote its script.
-- **A refused logo is documented as the platform sends it**: `docs/organization-branding.md`, `docs/errors.md`, `update_organization_branding` and `LogoRefusalCode` now say that a logo the platform read and refused is a `422` `request.unsupported` naming the slot in `location.field` and `params.field` and the `LogoRefusalCode` in `params.reason`, with one item per broken rule in `errors` only when several rules are broken, and that a logo URI refused before any read names its slot on the problem itself; they used to promise an item per refused logo whose `code` was the `LogoRefusalCode` and whose `detail` was the sentence to show, which the platform never sends.
 
 ## [v0.71.0] - 2026-11-26
 
