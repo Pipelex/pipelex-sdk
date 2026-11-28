@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypeAlias
 
 from mthds.protocol.input_form import PipeInputFormDescriptor
+from mthds.protocol.inputs_template import InputsTemplateFormat, render_inputs_template
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from pipelex_sdk.command.bundle import BundleFile
@@ -150,4 +151,19 @@ async def describe_pipe(client: PipelexAPIClient, source: MethodSource, pipe: st
             if pipe_ref is None or descriptor is None:
                 msg = "the API's pipe I/O answer does not describe the pipe it selected."
                 raise CommandError(msg, exit_code=EXIT_FAILED)
+            _check_template_renders(descriptor)
             return DescribedPipe(pipe_ref=pipe_ref, descriptor=descriptor)
+
+
+def _check_template_renders(descriptor: PipeInputFormDescriptor) -> None:
+    """Render the compact inputs template once from a descriptor that parsed, refusing it as malformed when it cannot be.
+
+    The renderer refuses shapes the descriptor's model accepts, such as a `JSON` input, or one whose concept
+    refines `JSON`, that is not an object carrying `json_obj`, so `script` refuses such an answer as
+    `--inputs-template` does, with the sentence `@pipelex/sdk`'s command prints for it.
+    """
+    try:
+        render_inputs_template(descriptor=descriptor, explicit=False, output_format=InputsTemplateFormat.JSON)
+    except ValueError as exc:
+        msg = "the API's pipe I/O answer describes the pipe it selected with a malformed input form."
+        raise CommandError(msg, exit_code=EXIT_FAILED) from exc
