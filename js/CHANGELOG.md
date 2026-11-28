@@ -10,6 +10,7 @@
 ### Fixed
 
 - **An enum whose choices are not all strings is a malformed input form**: `pipelex-sdk run --inputs-template` and `pipelex-sdk script` refuse a pipe I/O answer whose enum field lists a choice that is not a string, as the Python command already does, instead of rendering a template from it.
+- **A `JSON` input the inputs template cannot render is a malformed input form**: `pipelex-sdk run --inputs-template` and `pipelex-sdk script` refuse a pipe I/O answer describing a `JSON` input, or one whose concept refines `JSON`, as anything but an object carrying `json_obj`, with the malformed-input-form error, where `--inputs-template` ended in an unexpected failure and `script` wrote its script.
 
 ## [v0.71.1] - 2026-11-26
 

@@ -18,7 +18,12 @@ import type {
   PipeIOValidReport,
   PipelexStartOptions,
 } from "../index.js";
-import { inputFormFault, readProblemItems } from "../index.js";
+import {
+  InputsTemplateError,
+  inputFormFault,
+  readProblemItems,
+  renderInputsTemplate,
+} from "../index.js";
 import type { BundleFile } from "./bundle.js";
 import { CommandError, EXIT_FAILED, untilInterrupted } from "./io.js";
 import { loadFailureLines, METHOD_DOES_NOT_LOAD_SENTENCE } from "./present.js";
@@ -118,13 +123,33 @@ export async function describePipe(
   // names the fault. Python's closed models refuse more than this, such as a member the standard
   // does not define, which the template never reads.
   const entry = inputForm[pipeRef];
-  if (inputFormFault(entry) !== undefined || !templateReadable(entry as Record<string, unknown>)) {
+  if (
+    inputFormFault(entry) !== undefined ||
+    !templateReadable(entry as Record<string, unknown>) ||
+    !templateRenders(entry as unknown as PipeInputFormDescriptor)
+  ) {
     throw new CommandError(
       "the API's pipe I/O answer describes the pipe it selected with a malformed input form.",
       { exitCode: EXIT_FAILED },
     );
   }
   return { report, pipeRef, descriptor: entry as unknown as PipeInputFormDescriptor };
+}
+
+/**
+ * Whether the compact inputs template renders from an entry the checks above passed. The renderer
+ * refuses shapes those checks do not read, such as a `JSON` input, or one whose concept refines
+ * `JSON`, that is not an object carrying `json_obj`, so the entry is rendered once here and its
+ * refusal is a malformed input form, for `script` as for `--inputs-template`.
+ */
+function templateRenders(descriptor: PipeInputFormDescriptor): boolean {
+  try {
+    renderInputsTemplate(descriptor, { explicit: false, format: "json" });
+    return true;
+  } catch (error) {
+    if (error instanceof InputsTemplateError) return false;
+    throw error;
+  }
 }
 
 /**
