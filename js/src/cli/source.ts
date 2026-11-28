@@ -18,7 +18,12 @@ import type {
   PipeIOValidReport,
   PipelexStartOptions,
 } from "../index.js";
-import { inputFormFault, readProblemItems } from "../index.js";
+import {
+  InputsTemplateError,
+  inputFormFault,
+  readProblemItems,
+  renderInputsTemplate,
+} from "../index.js";
 import type { BundleFile } from "./bundle.js";
 import { CommandError, EXIT_FAILED, untilInterrupted } from "./io.js";
 import { loadFailureLines, METHOD_DOES_NOT_LOAD_SENTENCE } from "./present.js";
@@ -118,7 +123,11 @@ export async function describePipe(
   // names the fault. Python's closed models refuse more than this, such as a member the standard
   // does not define, which the template never reads.
   const entry = inputForm[pipeRef];
-  if (inputFormFault(entry) !== undefined || !templateReadable(entry as Record<string, unknown>)) {
+  if (
+    inputFormFault(entry) !== undefined ||
+    !templateReadable(entry as Record<string, unknown>) ||
+    !templateRenders(entry as unknown as PipeInputFormDescriptor)
+  ) {
     throw new CommandError(
       "the API's pipe I/O answer describes the pipe it selected with a malformed input form.",
       { exitCode: EXIT_FAILED },
@@ -128,10 +137,27 @@ export async function describePipe(
 }
 
 /**
+ * Whether the compact inputs template renders from an entry the checks above passed. The renderer
+ * refuses shapes those checks do not read, such as a `JSON` input, or one whose concept refines
+ * `JSON`, that is not an object carrying `json_obj`, so the entry is rendered once here and its
+ * refusal is a malformed input form, for `script` as for `--inputs-template`.
+ */
+function templateRenders(descriptor: PipeInputFormDescriptor): boolean {
+  try {
+    renderInputsTemplate(descriptor, { explicit: false, format: "json" });
+    return true;
+  } catch (error) {
+    if (error instanceof InputsTemplateError) return false;
+    throw error;
+  }
+}
+
+/**
  * Whether an entry `inputFormFault` passed also holds what the inputs template reads beyond the
  * walk, in a shape it can render: every node's `concept_ref` a string, its `refines` a list of
- * strings, an enum's `choices` a list and a list's `item_count` a whole number of at least two,
- * the last three when present. Members the template only tests for truth are not checked.
+ * strings, an enum's `choices` a list of strings and a list's `item_count` a whole number of at
+ * least two, the last three when present. Members the template only tests for truth are not
+ * checked.
  */
 function templateReadable(entry: Record<string, unknown>): boolean {
   return (entry.fields as Array<Record<string, unknown>>).every(templateReadableNode);
@@ -162,7 +188,9 @@ function templateReadableNode(node: Record<string, unknown>): boolean {
     case "object":
       return templateReadable(node);
     case "enum":
-      return Array.isArray(node.choices);
+      return (
+        Array.isArray(node.choices) && node.choices.every((choice) => typeof choice === "string")
+      );
     case "list":
       return (
         (node.item_count === undefined ||
