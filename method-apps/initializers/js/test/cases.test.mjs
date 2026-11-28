@@ -160,6 +160,7 @@ describe("initializers/cases.json", () => {
         tools: c.tools,
         identity: identity === true,
         key: c.key !== false,
+        login: c.login === true,
         npm: c.npm !== false,
         createExit: c.create_exit ?? 0,
       });

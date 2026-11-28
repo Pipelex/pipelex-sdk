@@ -2316,21 +2316,34 @@ export async function runAddMethod(argv: readonly string[], deps?: AddMethodDeps
   }
 }
 
+/** A key and base URL found outside the environment, which the client is given rather than reading. */
+export interface ExplicitCredentials {
+  apiKey: string;
+  baseUrl: string;
+}
+
 /**
  * The deps a real run uses: `.env.local` loaded, the base URL and the key
  * checked, and the same client `npm run codegen` constructs. A relative bundle
  * path is resolved from the directory the command was typed in — `npm run`
  * moves to the package root and records the original as `INIT_CWD`.
+ *
+ * `credentials` are given when the key was found outside the environment,
+ * such as the one the Pipelex login saved: the client is handed them, so the
+ * key reaches no environment, and no command run afterwards inherits it.
  */
-export function resolveDeps(repoRoot: string = REPO_ROOT): AddMethodDeps {
+export function resolveDeps(
+  repoRoot: string = REPO_ROOT,
+  credentials?: ExplicitCredentials,
+): AddMethodDeps {
   loadEnvConfig(repoRoot, false, { info: () => {}, error: console.error });
-  const baseUrl = process.env.PIPELEX_BASE_URL ?? DEFAULT_API_BASE_URL;
+  const baseUrl = credentials?.baseUrl ?? process.env.PIPELEX_BASE_URL ?? DEFAULT_API_BASE_URL;
   try {
     assertSecureBaseUrl(baseUrl);
   } catch (error) {
     throw new AddMethodError(error instanceof Error ? error.message : String(error));
   }
-  if (!process.env.PIPELEX_API_KEY) {
+  if (credentials === undefined && !process.env.PIPELEX_API_KEY) {
     throw new AddMethodError("PIPELEX_API_KEY is not set — add it to .env.local.");
   }
   // Constructed bare, exactly as `generate.mts` does: the `@/` alias is a
@@ -2338,7 +2351,10 @@ export function resolveDeps(repoRoot: string = REPO_ROOT): AddMethodDeps {
   // the same environment natively, so this IS the same client.
   return {
     repoRoot,
-    client: new PipelexApiClient(),
+    client:
+      credentials === undefined
+        ? new PipelexApiClient()
+        : new PipelexApiClient({ apiKey: credentials.apiKey, baseUrl }),
     baseUrl,
     cwd: process.env.INIT_CWD ?? process.cwd(),
   };

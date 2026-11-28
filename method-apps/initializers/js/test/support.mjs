@@ -131,6 +131,10 @@ export function toolsPath(root, tools = ["git"]) {
   return dir;
 }
 
+/** The key a run's environment holds, and the one its login saved: neither may ever be printed. */
+export const SHELL_KEY = "pk_test_never_printed_8d1f";
+export const LOGIN_KEY = "pk_test_login_never_printed_3c7a";
+
 /** Variables that would let the machine's git, npm or key reach a test. */
 const AMBIENT = /^(GIT_|MAKE|MFLAGS$|EMAIL$|PIPELEX_|STUB_NPM_|npm_)/i;
 
@@ -162,8 +166,10 @@ export function setupEnv(root) {
  * The environment the initializer runs in: git on the PATH unless `tools`
  * leaves it out, and nothing else; the stub npm named in `npm_execpath`, or,
  * when `npm` is false, a script there that does not exist; a git
- * configuration with an identity or one that refuses to guess; and the key
- * unless `key` is false.
+ * configuration with an identity or one that refuses to guess; the key
+ * unless `key` is false; and a `PIPELEX_HOME` of the run's own, so the
+ * machine's login never reaches a test, holding a `.env` with a saved key
+ * when `login` is true.
  */
 export function runEnv(
   root,
@@ -174,8 +180,14 @@ export function runEnv(
     key = true,
     installExit = 0,
     createExit = 0,
+    login = false,
   } = {},
 ) {
+  const pipelexHome = path.join(root, "pipelex-home");
+  if (login) {
+    fs.mkdirSync(pipelexHome, { recursive: true });
+    fs.writeFileSync(path.join(pipelexHome, ".env"), `PIPELEX_API_KEY=${LOGIN_KEY}\n`);
+  }
   const config = path.join(root, "gitconfig");
   fs.writeFileSync(
     config,
@@ -196,7 +208,8 @@ export function runEnv(
     STUB_NPM_RECORD: path.join(root, "npm-record"),
     STUB_NPM_INSTALL_EXIT: String(installExit),
     STUB_NPM_EXIT: String(createExit),
-    ...(key ? { PIPELEX_API_KEY: "pk_test_never_printed_8d1f" } : {}),
+    PIPELEX_HOME: pipelexHome,
+    ...(key ? { PIPELEX_API_KEY: SHELL_KEY } : {}),
   };
 }
 
@@ -241,10 +254,13 @@ export function git(cwd, args, env) {
 }
 
 /** Run the initializer in-process, capturing everything it prints. */
-export async function runInitializer(argv, { cwd, env, signal, tmpDir, table, packDir = packs() }) {
+export async function runInitializer(
+  argv,
+  { cwd, env, signal, tmpDir, table, platform, packDir = packs() },
+) {
   let output = "";
   const out = { write: (chunk) => (output += chunk.toString()) };
-  const code = await run(argv, { cwd, env, out, packDir, signal, tmpDir, table });
+  const code = await run(argv, { cwd, env, out, packDir, platform, signal, tmpDir, table });
   return { code, output, verdict: verdictOf(output) };
 }
 
