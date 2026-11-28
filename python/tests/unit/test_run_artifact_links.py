@@ -6,6 +6,7 @@ the main-stuff check and the stored-text load; `follow_artifact_links=False` han
 that passes the link on. The boundary is mocked per URL: the results route, the bulk resolve route and the object store.
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -181,12 +182,11 @@ class TestRunArtifactLinks:
 
     # ── the readers follow by default ────────────────────────────────
 
-    @pytest.mark.asyncio
-    async def test_fills_every_referenced_field_from_its_stored_file_and_drops_the_links(self, mocker: MockerFixture) -> None:
+    def test_fills_every_referenced_field_from_its_stored_file_and_drops_the_links(self, mocker: MockerFixture) -> None:
         client = _client()
         boundary = _Boundary(mocker, client, body=_referenced_body(), files=_REFERENCED_FILES)
 
-        result = _completed(await client.get_run_result(_RUN_ID))
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID)))
 
         assert result.main_stuff == {"text": "Short."}
         assert result.graph_spec == {"meta": {"mode": "live"}, "nodes": [{"id": "n1", "cost": 12345678901234567890}]}
@@ -195,8 +195,7 @@ class TestRunArtifactLinks:
         assert result.artifact_links is None
         assert sorted(boundary.fetched) == ["/results/graphspec.json", "/results/main_stuff.json", "/results/tokens_usages.json"]
 
-    @pytest.mark.asyncio
-    async def test_follows_through_wait_for_result_a_referenced_memory_telling_the_load_what_is_a_text(self, mocker: MockerFixture) -> None:
+    def test_follows_through_wait_for_result_a_referenced_memory_telling_the_load_what_is_a_text(self, mocker: MockerFixture) -> None:
         client = _client()
         boundary = _Boundary(
             mocker,
@@ -206,7 +205,7 @@ class TestRunArtifactLinks:
             texts={_STORED_TEXT: "A long text."},
         )
 
-        result = await client.wait_for_result(_RUN_ID, WaitForResultOptions(interval_seconds=0.01))
+        result = asyncio.run(client.wait_for_result(_RUN_ID, WaitForResultOptions(interval_seconds=0.01)))
 
         assert result.main_stuff == {"text": "A long text."}
         assert result.working_memory is not None
@@ -215,13 +214,12 @@ class TestRunArtifactLinks:
         # One results read: no `concepts_missing` re-poll.
         assert boundary.reads == [None]
 
-    @pytest.mark.asyncio
-    async def test_names_the_link_never_the_signed_url_when_the_store_refuses_it(self, mocker: MockerFixture) -> None:
+    def test_names_the_link_never_the_signed_url_when_the_store_refuses_it(self, mocker: MockerFixture) -> None:
         client = _client()
         _Boundary(mocker, client, body=_referenced_body(), files={})
 
         with pytest.raises(ArtifactFetchError) as exc_info:
-            await client.get_run_result(_RUN_ID)
+            asyncio.run(client.get_run_result(_RUN_ID))
 
         assert exc_info.value.uri.startswith("artifact_links.")
         assert exc_info.value.status == 403
@@ -229,12 +227,11 @@ class TestRunArtifactLinks:
 
     # ── follow_artifact_links=False hands the links back ─────────────
 
-    @pytest.mark.asyncio
-    async def test_does_not_fetch_and_a_referenced_main_stuff_is_no_missing_main_stuff(self, mocker: MockerFixture) -> None:
+    def test_does_not_fetch_and_a_referenced_main_stuff_is_no_missing_main_stuff(self, mocker: MockerFixture) -> None:
         client = _client()
         boundary = _Boundary(mocker, client, body=_referenced_body(), files=_REFERENCED_FILES)
 
-        result = _completed(await client.get_run_result(_RUN_ID, follow_artifact_links=False))
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID, follow_artifact_links=False)))
 
         assert result.main_stuff is None
         assert result.graph_spec is None
@@ -244,28 +241,25 @@ class TestRunArtifactLinks:
         assert sorted(result.artifact_links or {}) == ["graph_spec", "main_stuff", "tokens_usages"]
         assert boundary.fetched == []
 
-    @pytest.mark.asyncio
-    async def test_still_raises_missing_main_stuff_for_a_null_main_stuff_with_no_link(self, mocker: MockerFixture) -> None:
+    def test_still_raises_missing_main_stuff_for_a_null_main_stuff_with_no_link(self, mocker: MockerFixture) -> None:
         client = _client()
         body = {**_referenced_body(), "artifact_links": {"graph_spec": _link_to("graphspec.json")}}
         _Boundary(mocker, client, body=body)
 
         with pytest.raises(MissingMainStuffError):
-            await client.get_run_result(_RUN_ID, follow_artifact_links=False)
+            asyncio.run(client.get_run_result(_RUN_ID, follow_artifact_links=False))
 
-    @pytest.mark.asyncio
-    async def test_returns_the_links_from_wait_for_result_too(self, mocker: MockerFixture) -> None:
+    def test_returns_the_links_from_wait_for_result_too(self, mocker: MockerFixture) -> None:
         client = _client()
         boundary = _Boundary(mocker, client, body=_referenced_body(), files=_REFERENCED_FILES)
 
-        result = await client.wait_for_result(_RUN_ID, WaitForResultOptions(interval_seconds=0.01), follow_artifact_links=False)
+        result = asyncio.run(client.wait_for_result(_RUN_ID, WaitForResultOptions(interval_seconds=0.01), follow_artifact_links=False))
 
         assert result.main_stuff is None
         assert result.artifact_link(RunArtifact.TOKENS_USAGES) is not None
         assert boundary.fetched == []
 
-    @pytest.mark.asyncio
-    async def test_reads_a_referenced_memory_for_the_stored_text_load_alone_keeping_its_link(self, mocker: MockerFixture) -> None:
+    def test_reads_a_referenced_memory_for_the_stored_text_load_alone_keeping_its_link(self, mocker: MockerFixture) -> None:
         client = _client()
         boundary = _Boundary(
             mocker,
@@ -275,20 +269,19 @@ class TestRunArtifactLinks:
             texts={_STORED_TEXT: "A long text."},
         )
 
-        result = _completed(await client.get_run_result(_RUN_ID, follow_artifact_links=False))
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID, follow_artifact_links=False)))
 
         assert result.main_stuff == {"text": "A long text."}
         assert result.working_memory is None
         assert result.artifact_link(RunArtifact.WORKING_MEMORY) is not None
         assert "/results/working_memory.json" in boundary.fetched
 
-    @pytest.mark.asyncio
-    async def test_follows_later_only_the_named_links_when_asked(self, mocker: MockerFixture) -> None:
+    def test_follows_later_only_the_named_links_when_asked(self, mocker: MockerFixture) -> None:
         client = _client()
         boundary = _Boundary(mocker, client, body=_referenced_body(), files=_REFERENCED_FILES)
-        read = _completed(await client.get_run_result(_RUN_ID, follow_artifact_links=False))
+        read = _completed(asyncio.run(client.get_run_result(_RUN_ID, follow_artifact_links=False)))
 
-        partly = await client.follow_artifact_links(read, artifacts=[RunArtifact.GRAPH_SPEC])
+        partly = asyncio.run(client.follow_artifact_links(read, artifacts=[RunArtifact.GRAPH_SPEC]))
 
         assert partly is not read
         assert read.graph_spec is None
@@ -296,28 +289,27 @@ class TestRunArtifactLinks:
         assert sorted(partly.artifact_links or {}) == ["main_stuff", "tokens_usages"]
         assert boundary.fetched == ["/results/graphspec.json"]
 
-        whole = await follow_artifact_links(client, partly)
+        whole = asyncio.run(follow_artifact_links(client, partly))
         assert whole.main_stuff == {"text": "Short."}
         assert whole.artifact_links is None
-        assert await follow_artifact_links(client, whole) is whole
+        assert asyncio.run(follow_artifact_links(client, whole)) is whole
 
-    @pytest.mark.asyncio
-    async def test_leaves_a_link_under_a_name_this_version_does_not_know(self, mocker: MockerFixture) -> None:
+    def test_leaves_a_link_under_a_name_this_version_does_not_know(self, mocker: MockerFixture) -> None:
         client = _client()
         body = {**_referenced_body(), "artifact_links": {"main_stuff": _link_to("main_stuff.json"), "future_artifact": _link_to("future.json")}}
         boundary = _Boundary(mocker, client, body=body, files=_REFERENCED_FILES)
 
-        result = _completed(await client.get_run_result(_RUN_ID))
+        result = _completed(asyncio.run(client.get_run_result(_RUN_ID)))
 
         assert result.main_stuff == {"text": "Short."}
         assert sorted(result.artifact_links or {}) == ["future_artifact"]
         assert boundary.fetched == ["/results/main_stuff.json"]
 
-    @pytest.mark.asyncio
-    async def test_fetches_one_artifact_with_fetch_run_artifact(self, mocker: MockerFixture) -> None:
+    def test_fetches_one_artifact_with_fetch_run_artifact(self, mocker: MockerFixture) -> None:
         client = _client()
         _Boundary(mocker, client, body=_referenced_body(), files=_REFERENCED_FILES)
 
-        fields = await client.fetch_run_artifact(RunArtifact.TOKENS_USAGES, RunArtifactLink.model_validate(_link_to("tokens_usages.json")))
+        link = RunArtifactLink.model_validate(_link_to("tokens_usages.json"))
+        fields = asyncio.run(client.fetch_run_artifact(RunArtifact.TOKENS_USAGES, link))
 
         assert fields == _USAGE_ENVELOPE

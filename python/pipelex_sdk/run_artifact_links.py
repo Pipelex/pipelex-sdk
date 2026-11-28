@@ -157,11 +157,18 @@ async def follow_artifact_links(
             followed.append(known)
     if not followed:
         return results
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(fetch_run_artifact(client, artifact, links[str(artifact)], options)) for artifact in followed]
+    # `gather`, not a `TaskGroup`: the first failure is raised as itself, never wrapped in an exception group, and the
+    # `finally` cancels the fetches still in flight.
+    tasks = [asyncio.ensure_future(fetch_run_artifact(client, artifact, links[str(artifact)], options)) for artifact in followed]
+    try:
+        fetched = await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     fields: dict[str, Any] = {}
-    for task in tasks:
-        fields.update(task.result())
+    for one_artifact in fetched:
+        fields.update(one_artifact)
     try:
         validated = RunResults.model_validate({"pipeline_run_id": results.pipeline_run_id, **fields})
     except ValidationError as exc:
