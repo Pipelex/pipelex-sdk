@@ -10,7 +10,11 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "v
 import { PipelexApiClient } from "../src/client.js";
 import { ApiResponseError } from "../src/errors.js";
 import type { LogoRefusalCode } from "../src/errors.js";
-import type { OrganizationBranding, OrganizationBrandingUpdate } from "../src/index.js";
+import type {
+  BrandingDesignSystem,
+  OrganizationBranding,
+  OrganizationBrandingUpdate,
+} from "../src/index.js";
 
 const BASE_URL = "http://localhost:8081";
 const ORG_ID = "0f6c2a4e-org";
@@ -21,10 +25,20 @@ const WIDE_UPLOAD_URI = `pipelex-storage://${ORG_ID}/assets/9a3c.svg`;
 /** What the answer names: the platform's own copy of an accepted logo, under `branding/`. */
 const SQUARE_LOGO_URI = `pipelex-storage://${ORG_ID}/branding/3f9a1c2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b.png`;
 const WIDE_LOGO_URI = `pipelex-storage://${ORG_ID}/branding/8c7b6a5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d.svg`;
+const DARK_SQUARE_LOGO_URI = `pipelex-storage://${ORG_ID}/branding/5e4d3c2b-1a09-4f8e-8d7c-6b5a49382716.png`;
+
+/** A design system, a DTCG token document, cut down to a colour and the preset it started from. */
+const DESIGN_SYSTEM: BrandingDesignSystem = {
+  color: {
+    $type: "color",
+    primary: { $value: { colorSpace: "srgb", components: [0.08, 0.13, 0.24] } },
+  },
+  $extensions: { "com.pipelex.preset": { id: "corporate" } },
+};
 
 /**
- * A branded team as both routes answer it: one logo, a partial light set, a partial dark set, a
- * style and a typeface.
+ * A branded team as both routes answer it: a square logo with its dark variant, a partial light
+ * set, a partial dark set, a preset, a shell, a typeface and a design system.
  */
 const BRANDED: OrganizationBranding = {
   org_id: ORG_ID,
@@ -39,14 +53,25 @@ const BRANDED: OrganizationBranding = {
     height: 512.0,
   },
   wide_logo: null,
-  style: "editorial",
+  dark_square_logo: {
+    uri: DARK_SQUARE_LOGO_URI,
+    sha256: "4e5f60718293a4b5c6d7e8f90a1b2c3d4e9b2f6d0c1e4a7b3c5d8e9f0a1b2c3d",
+    content_type: "image/png",
+    width: 512.0,
+    height: 512.0,
+  },
+  dark_wide_logo: null,
+  preset: "corporate",
+  shell: "masthead",
   typeface: "source-sans-3",
+  design_system: DESIGN_SYSTEM,
   white_label: false,
 };
 
 /**
  * A personal workspace, or a team that set nothing, as the platform answers it, a branding written
- * before the style and the typeface existed included: every colour, logo and choice null.
+ * before the kit's newer fields existed included: every colour, logo and choice null, and no
+ * design system.
  */
 const UNBRANDED: OrganizationBranding = {
   org_id: ORG_ID,
@@ -55,12 +80,19 @@ const UNBRANDED: OrganizationBranding = {
   dark_colors: { action: null, accent: null, header: null },
   square_logo: null,
   wide_logo: null,
-  style: null,
+  dark_square_logo: null,
+  dark_wide_logo: null,
+  preset: null,
+  shell: null,
   typeface: null,
+  design_system: null,
   white_label: false,
 };
 
-/** `UNBRANDED` as a platform that predates the style, the typeface and the entitlement answers it. */
+/**
+ * `UNBRANDED` as a platform that predates the dark logos, the choices, the design system and the
+ * entitlement answers it.
+ */
 const BEFORE_CHOICES = {
   org_id: ORG_ID,
   org_name: "Ada's workspace",
@@ -161,8 +193,12 @@ describe("getBranding", () => {
     expect(branding.dark_colors.header).toBe("#e5e5e5");
     expect(branding.square_logo?.width).toBe(512);
     expect(branding.wide_logo).toBeNull();
-    expect(branding.style).toBe("editorial");
+    expect(branding.dark_square_logo?.uri).toBe(DARK_SQUARE_LOGO_URI);
+    expect(branding.dark_wide_logo).toBeNull();
+    expect(branding.preset).toBe("corporate");
+    expect(branding.shell).toBe("masthead");
     expect(branding.typeface).toBe("source-sans-3");
+    expect(branding.design_system).toEqual(DESIGN_SYSTEM);
     expect(branding.white_label).toBe(false);
   });
 
@@ -184,8 +220,12 @@ describe("getBranding", () => {
 
     // Each member is present and what the type declares, never `undefined`.
     expect(branding).toStrictEqual(UNBRANDED);
-    expect(branding.style).toBeNull();
+    expect(branding.dark_square_logo).toBeNull();
+    expect(branding.dark_wide_logo).toBeNull();
+    expect(branding.preset).toBeNull();
+    expect(branding.shell).toBeNull();
     expect(branding.typeface).toBeNull();
+    expect(branding.design_system).toBeNull();
     expect(branding.white_label).toBe(false);
   });
 
@@ -201,10 +241,22 @@ describe("getBranding", () => {
   });
 
   it.each([
-    ["null", { style: null, typeface: null, white_label: null }],
-    ["a number", { style: 3, typeface: 4, white_label: 1 }],
-    ["an object", { style: { id: "editorial" }, typeface: [], white_label: {} }],
-    ["a string where a boolean belongs", { style: null, typeface: null, white_label: "true" }],
+    ["null", { preset: null, shell: null, typeface: null, design_system: null, white_label: null }],
+    ["a number", { preset: 3, shell: 5, typeface: 4, design_system: 6, white_label: 1 }],
+    [
+      "an object or an array",
+      { preset: { id: "corporate" }, shell: [], typeface: [], design_system: [], white_label: {} },
+    ],
+    [
+      "a string where a boolean or a document belongs",
+      {
+        preset: null,
+        shell: null,
+        typeface: null,
+        design_system: '{"color":{}}',
+        white_label: "true",
+      },
+    ],
   ])(
     "reads a choice sent as %s as unset, and the entitlement as not held",
     async (_topic, choices) => {
@@ -217,8 +269,10 @@ describe("getBranding", () => {
 
       expect(branding).toStrictEqual({
         ...BRANDED,
-        style: null,
+        preset: null,
+        shell: null,
         typeface: null,
+        design_system: null,
         white_label: false,
       });
     },
@@ -229,14 +283,16 @@ describe("getBranding", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(200, {
         ...UNBRANDED,
-        style: "a-style-from-next-year",
+        preset: "a-preset-from-next-year",
+        shell: "a-shell-from-next-year",
         typeface: "x".repeat(32),
       }),
     );
 
     const branding = await client.getBranding();
 
-    expect(branding.style).toBe("a-style-from-next-year");
+    expect(branding.preset).toBe("a-preset-from-next-year");
+    expect(branding.shell).toBe("a-shell-from-next-year");
     expect(branding.typeface).toBe("x".repeat(32));
   });
 
@@ -251,10 +307,23 @@ describe("getBranding", () => {
     expect(branding).toEqual({ ...BRANDED, favicon: null });
   });
 
-  it("types the style, the typeface and the entitlement as always present", () => {
-    expectTypeOf<OrganizationBranding["style"]>().toEqualTypeOf<string | null>();
+  it("types the dark logos, the choices, the design system and the entitlement as always present", () => {
+    expectTypeOf<OrganizationBranding["dark_square_logo"]>().toEqualTypeOf<
+      OrganizationBranding["square_logo"]
+    >();
+    expectTypeOf<OrganizationBranding["dark_wide_logo"]>().toEqualTypeOf<
+      OrganizationBranding["wide_logo"]
+    >();
+    expectTypeOf<OrganizationBranding["preset"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<OrganizationBranding["shell"]>().toEqualTypeOf<string | null>();
     expectTypeOf<OrganizationBranding["typeface"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<OrganizationBranding["design_system"]>().toEqualTypeOf<Record<
+      string,
+      unknown
+    > | null>();
     expectTypeOf<OrganizationBranding["white_label"]>().toEqualTypeOf<boolean>();
+    // The preset replaced the app style, which the platform no longer answers.
+    expectTypeOf<OrganizationBranding>().not.toHaveProperty("style");
   });
 
   it("reads an SVG logo's fractional viewBox size as it was sent", async () => {
@@ -356,34 +425,77 @@ describe("updateOrganizationBranding", () => {
     expect(branding).toEqual(BRANDED);
   });
 
-  it("sets a style and a typeface, and hands back the branding as written", async () => {
+  it("sets a preset, a shell and a typeface, and hands back the branding as written", async () => {
     const client = makeClient();
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, BRANDED));
 
     const branding = await client.updateOrganizationBranding(ORG_ID, {
-      style: "editorial",
+      preset: "corporate",
+      shell: "masthead",
       typeface: "source-sans-3",
     });
 
-    expect(lastRequest(spy).body).toEqual({ style: "editorial", typeface: "source-sans-3" });
-    expect(branding.style).toBe("editorial");
+    expect(lastRequest(spy).body).toEqual({
+      preset: "corporate",
+      shell: "masthead",
+      typeface: "source-sans-3",
+    });
+    expect(branding.preset).toBe("corporate");
+    expect(branding.shell).toBe("masthead");
     expect(branding.typeface).toBe("source-sans-3");
   });
 
-  it("clears a style with null and keeps the typeface it leaves out", async () => {
+  it("clears a preset with null and keeps the choices it leaves out", async () => {
     const client = makeClient();
-    const answer = { ...BRANDED, style: null };
+    const answer = { ...BRANDED, preset: null };
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, answer));
 
     const branding = await client.updateOrganizationBranding(ORG_ID, {
-      style: null,
+      preset: null,
       typeface: undefined,
     });
 
     // `undefined` is a key left out, so the platform keeps the typeface.
-    expect(lastRequest(spy).body).toEqual({ style: null });
-    expect(branding.style).toBeNull();
+    expect(lastRequest(spy).body).toEqual({ preset: null });
+    expect(branding.preset).toBeNull();
+    expect(branding.shell).toBe("masthead");
     expect(branding.typeface).toBe("source-sans-3");
+  });
+
+  it("sets and removes a dark logo, and hands back the platform's copy", async () => {
+    const client = makeClient();
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(200, BRANDED));
+
+    const branding = await client.updateOrganizationBranding(ORG_ID, {
+      dark_square_logo: SQUARE_UPLOAD_URI,
+      dark_wide_logo: null,
+    });
+
+    expect(lastRequest(spy).body).toEqual({
+      dark_square_logo: SQUARE_UPLOAD_URI,
+      dark_wide_logo: null,
+    });
+    // The answer names the platform's copy of the dark logo, never the upload the write sent.
+    expect(branding.dark_square_logo?.uri).toBe(DARK_SQUARE_LOGO_URI);
+  });
+
+  it("sends the design system whole, and removes it with null", async () => {
+    const client = makeClient();
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse(200, BRANDED))
+      .mockResolvedValueOnce(jsonResponse(200, { ...BRANDED, design_system: null }));
+
+    const written = await client.updateOrganizationBranding(ORG_ID, {
+      design_system: DESIGN_SYSTEM,
+    });
+    expect(lastRequest(spy).body).toEqual({ design_system: DESIGN_SYSTEM });
+    expect(written.design_system).toEqual(DESIGN_SYSTEM);
+    spy.mockClear();
+
+    const removed = await client.updateOrganizationBranding(ORG_ID, { design_system: null });
+    expect(lastRequest(spy).body).toEqual({ design_system: null });
+    expect(removed.design_system).toBeNull();
   });
 
   it("reads the answer of a platform that predates the choices as getBranding reads it", async () => {
@@ -405,17 +517,30 @@ describe("updateOrganizationBranding", () => {
       } | null;
       square_logo?: string | null;
       wide_logo?: string | null;
-      style?: string | null;
+      dark_square_logo?: string | null;
+      dark_wide_logo?: string | null;
+      preset?: string | null;
+      shell?: string | null;
       typeface?: string | null;
+      design_system?: Record<string, unknown> | null;
     }>();
     // The entitlement is Pipelex staff's to grant: no branding write names it.
     expectTypeOf<OrganizationBrandingUpdate>().not.toHaveProperty("white_label");
+    // The preset replaced the app style, which the platform refuses as a key it does not know.
+    expectTypeOf<OrganizationBrandingUpdate>().not.toHaveProperty("style");
   });
 
   it.each([
     ["a colour that is not #rrggbb", "dark_colors.header", { dark_colors: { header: "#14213g" } }],
-    ["a style of the wrong shape", "style", { style: "Editorial" }],
+    ["a preset of the wrong shape", "preset", { preset: "Corporate" }],
+    ["a shell of the wrong shape", "shell", { shell: "master_head" }],
     ["a typeface of the wrong shape", "typeface", { typeface: "source sans" }],
+    [
+      "a design system of the wrong shape",
+      "design_system",
+      { design_system: { color: { "a.b": {} } } },
+    ],
+    ["the retired app style", "style", { style: "editorial" }],
     [
       "the white-label entitlement, which only Pipelex staff set",
       "white_label",
@@ -520,6 +645,12 @@ describe("updateOrganizationBranding", () => {
       "wide_logo",
       SQUARE_LOGO_URI,
       notAnUpload("wide logo"),
+    ],
+    [
+      "the light logo in its dark slot, a dark logo being held to its slot's rules",
+      "dark_square_logo",
+      SQUARE_LOGO_URI,
+      notAnUpload("dark square logo"),
     ],
     [
       "a raster past the pixel cap",
@@ -655,7 +786,7 @@ describe("updateOrganizationBranding", () => {
     const client = makeClient();
     const errors = [
       fieldItem("dark_colors.header", "String should match pattern '^#[0-9a-fA-F]{6}$'"),
-      fieldItem("style", "String should match pattern '^[a-z0-9-]{1,32}$'"),
+      fieldItem("preset", "String should match pattern '^[a-z0-9-]{1,32}$'"),
     ];
     // Several refused fields: the problem names the first, and each has its item in `errors`.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -674,7 +805,7 @@ describe("updateOrganizationBranding", () => {
     const err = await caught(
       client.updateOrganizationBranding(ORG_ID, {
         dark_colors: { header: "#14213g" },
-        style: "Editorial",
+        preset: "Corporate",
       }),
     );
 
@@ -682,7 +813,7 @@ describe("updateOrganizationBranding", () => {
     expect(err.problem.errors).toEqual(errors);
     expect(err.problem.errors?.map((item) => item.location?.field)).toEqual([
       "dark_colors.header",
-      "style",
+      "preset",
     ]);
   });
 

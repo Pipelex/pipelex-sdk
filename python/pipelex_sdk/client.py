@@ -3796,13 +3796,14 @@ class PipelexAPIClient(MthdsAPIClient):
     async def get_branding(self) -> OrganizationBranding:
         """The branding of the caller's active organization — `GET /v1/branding`.
 
-        Its name, its light and dark colour sets, its two logos, its app style and typeface, and whether it
-        holds the white-label entitlement. Any role reads it, `runner` included, by web session or API key, so
-        an app scaffolded from a method-app template reads its organization's branding with its own key. A
-        personal workspace, or a team that set nothing, answers every colour and logo `None` and no style or
-        typeface. A logo's `uri` is a `pipelex-storage://` reference, which `resolve_storage_url` turns into
-        a short-lived link to its bytes. An answer without `style`, `typeface` or `white_label`, as a platform
-        that predates them sends, reads as `None`, `None` and `False`.
+        Its name, its light and dark colour sets, its square and wide logos with their dark variants, its preset,
+        shell and typeface, its design system, and whether it holds the white-label entitlement. Any role reads
+        it, `runner` included, by web session or API key, so an app scaffolded from a method-app template reads
+        its organization's branding with its own key. A personal workspace, or a team that set nothing, answers
+        every colour and logo `None`, no preset, shell or typeface and no design system. A logo's `uri` is a
+        `pipelex-storage://` reference, which `resolve_storage_url` turns into a short-lived link to its bytes.
+        An answer without one of the dark logos, the three ids or the design system, as a platform that predates
+        them sends, reads it as `None`, and one without `white_label` reads it as `False`.
 
         Raises:
             ApiResponseError: `403` `pipelex.org.required` when the caller has no active organization, `404`
@@ -3818,8 +3819,9 @@ class PipelexAPIClient(MthdsAPIClient):
         keeps its value (`OrganizationBrandingUpdate`), so an empty update writes nothing. A new logo is the `pipelex-storage://`
         URI of a file the organization uploaded on its own, which the platform reads and measures, then copies
         under `branding/`: the answer's `uri` is that copy, and sending it back unchanged keeps the logo. The
-        logo a write replaces or clears is erased. A style or a typeface is an id of the shape
-        `^[a-z0-9-]{1,32}$`, stored whether or not it names one that exists.
+        logo a write replaces or clears is erased. A preset, a shell or a typeface is an id of the shape
+        `^[a-z0-9-]{1,32}$`, stored whether or not it names one that exists. A design system replaces the
+        stored one whole, and `None` removes it.
 
         Args:
             org_id: The active organization's `org_id`.
@@ -3835,15 +3837,16 @@ class PipelexAPIClient(MthdsAPIClient):
                 `pipelex.org.mismatch` when `org_id` is not the active organization, `403` `auth.forbidden` for a
                 runner or a caller with no recognised role, `404` `pipelex.org.not_found` for a missing
                 organization, `409` `pipelex.org.not_manageable` for a personal workspace, which has no branding,
-                and `422` `request.invalid` for a colour that is not `#rrggbb` or a style or a typeface of another
-                shape, which names the field in `location.field`: the problem's own when it refuses one field
-                alone, each item's of its `errors` when it refuses several. A logo's refusal names its slot in its
-                problem's `errors`, each item's `location.field` being `square_logo` or `wide_logo` and its
-                `detail` the sentence to show under that slot: `422` `pipelex.storage.uri_invalid` for a URI that
-                is not a storage URI, `403` `pipelex.org.mismatch` for another organization's file, and `422`
-                `request.invalid` with an item per broken rule, its code one `LogoRefusalCode` names, for a file
-                the platform refused. A `503` `runtime.unavailable` is a failure of the platform's storage or its
-                database, after which the write may have landed or not: the same update sent again is safe.
+                and `422` `request.invalid` for a colour that is not `#rrggbb`, a preset, a shell or a typeface of
+                another shape, or a design system of another shape, which names the field in `location.field`: the
+                problem's own when it refuses one field alone, each item's of its `errors` when it refuses several.
+                A logo's refusal names its slot in its problem's `errors`, each item's `location.field` being the
+                slot's key, such as `square_logo` or `dark_wide_logo`, and its `detail` the sentence to show under
+                that slot: `422` `pipelex.storage.uri_invalid` for a URI that is not a storage URI, `403`
+                `pipelex.org.mismatch` for another organization's file, and `422` `request.invalid` with an item
+                per broken rule, its code one `LogoRefusalCode` names, for a file the platform refused. A `503`
+                `runtime.unavailable` is a failure of the platform's storage or its database, after which the
+                write may have landed or not: the same update sent again is safe.
         """
         endpoint = f"organizations/{_id_path_segment(org_id, call='update_organization_branding', what=_ORG_ID_ARGUMENT)}/branding"
         body = update.model_dump(mode="json", exclude_unset=True)

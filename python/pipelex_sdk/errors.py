@@ -381,14 +381,14 @@ class IdempotencyErrorCode(StrEnum):
 class LogoRefusalCode(StrEnum):
     """The reason the platform gives a refused logo when `update_organization_branding` refuses one.
 
-    The refusal is one problem naming both slots' failures at once, one item of its `errors` per broken rule,
+    The refusal is one problem naming every slot's failures at once, one item of its `errors` per broken rule,
     and writes nothing. Being a `StrEnum` each member equals its string (`match item.code:` with
     `case LogoRefusalCode.TOO_SMALL:`).
     """
 
     NOT_AN_UPLOAD = "logo_not_an_upload"
     """The URI is neither a new upload of the organization nor the `uri` the slot already holds: a run's or a
-    method's file, a stale `branding/` copy, or the other slot's logo, since a logo cannot move between slots by
+    method's file, a stale `branding/` copy, or another slot's logo, since a logo cannot move between slots by
     its URI."""
 
     NOT_FOUND = "logo_not_found"

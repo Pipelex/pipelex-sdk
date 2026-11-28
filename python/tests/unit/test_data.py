@@ -1148,6 +1148,7 @@ class BrandingBodies:
     #: What the answer names: the platform's own copy of an accepted logo, under `branding/`.
     SQUARE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/3f9a1c2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b.png"
     WIDE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/8c7b6a5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d.svg"
+    DARK_SQUARE_LOGO_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/5e4d3c2b-1a09-4f8e-8d7c-6b5a49382716.png"
 
     #: A branding copy that no slot of the organization holds, which a write may not attach.
     STRAY_BRANDING_URI: ClassVar[str] = f"pipelex-storage://{ORG_ID}/branding/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.svg"
@@ -1160,6 +1161,21 @@ class BrandingBodies:
         "height": 512.0,
     }
 
+    #: The square logo's dark-mode variant.
+    DARK_SQUARE_LOGO: ClassVar[dict[str, Any]] = {
+        "uri": DARK_SQUARE_LOGO_URI,
+        "sha256": "4e5f60718293a4b5c6d7e8f90a1b2c3d4e9b2f6d0c1e4a7b3c5d8e9f0a1b2c3d",
+        "content_type": "image/png",
+        "width": 512.0,
+        "height": 512.0,
+    }
+
+    #: A design system, a DTCG token document, cut down to a colour and the preset it started from.
+    DESIGN_SYSTEM: ClassVar[dict[str, Any]] = {
+        "color": {"$type": "color", "primary": {"$value": {"colorSpace": "srgb", "components": [0.08, 0.13, 0.24]}}},
+        "$extensions": {"com.pipelex.preset": {"id": "corporate"}},
+    }
+
     #: An SVG's size is its viewBox's, which may be fractional.
     WIDE_SVG_LOGO: ClassVar[dict[str, Any]] = {
         "uri": WIDE_LOGO_URI,
@@ -1169,7 +1185,8 @@ class BrandingBodies:
         "height": 64.25,
     }
 
-    #: A branded team: one logo, a partial light set, a partial dark set, a style and a typeface.
+    #: A branded team: a square logo with its dark variant, a partial light set, a partial dark set, a preset,
+    #: a shell, a typeface and a design system.
     BRANDED: ClassVar[dict[str, Any]] = {
         "org_id": ORG_ID,
         "org_name": "Acme Corp",
@@ -1177,13 +1194,17 @@ class BrandingBodies:
         "dark_colors": {"action": None, "accent": None, "header": "#e5e5e5"},
         "square_logo": SQUARE_LOGO,
         "wide_logo": None,
-        "style": "editorial",
+        "dark_square_logo": DARK_SQUARE_LOGO,
+        "dark_wide_logo": None,
+        "preset": "corporate",
+        "shell": "masthead",
         "typeface": "source-sans-3",
+        "design_system": DESIGN_SYSTEM,
         "white_label": False,
     }
 
-    #: A personal workspace, or a team that set nothing, a branding written before the style and the typeface
-    #: existed included: every colour, logo and choice `None`.
+    #: A personal workspace, or a team that set nothing, a branding written before the kit's newer fields
+    #: existed included: every colour, logo and choice `None`, and no design system.
     UNBRANDED: ClassVar[dict[str, Any]] = {
         "org_id": ORG_ID,
         "org_name": "Ada's workspace",
@@ -1191,13 +1212,22 @@ class BrandingBodies:
         "dark_colors": {"action": None, "accent": None, "header": None},
         "square_logo": None,
         "wide_logo": None,
-        "style": None,
+        "dark_square_logo": None,
+        "dark_wide_logo": None,
+        "preset": None,
+        "shell": None,
         "typeface": None,
+        "design_system": None,
         "white_label": False,
     }
 
-    #: `UNBRANDED` as a platform that predates the style, the typeface and the entitlement answers it.
-    BEFORE_CHOICES: ClassVar[dict[str, Any]] = {key: value for key, value in UNBRANDED.items() if key not in {"style", "typeface", "white_label"}}
+    #: `UNBRANDED` as a platform that predates the dark logos, the choices, the design system and the entitlement
+    #: answers it.
+    BEFORE_CHOICES: ClassVar[dict[str, Any]] = {
+        key: value
+        for key, value in UNBRANDED.items()
+        if key not in {"dark_square_logo", "dark_wide_logo", "preset", "shell", "typeface", "design_system", "white_label"}
+    }
 
     SQUARE_TOO_SMALL: ClassVar[str] = "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side."
     WIDE_TOO_SHORT: ClassVar[str] = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall."
@@ -1224,6 +1254,10 @@ class BrandingBodies:
     ACTIVE_CONTENT: ClassVar[str] = "The wide logo is an SVG that carries active content, which a logo may not: a <script> element."
     NOT_AN_UPLOAD: ClassVar[str] = (
         "The wide logo must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the wide logo already has."
+    )
+    DARK_SQUARE_NOT_AN_UPLOAD: ClassVar[str] = (
+        "The dark square logo must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) "
+        "or the URI the dark square logo already has."
     )
     PIXEL_CAP: ClassVar[str] = (
         "The square logo looks like a PNG image but cannot be read: "
@@ -1311,7 +1345,7 @@ class BrandingBodies:
         "location": {"field": "dark_colors.header"},
         "errors": [
             {"code": "request.invalid", "detail": "String should match pattern '^#[0-9a-fA-F]{6}$'", "location": {"field": "dark_colors.header"}},
-            {"code": "request.invalid", "detail": "String should match pattern '^[a-z0-9-]{1,32}$'", "location": {"field": "style"}},
+            {"code": "request.invalid", "detail": "String should match pattern '^[a-z0-9-]{1,32}$'", "location": {"field": "preset"}},
         ],
     }
 

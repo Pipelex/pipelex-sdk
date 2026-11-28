@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **`OrganizationBranding` and `OrganizationBrandingUpdate` carry the branding kit, and `style` is gone (Breaking)**: both types gain `dark_square_logo` and `dark_wide_logo` (a dark-mode logo, `null` falling back to the slot's light logo), `preset` and `shell` (ids of the shape `^[a-z0-9-]{1,32}$`) and `design_system`, a DTCG token document typed by the new exported `BrandingDesignSystem`, which a write replaces whole and `null` removes; `style` is removed from both, since the platform no longer answers it and refuses a write naming it, so a caller sets `preset` instead. `getBranding` and `updateOrganizationBranding` read each new member as `null` when the answer leaves it out or, for the ids and the design system, sends another type (`docs/organization-branding.md`).
+
 ## [v0.71.1] - 2026-11-26
 
 ### Fixed

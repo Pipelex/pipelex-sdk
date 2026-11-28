@@ -1049,8 +1049,9 @@ export interface MembershipsResponse {
 
 // ── Organization branding (`/v1/branding`, `/v1/organizations/{id}/branding`) ──
 //
-// An organization may set up to two logos, two colour sets of three colours, an app style and a
-// typeface, which its shared method apps and the apps scaffolded from the method-app template
+// An organization may set its branding kit: a square and a wide logo, each with an optional
+// dark-mode variant, two colour sets of three colours, a preset, a page shell, a typeface and a
+// design system, which its shared method apps and the apps scaffolded from the method-app template
 // wear. Every member and every API key reads it with `getBranding`; a caller with the `admin` or
 // the `member` role, never a `runner`, writes it with `updateOrganizationBranding`. Both answer the same `OrganizationBranding`, which also
 // says whether the organization holds the white-label entitlement. See
@@ -1095,17 +1096,32 @@ export interface LogoDescriptor {
 }
 
 /**
+ * An organization's design system: a DTCG token document (the Design Tokens Community Group
+ * format) holding the palette in both themes, typography, shape, depth, spacing, motion and the
+ * component treatments. The application that writes it owns its format; the platform stores it as
+ * it was written and checks only its shape: a JSON object of at most 64 KiB of compact JSON, nested
+ * at most 32 objects deep, in which every member whose name does not start with `$` is a token or
+ * a group, so an object; an object holding `$value` is a token and holds no token or group of its
+ * own; a name holds no `{`, `}` or `.`; and `$type` and `$description` are strings and
+ * `$extensions` an object wherever they appear.
+ */
+export type BrandingDesignSystem = Record<string, unknown>;
+
+/**
  * An organization's branding — what `getBranding` and `updateOrganizationBranding` answer.
  *
  * `colors` is the light set and `dark_colors` the dark one, used in dark mode only: a dark colour
  * that is `null` falls back to the light colour of the same role, and a light one that is `null`
- * to Pipelex's own palette. A logo is `null` when its slot is empty. A personal workspace, or a
- * team that set nothing, answers every colour and logo `null`, no style and no typeface.
+ * to Pipelex's own palette. A logo is `null` when its slot is empty, and a dark logo that is
+ * `null` falls back to the light logo of its slot. A personal workspace, or a team that set
+ * nothing, answers every colour and logo `null`, no preset, shell or typeface, and no design
+ * system.
  *
- * `style` and `typeface` are ids the platform holds to a shape and never to a list, so a client
- * reads an id it does not know as unset. The client reads both as `null`, and `white_label` as
- * `false`, when the answer leaves them out, as a platform that predates them does, or sends a
- * value of another type.
+ * `preset`, `shell` and `typeface` are ids the platform holds to a shape and never to a list, so a
+ * client reads an id it does not know as unset. The client reads each as `null`, the dark logos and
+ * `design_system` as `null`, and `white_label` as `false`, when the answer leaves them out, as a
+ * platform that predates them does; it reads the three ids and `design_system` the same way when
+ * the answer sends a value of another type, and `white_label` as `false` unless it is `true`.
  */
 export interface OrganizationBranding {
   org_id: string;
@@ -1117,14 +1133,24 @@ export interface OrganizationBranding {
   square_logo: LogoDescriptor | null;
   /** The wide logo, at least one and a half times as wide as it is tall, for an app's header. */
   wide_logo: LogoDescriptor | null;
+  /** The square logo for dark mode; `null` falls back to `square_logo`. */
+  dark_square_logo: LogoDescriptor | null;
+  /** The wide logo for dark mode; `null` falls back to `wide_logo`. */
+  dark_wide_logo: LogoDescriptor | null;
   /**
-   * The id of the app style the team chose for its method apps, such as `editorial`: how their
-   * headings, panels, corners and spacing look. `null` when not set. Both themes share it, and a
-   * client applies it whenever one is set; it does not count towards whether an app is branded.
+   * The id of the preset the team started its design system from, such as `corporate`; `null`
+   * when not set. Both themes share it, and it does not count towards whether an app is branded.
    */
-  style: string | null;
+  preset: string | null;
+  /**
+   * The id of the page shell the team's method apps wear, such as `masthead`; `null` when not set.
+   * Both themes share it, and it does not count towards whether an app is branded.
+   */
+  shell: string | null;
   /** The id of the typeface the team sets its apps' text in, such as `manrope`; `null` when not set. */
   typeface: string | null;
+  /** The team's design system, a DTCG token document; `null` when there is none. */
+  design_system: BrandingDesignSystem | null;
   /**
    * Whether the organization holds the white-label entitlement: its method apps show no Pipelex
    * mark anywhere a runner looks, branded or not. `false` for every other organization, a personal
@@ -1153,30 +1179,39 @@ export interface BrandingColorsUpdate {
  *
  * - `colors` and `dark_colors` take a `BrandingColorsUpdate`, or `null` to clear all three
  *   colours of that set.
- * - `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization
- *   uploaded on its own (`requestUploadGrant` or `upload`) to set a new logo, the `uri` the
- *   branding answers for that slot to keep it, or `null` to remove it. Any other URI, a run's or
- *   a method's file, a stale `branding/` copy or the other slot's logo, is refused as
+ * - `square_logo`, `wide_logo`, `dark_square_logo` and `dark_wide_logo` take the
+ *   `pipelex-storage://` URI of a file the organization uploaded on its own (`requestUploadGrant`
+ *   or `upload`) to set a new logo, the `uri` the branding answers for that slot to keep it, or
+ *   `null` to remove it; a dark logo is held to its slot's rules, as the light one is. Any other
+ *   URI, a run's or a method's file, a stale `branding/` copy or another slot's logo, is refused as
  *   `logo_not_an_upload`, so a logo cannot move between slots by its URI. The platform reads and
  *   measures an upload before it accepts it, keeps its own copy under `branding/`, whose URI it
  *   answers, and erases the copy a write replaces or clears; the upload is left as it is.
- * - `style` and `typeface` take an id of one to 32 lower-case letters, digits and hyphens
- *   (`^[a-z0-9-]{1,32}$`), stored as it is whether or not such a style or typeface exists, or
- *   `null` to clear it. Writing one leaves the colours, the logos and the other as they are.
+ * - `preset`, `shell` and `typeface` take an id of one to 32 lower-case letters, digits and
+ *   hyphens (`^[a-z0-9-]{1,32}$`), stored as it is whether or not such a preset, shell or typeface
+ *   exists, or `null` to clear it. Writing one leaves the colours, the logos and the others as they
+ *   are.
+ * - `design_system` takes a DTCG token document (`BrandingDesignSystem`), which replaces the stored
+ *   one whole, or `null` to remove it. One the platform refuses for its shape writes nothing at all.
  *
  * A field the platform refuses is named in `location.field`: a colour by its dotted key, such as
- * `colors.action`, a style or a typeface by its key. When it refuses one field alone, the problem
- * itself names it, in `params.field` too; when it refuses several, each item of its `errors` names
- * one. There is no `white_label` key: the entitlement is Pipelex staff's to grant, and the
- * platform refuses a body naming it as it refuses any key it does not know.
+ * `colors.action`, a preset, a shell, a typeface or the design system by its key. When it refuses
+ * one field alone, the problem itself names it, in `params.field` too; when it refuses several,
+ * each item of its `errors` names one. There is no `white_label` key: the entitlement is Pipelex
+ * staff's to grant, and the platform refuses a body naming it as it refuses any key it does not
+ * know, `style`, the retired app style, included.
  */
 export interface OrganizationBrandingUpdate {
   colors?: BrandingColorsUpdate | null;
   dark_colors?: BrandingColorsUpdate | null;
   square_logo?: string | null;
   wide_logo?: string | null;
-  style?: string | null;
+  dark_square_logo?: string | null;
+  dark_wide_logo?: string | null;
+  preset?: string | null;
+  shell?: string | null;
   typeface?: string | null;
+  design_system?: BrandingDesignSystem | null;
 }
 
 // ── Billing (`/v1/billing/*`) ────────────────────────────────────────────

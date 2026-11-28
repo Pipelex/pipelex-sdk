@@ -1272,11 +1272,11 @@ export type IdempotencyErrorCode =
 
 /**
  * The reason the platform gives a refused logo when `updateOrganizationBranding` refuses one. The
- * refusal is one problem naming both slots' failures at once, one item of its `errors` per broken
+ * refusal is one problem naming every slot's failures at once, one item of its `errors` per broken
  * rule, and writes nothing:
  *
  * - `logo_not_an_upload`: the URI is neither a new upload of the organization nor the `uri` the
- *   slot already holds: a run's or a method's file, a stale `branding/` copy, or the other slot's
+ *   slot already holds: a run's or a method's file, a stale `branding/` copy, or another slot's
  *   logo, since a logo cannot move between slots by its URI.
  * - `logo_not_found`: no such upload in the organization.
  * - `logo_too_large`: the file is over 1 MiB.
