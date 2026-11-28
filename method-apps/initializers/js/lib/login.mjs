@@ -42,6 +42,8 @@ import process from "node:process";
 // initializer could print its `refused: node-too-old`.
 import util from "node:util";
 
+import { npmCommand } from "./verdict.mjs";
+
 /** The home directory's name under the user's home, when `PIPELEX_HOME` is not set. */
 export const HOME_DIR_NAME = ".pipelex";
 
@@ -131,8 +133,7 @@ export function displayPath(file, homedir = os.homedir) {
  */
 export function noKeyDetail(read, { homedir = os.homedir, platform = process.platform } = {}) {
   const login = loginCommand(platform);
-  const rest =
-    "export PIPELEX_API_KEY in this shell, or pass --no-create and write .env.local yourself before running npm run create; npm run create never copies the key into the project";
+  const rest = `export PIPELEX_API_KEY in this shell, or pass --no-create and write .env.local yourself before running ${npmCommand(platform)} run create; npm run create never copies the key into the project`;
   if (read.status === "relative-home") {
     return `PIPELEX_API_KEY is not set, and the login's saved key is not read because PIPELEX_HOME is neither an absolute path nor one starting with ~/: fix PIPELEX_HOME and run ${login}, ${rest}`;
   }

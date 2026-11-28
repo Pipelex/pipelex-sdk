@@ -6,7 +6,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { inTurn, shellQuote } from "../lib/verdict.mjs";
+import { nextCreate, nextServe } from "../lib/main.mjs";
+import { loadTable } from "../lib/templates.mjs";
+import { inTurn, npmCommand, shellQuote } from "../lib/verdict.mjs";
 
 describe("the commands a verdict names", () => {
   it("quotes a word with single quotes for a POSIX shell", () => {
@@ -33,5 +35,31 @@ describe("the commands a verdict names", () => {
     const line = inTurn(["cd C:\\x", "npm install", "npm run serve"]);
     assert.equal(line, "`cd C:\\x`, then `npm install`, then `npm run serve`");
     assert.doesNotMatch(line, /&&|;/);
+  });
+
+  it("names npm.cmd on Windows, which Windows PowerShell 5.1 runs, and npm elsewhere", () => {
+    assert.equal(npmCommand("win32"), "npm.cmd");
+    for (const platform of ["darwin", "linux"]) assert.equal(npmCommand(platform), "npm");
+  });
+
+  it("spells npm so in the next steps, after a created app and before npm run create", () => {
+    assert.equal(
+      nextServe("C:\\Users\\Ann\\my app", "win32"),
+      '`cd "C:\\Users\\Ann\\my app"`, then `npm.cmd run serve`',
+    );
+    assert.equal(
+      nextServe("/home/ann/my app", "linux"),
+      "`cd '/home/ann/my app'`, then `npm run serve`",
+    );
+    const table = loadTable();
+    const values = { METHOD: "mt_1", TITLE: "Bob's app" };
+    assert.equal(
+      nextCreate("C:\\x", table, "webapp-js", values, { platform: "win32" }),
+      '`cd C:\\x`, then `npm.cmd install`, then `npm.cmd run create -- mt_1 --title "Bob\'s app"`',
+    );
+    assert.equal(
+      nextCreate("/x", table, "webapp-js", values, { installed: true, platform: "darwin" }),
+      "`cd /x`, then `npm run create -- mt_1 --title 'Bob'\\''s app'`",
+    );
   });
 });

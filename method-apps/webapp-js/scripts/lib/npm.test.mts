@@ -1,12 +1,12 @@
 // @vitest-environment node
 //
-// Pins how the scripts run npm on every system: `npm run serve` starts the dev
-// script with it. Windows is held here on any system, since the answer depends
-// only on what it is given.
+// Pins how the scripts run npm on every system, and how they name it to a
+// person. Windows is held here on any system, since the answer depends only on
+// what it is given.
 
 import { describe, expect, it } from "vitest";
 
-import { npmInvocation } from "./npm.mts";
+import { npmCommand, npmInvocation } from "./npm.mts";
 
 describe("how the scripts run npm", () => {
   it("runs the npm that npm run names, with this Node, on every system", () => {
@@ -49,5 +49,13 @@ describe("how the scripts run npm", () => {
       command: node,
       args: ["C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js"],
     });
+  });
+});
+
+describe("the npm a person is told to type", () => {
+  it("is npm.cmd on Windows, which Windows PowerShell 5.1 runs, and npm elsewhere", () => {
+    expect(npmCommand("win32")).toBe("npm.cmd");
+    for (const platform of ["darwin", "linux"] as const) expect(npmCommand(platform)).toBe("npm");
+    expect(npmCommand()).toBe(process.platform === "win32" ? "npm.cmd" : "npm");
   });
 });

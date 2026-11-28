@@ -57,7 +57,7 @@ import {
   type ExplicitCredentials,
 } from "./add-method.mts";
 import { methodVocabulary } from "./generate.mts";
-import { npmInvocation, type NpmInvocation } from "./npm.mts";
+import { npmCommand, npmInvocation, type NpmInvocation } from "./npm.mts";
 import { REPO_ROOT } from "./shared.mts";
 
 const { loadEnvConfig } = nextEnv;
@@ -403,8 +403,8 @@ export function noKeyMessage(
 export function loginKeyWarning(login: LoginUse): string {
   return (
     `the key the login saved in ${login.file} served this run only: the app does not read ` +
-    `that file, so put your own ${API_KEY_KEY} in ${ENV_FILE} before \`npm run dev\` or ` +
-    "`npm run serve`, or start them from a shell that exports it."
+    `that file, so put your own ${API_KEY_KEY} in ${ENV_FILE} before \`${npmCommand()} run dev\` ` +
+    `or \`${npmCommand()} run serve\`, or start them from a shell that exports it.`
   );
 }
 
@@ -545,7 +545,7 @@ export function appUrl(env: NodeJS.ProcessEnv): string {
 }
 
 /** Where the dev server can find a key that only a production build reads. */
-const DEV_KEY_HINT = "put it in .env or .env.development.local before `npm run dev`";
+const DEV_KEY_HINT = `put it in .env or .env.development.local before \`${npmCommand()} run dev\``;
 
 /**
  * The env file, written from the example. `.env.local` is read before every
@@ -620,7 +620,7 @@ export async function planEnvFile(
           : "the default";
   const keyNote =
     keyFile === undefined
-      ? `, and an empty ${API_KEY_KEY} line: put your own key there before \`npm run dev\`` +
+      ? `, and an empty ${API_KEY_KEY} line: put your own key there before \`${npmCommand()} run dev\`` +
         (shell.key !== undefined
           ? ". The key your shell exports is used for this run only, and never copied; while " +
             "a shell exports one, it wins over the file, so start the app from one that does not."
@@ -905,7 +905,7 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
     throw new CreateError(
       "the bootstrap failed after the method was added (see above). The slice is in place; " +
         `fix the cause, then run the bootstrap by hand:\n  node ${bootstrap.map(quote).join(" ")}\n` +
-        `  then \`npm install --package-lock-only\`, \`npm run all\`, and remove ${BOOTSTRAP_DIR}/.`,
+        `  then \`${npmCommand()} install --package-lock-only\`, \`${npmCommand()} run all\`, and remove ${BOOTSTRAP_DIR}/.`,
     );
   }
 
@@ -919,9 +919,9 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
 
   const remaining = (from: number): string =>
     [
-      "npm install --package-lock-only",
-      "npm run all",
-      `then remove ${BOOTSTRAP_DIR}/, once npm run all is green`,
+      `${npmCommand()} install --package-lock-only`,
+      `${npmCommand()} run all`,
+      `then remove ${BOOTSTRAP_DIR}/, once ${npmCommand()} run all is green`,
     ]
       .slice(from)
       .map((line) => `  ${line}`)
@@ -956,20 +956,36 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
       ...(envPlan.action === "write" && envPlan.keyNeeded
         ? [
             "",
-            `Put your own ${API_KEY_KEY} in ${ENV_FILE} before \`npm run dev\`: create never copies ` +
+            `Put your own ${API_KEY_KEY} in ${ENV_FILE} before \`${npmCommand()} run dev\`: create never copies ` +
               "a key into the project, whether your shell exports it or the login saved it, and " +
               "while a shell exports one it wins over the file.",
           ]
         : []),
       "",
       "Next:",
-      `  npm run dev                     # ${appUrl(process.env)}`,
-      "  npm run serve                   # the same server in the background, proven; npm run serve -- stop stops it",
-      "  npm run add-method -- <method>  # a second method, as a tab beside the first",
-      "  npm run codegen                 # after editing the method, or bumping its tag",
+      ...nextCommands(appUrl(process.env)),
     ].join("\n"),
   );
   return EXIT_OK;
+}
+
+/**
+ * The commands create's last lines name, each with what it does, spelled as a
+ * person types npm on `platform`: `npm.cmd` on Windows (`npmCommand`).
+ */
+export function nextCommands(url: string, platform: NodeJS.Platform = process.platform): string[] {
+  const npm = npmCommand(platform);
+  const rows = [
+    [`${npm} run dev`, url],
+    [
+      `${npm} run serve`,
+      `the same server in the background, proven; ${npm} run serve -- stop stops it`,
+    ],
+    [`${npm} run add-method -- <method>`, "a second method, as a tab beside the first"],
+    [`${npm} run codegen`, "after editing the method, or bumping its tag"],
+  ];
+  const width = Math.max(...rows.map(([command]) => command.length)) + 2;
+  return rows.map(([command, what]) => `  ${command.padEnd(width)}# ${what}`);
 }
 
 /** Quote one argument for a line the person may paste into a shell. */

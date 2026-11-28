@@ -8,7 +8,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { displayPath, loginCommand, MAX_LOGIN_FILE_BYTES, readLoginKey } from "../lib/login.mjs";
+import {
+  displayPath,
+  loginCommand,
+  MAX_LOGIN_FILE_BYTES,
+  noKeyDetail,
+  readLoginKey,
+} from "../lib/login.mjs";
 import { tempRoot } from "./support.mjs";
 
 const TABLE = JSON.parse(fs.readFileSync(new URL("../../login-key.json", import.meta.url), "utf8"));
@@ -57,5 +63,17 @@ describe("the login command", () => {
     assert.equal(loginCommand("win32"), "npx.cmd -y @pipelex/mcp@latest login");
     assert.equal(loginCommand("darwin"), "npx -y @pipelex/mcp@latest login");
     assert.equal(loginCommand("linux"), "npx -y @pipelex/mcp@latest login");
+  });
+});
+
+describe("the no-key refusal", () => {
+  it("names npx.cmd and npm.cmd on Windows, npx and npm elsewhere", () => {
+    const read = { status: "missing", file: "/home/ann/.pipelex/.env" };
+    const windows = noKeyDetail(read, { platform: "win32", homedir: () => "/home/ann" });
+    assert.match(windows, /run npx\.cmd -y @pipelex\/mcp@latest login /);
+    assert.match(windows, /before running npm\.cmd run create;/);
+    const linux = noKeyDetail(read, { platform: "linux", homedir: () => "/home/ann" });
+    assert.match(linux, /run npx -y @pipelex\/mcp@latest login /);
+    assert.match(linux, /before running npm run create;/);
   });
 });

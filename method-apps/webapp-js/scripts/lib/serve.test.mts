@@ -12,6 +12,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -35,27 +36,29 @@ import {
   commandRunsIn,
   commandsFor,
   DEFAULT_CONFIG,
-  devCommand,
-  devScriptBindsLoopback,
+  devHooksOf,
+  devServerCommand,
   isLoopbackAddress,
   isLoopbackHost,
   LOCK_FILE,
   lsofUsable,
   MAKE_COMMANDS,
   NoPsError,
-  NPM_COMMANDS,
+  npmCommands,
   parseNetstat,
   parseProcessTable,
   parseServeArgs,
   processTableScript,
   processTime,
   psUsable,
+  readDevScriptOptions,
   readNetstat,
   serve,
   startTimeOf,
   stop,
   stopSpawned,
   STATE_FILE,
+  TEMPLATE_DEV_SCRIPT,
   treeOf,
   withEnvironment,
   type ProcessEntry,
@@ -105,6 +108,7 @@ import http from "node:http";
 
 const [role, mode] = process.argv.slice(2);
 appendFileSync("pids", process.pid + "\\n");
+if (role === "parent") appendFileSync("args", JSON.stringify(process.argv.slice(2)) + "\\n");
 const forever = () => setInterval(() => {}, 1 << 30);
 if (role === "parent") {
   if (mode === "exit") {
@@ -229,15 +233,95 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
-/** A checkout whose `dev` script is `devScript`, holding the fake dev server. */
-function checkoutWith(devScript = TEMPLATE_DEV): string {
+/**
+ * A checkout whose `dev` script is `devScript`, beside any other `scripts`,
+ * holding the fake dev server.
+ */
+function checkoutWith(devScript = TEMPLATE_DEV, scripts: Record<string, string> = {}): string {
   const dir = tempDir("serve-checkout-");
   writeFileSync(
     path.join(dir, "package.json"),
-    JSON.stringify({ name: "fake", private: true, scripts: { dev: devScript } }),
+    JSON.stringify({ name: "fake", private: true, scripts: { ...scripts, dev: devScript } }),
   );
   writeFileSync(path.join(dir, "fake-dev.mjs"), FAKE_DEV);
   return dir;
+}
+
+/**
+ * A stand-in for `next`, at the path `run-next.mts` resolves it to: given
+ * `dev -H <host> -p <port>`, it forks a child that serves the page there, as
+ * `next dev` forks `next-server`. Every process appends its pid to `pids`.
+ */
+const FAKE_NEXT = `
+const { fork } = require("node:child_process");
+const { appendFileSync } = require("node:fs");
+const http = require("node:http");
+
+const args = process.argv.slice(2);
+appendFileSync("pids", process.pid + "\\n");
+if (args[0] === "server") {
+  http
+    .createServer((request, response) => {
+      response.setHeader("content-type", "text/html");
+      response.end("<html><head><title>Fake Next</title></head><body></body></html>");
+    })
+    .listen(Number(args[2]), args[1]);
+} else {
+  fork(__filename, ["server", args[args.indexOf("-H") + 1], args[args.indexOf("-p") + 1]], {
+    stdio: "inherit",
+  });
+  setInterval(() => {}, 1 << 30);
+}
+`;
+
+/**
+ * A checkout that holds the template's own `scripts/run-next.mts`, and a fake
+ * `next` where it looks for the real one, so serve starts it as it starts a
+ * project's server.
+ */
+function checkoutWithRunNext(): string {
+  const dir = checkoutWith();
+  mkdirSync(path.join(dir, "scripts", "lib"), { recursive: true });
+  const scripts = path.resolve(import.meta.dirname, "..");
+  copyFileSync(path.join(scripts, "run-next.mts"), path.join(dir, "scripts", "run-next.mts"));
+  copyFileSync(
+    path.join(scripts, "lib", "run-next.mts"),
+    path.join(dir, "scripts", "lib", "run-next.mts"),
+  );
+  const next = path.join(dir, "node_modules", "next");
+  mkdirSync(path.join(next, "dist", "bin"), { recursive: true });
+  writeFileSync(
+    path.join(next, "package.json"),
+    JSON.stringify({ name: "next", version: "0.0.0" }),
+  );
+  writeFileSync(path.join(next, "dist", "bin", "next"), FAKE_NEXT);
+  return dir;
+}
+
+/** The command lines of the processes in `group`, as the system lists them. */
+function commandsInGroup(state: ServeState): string[] {
+  if (WINDOWS) {
+    const result = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(processTableScript(), "utf16le").toString("base64"),
+      ],
+      { encoding: "utf-8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const group = { pgid: state.pgid, leaderStart: state.leaderStart, members: state.members };
+    return treeOf(parseProcessTable(result.stdout), group).map((entry) => entry.command);
+  }
+  const result = spawnSync("ps", ["-A", "-o", "pgid=,args="], { encoding: "utf-8" });
+  expect(result.status, result.stderr).toBe(0);
+  return result.stdout
+    .split("\n")
+    .map((line) => /^\s*(\d+)\s+(.*)$/.exec(line))
+    .filter((match) => match !== null && Number(match[1]) === state.pgid)
+    .map((match) => match![2]);
 }
 
 function pidsIn(dir: string): number[] {
@@ -443,33 +527,55 @@ describe("the loopback rules", () => {
     }
   });
 
-  it("accepts a dev script that binds the host it is given, or loopback itself", () => {
-    for (const script of [
-      TEMPLATE_DEV,
-      `${TEMPLATE_DEV} --turbopack`,
-      "next dev -H ${APP_HOST:-127.0.0.1} -p ${APP_PORT:-4300}",
-      'next dev -H "${APP_HOST:-127.0.0.1}" -p 4300',
-      "next dev --hostname=127.0.0.1",
-      "next dev -H localhost",
-      "next dev -H ::1 -p 4300",
+  it("takes the template's dev script, with plain options for next, and passes those on", () => {
+    expect(TEMPLATE_DEV_SCRIPT).toBe(TEMPLATE_DEV);
+    // The template's own package.json, which every project starts from.
+    const shipped = JSON.parse(
+      readFileSync(path.resolve(import.meta.dirname, "..", "..", "package.json"), "utf-8"),
+    ) as { scripts: Record<string, string> };
+    expect(readDevScriptOptions(shipped.scripts.dev)).toEqual({ options: [] });
+    expect(devHooksOf(shipped.scripts)).toEqual([]);
+    expect(readDevScriptOptions(TEMPLATE_DEV)).toEqual({ options: [] });
+    expect(readDevScriptOptions(`  ${TEMPLATE_DEV}  `)).toEqual({ options: [] });
+    expect(readDevScriptOptions(`${TEMPLATE_DEV} --turbopack`)).toEqual({
+      options: ["--turbopack"],
+    });
+    expect(readDevScriptOptions(`${TEMPLATE_DEV}  --experimental-https --turbopack`)).toEqual({
+      options: ["--experimental-https", "--turbopack"],
+    });
+  });
+
+  it("refuses a dev script whose options name a host or a port, which would win over APP_HOST", () => {
+    for (const [script, option] of [
+      [`${TEMPLATE_DEV} -H 0.0.0.0`, "-H"],
+      [`${TEMPLATE_DEV} --hostname=0.0.0.0`, "--hostname=0.0.0.0"],
+      [`${TEMPLATE_DEV} --turbopack --hostname 0.0.0.0`, "--hostname"],
+      [`${TEMPLATE_DEV} -p 80`, "-p"],
     ]) {
-      expect(devScriptBindsLoopback(script), script).toBe(true);
+      expect(readDevScriptOptions(script), script).toEqual({ problem: "host", option });
     }
+  });
+
+  it("names the scripts npm runs around dev, which serve would not run", () => {
+    expect(devHooksOf({ dev: TEMPLATE_DEV })).toEqual([]);
+    expect(devHooksOf({ dev: TEMPLATE_DEV, predev: "npm run codegen" })).toEqual(["predev"]);
+    expect(devHooksOf({ predev: "a", postdev: "b", prebuild: "c" })).toEqual(["predev", "postdev"]);
+  });
+
+  it("refuses any other dev script, which serve would not start as npm run dev does", () => {
     for (const script of [
       "next dev",
-      "next dev -p 4300",
-      "next dev -H 0.0.0.0",
-      "next dev -H ${APP_HOST}",
-      "next dev -H 127.0.0.10",
+      "next dev -H ${APP_HOST:-127.0.0.1} -p ${APP_PORT:-4300}",
+      "next dev -H 127.0.0.1",
       "node --experimental-strip-types scripts/run-next.mts start",
-      // run-next hands next its host first, so a host after it would win.
-      `${TEMPLATE_DEV} -H 0.0.0.0`,
-      `${TEMPLATE_DEV} --hostname=0.0.0.0`,
-      `${TEMPLATE_DEV} --turbopack --hostname 0.0.0.0`,
-      `${TEMPLATE_DEV} -p 80`,
+      "node scripts/run-next.mts dev",
+      `cross-env DEBUG=1 ${TEMPLATE_DEV}`,
+      `${TEMPLATE_DEV} && echo done`,
+      `${TEMPLATE_DEV} --turbopack "$X"`,
+      `${TEMPLATE_DEV} %FLAGS%`,
       "",
     ]) {
-      expect(devScriptBindsLoopback(script), script).toBe(false);
+      expect(readDevScriptOptions(script), script).toEqual({ problem: "other" });
     }
   });
 
@@ -524,16 +630,40 @@ describe("the loopback rules", () => {
 
 describe("the commands the verdicts name", () => {
   it("names make's commands under make, and npm's everywhere else", () => {
-    expect(commandsFor({ MAKELEVEL: "1" })).toEqual(MAKE_COMMANDS);
-    expect(commandsFor({})).toEqual(NPM_COMMANDS);
-    expect(commandsFor({ MAKELEVEL: " " })).toEqual(NPM_COMMANDS);
-    expect(NPM_COMMANDS.stop).toBe("npm run serve -- stop");
+    for (const platform of ["darwin", "linux", "win32"] as const) {
+      expect(commandsFor({ MAKELEVEL: "1" }, platform)).toEqual(MAKE_COMMANDS);
+      expect(commandsFor({}, platform)).toEqual(npmCommands(platform));
+      expect(commandsFor({ MAKELEVEL: " " }, platform)).toEqual(npmCommands(platform));
+    }
+    expect(commandsFor({})).toEqual(npmCommands(process.platform));
   });
 
-  it("starts the dev script through npm, run as npmInvocation runs it", () => {
-    const cli = "/usr/lib/node_modules/npm/bin/npm-cli.js";
-    expect(devCommand({ npm_execpath: cli })).toEqual([process.execPath, cli, "run", "dev"]);
-    expect(devCommand({}).slice(-2)).toEqual(["run", "dev"]);
+  it("spells npm as Windows PowerShell 5.1 runs it there, npm.cmd, and as npm elsewhere", () => {
+    expect(npmCommands("win32")).toEqual({
+      serve: "npm.cmd run serve",
+      stop: "npm.cmd run serve -- stop",
+      dev: "npm.cmd run dev",
+    });
+    for (const platform of ["darwin", "linux"] as const) {
+      expect(npmCommands(platform)).toEqual({
+        serve: "npm run serve",
+        stop: "npm run serve -- stop",
+        dev: "npm run dev",
+      });
+    }
+  });
+
+  it("starts run-next.mts itself, with this Node, never npm or a shell", () => {
+    const checkout = path.join(tmpdir(), "app");
+    expect(devServerCommand(checkout, "/bin/node")).toEqual([
+      "/bin/node",
+      "--experimental-strip-types",
+      path.join(checkout, "scripts", "run-next.mts"),
+      "dev",
+    ]);
+    expect(DEFAULT_CONFIG.command[0]).toBe(process.execPath);
+    expect(DEFAULT_CONFIG.command.slice(-1)).toEqual(["dev"]);
+    expect(path.basename(DEFAULT_CONFIG.command[2])).toBe("run-next.mts");
   });
 });
 
@@ -602,7 +732,7 @@ describe("what Windows says", () => {
     });
 
     it("keeps the members it recorded once their parents have ended, and their children", () => {
-      // npm (10) and run-next (11) have ended; next (12) and its worker (13) run on.
+      // run-next (10) and next (11) have ended; next's server (12) and its worker (13) run on.
       const table = [entry(12, 11, 12), entry(13, 12, 13)];
       const members = [11, 12, 13].map((pid) => ({ pid, started: at(pid) }));
       expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10), members }))).toEqual([12, 13]);
@@ -789,10 +919,33 @@ describe("what is refused or answered before a server is looked for", () => {
     expect(pidsIn(checkout)).toEqual([]);
   });
 
-  it("refuses a dev script that binds no loopback host before starting anything", async () => {
-    const checkout = checkoutWith("next dev -p ${APP_PORT:-4300}");
+  it("refuses a dev script that names its own host before starting anything", async () => {
+    const checkout = checkoutWith(`${TEMPLATE_DEV} -H 0.0.0.0`);
     const result = await run(serve, configFor(checkout, "ok", await freePorts(1)));
-    expect(result.verdict).toMatch(/^refused: not-loopback — the dev script in package\.json/);
+    expect(result.code).toBe(1);
+    expect(result.verdict).toMatch(
+      /^refused: not-loopback — the dev script in package\.json .* gives next -H, /,
+    );
+    expect(pidsIn(checkout)).toEqual([]);
+  });
+
+  it("refuses a dev script it would not start as npm run dev does, before starting anything", async () => {
+    const checkout = checkoutWith("next dev -H ${APP_HOST:-127.0.0.1}");
+    const result = await run(serve, configFor(checkout, "ok", await freePorts(1)));
+    expect(result.code).toBe(1);
+    expect(result.verdict).toMatch(
+      /^refused: dev-script — the dev script in package\.json .* Nothing was started: .* run make dev in the foreground\.$/,
+    );
+    expect(pidsIn(checkout)).toEqual([]);
+  });
+
+  it("refuses a predev or postdev script, which serve would not run, before starting anything", async () => {
+    const checkout = checkoutWith(TEMPLATE_DEV, { predev: "npm run codegen" });
+    const result = await run(serve, configFor(checkout, "ok", await freePorts(1)));
+    expect(result.code).toBe(1);
+    expect(result.verdict).toMatch(
+      /^refused: dev-script — package\.json has predev, .* Nothing was started: run make dev in the foreground, or remove it\.$/,
+    );
     expect(pidsIn(checkout)).toEqual([]);
   });
 
@@ -833,6 +986,9 @@ describe("what is refused or answered before a server is looked for", () => {
         expect(pidsIn(checkout)).toEqual([]);
       }
     },
+    // Two refusals, each running lsof first, which a loaded machine slows past
+    // the default five seconds.
+    SPAWNS.timeout,
   );
 
   it.skipIf(!HAS_PS)("reads a start time that does not depend on the shell's time zone", () => {
@@ -903,6 +1059,54 @@ describe.skipIf(!CAN_SERVE)("make serve", SPAWNS, () => {
     );
     expect(await allGone(pids)).toBe(true);
     expect(stateOf(checkout)).toBeUndefined();
+  });
+
+  it("starts run-next.mts with no npm or shell above it, and stops everything under it", async () => {
+    const checkout = checkoutWithRunNext();
+    const ports = await freePorts(1);
+    const config = configFor(checkout, "ok", ports, { command: devServerCommand(checkout) });
+
+    const served = await run(serve, config);
+    expect(served.code, served.lines.join("\n")).toBe(0);
+    expect(served.verdict).toBe(
+      `serving http://127.0.0.1:${ports[0]}/ — "Fake Next" (log .serve/server.log); stop it with: make stop`,
+    );
+    const state = stateOf(checkout)!;
+    const pids = [state.pgid, ...pidsIn(checkout)];
+    expect(pidsIn(checkout)).toHaveLength(2);
+
+    // The process serve started is run-next.mts itself, and nothing between it
+    // and next is npm or a shell: on Windows a cmd.exe there opened a console
+    // window, which this job cannot see, so it proves the tree instead.
+    const commands = commandsInGroup(state);
+    expect(commands.length, commands.join("\n")).toBeGreaterThanOrEqual(3);
+    expect(
+      commands.some((command) => command.includes("run-next.mts")),
+      commands.join("\n"),
+    ).toBe(true);
+    for (const command of commands) {
+      expect(command, commands.join("\n")).not.toMatch(/(^|[\\/"\s])cmd(\.exe)?("|\s|$)/i);
+      expect(command, commands.join("\n")).not.toMatch(/npm-cli\.js|(^|[\\/"\s])(ba|z)?sh(\s|$)/);
+    }
+
+    const stopped = await run(stop, config);
+    expect(stopped.verdict).toBe(
+      `stopped http://127.0.0.1:${ports[0]}/ (process group ${state.pgid})`,
+    );
+    expect(await allGone(pids)).toBe(true);
+    expect(stateOf(checkout)).toBeUndefined();
+  });
+
+  it("passes the dev script's options for next on to the server it starts", async () => {
+    const checkout = checkoutWith(`${TEMPLATE_DEV} --turbopack --experimental-https`);
+    const config = configFor(checkout, "ok", await freePorts(1));
+    const served = await run(serve, config);
+    expect(served.code, served.lines.join("\n")).toBe(0);
+    expect(readFileSync(path.join(checkout, "args"), "utf-8").trim()).toBe(
+      JSON.stringify(["parent", "ok", "--turbopack", "--experimental-https"]),
+    );
+    expect((await run(stop, config)).verdict).toMatch(/^stopped /);
+    expect(await allGone(pidsIn(checkout))).toBe(true);
   });
 
   it("stops a server that listens beyond loopback, with its whole group", async () => {

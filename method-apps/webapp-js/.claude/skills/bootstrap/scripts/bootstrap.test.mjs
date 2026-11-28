@@ -226,8 +226,10 @@ describe.skipIf(!IS_TEMPLATE)("bootstrap.mjs against the template's files", SPAW
     const root = makeTempRepo();
     const res = runScript([...baseArgs(root), "--clean"]);
     expect(res.status).toBe(0);
-    // Windows PowerShell 5.1 has no `&&`, so a person runs each line on its own.
-    expect(res.stdout).toContain("\n  npm install --package-lock-only\n  npm run all\n");
+    // Windows PowerShell 5.1 has no `&&`, so a person runs each line on its own,
+    // and runs npm as npm.cmd there.
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+    expect(res.stdout).toContain(`\n  ${npm} install --package-lock-only\n  ${npm} run all\n`);
     expect(res.stdout).not.toContain("&&");
     expect(res.stdout).not.toMatch(/\bmake /);
   });

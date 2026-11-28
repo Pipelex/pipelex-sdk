@@ -35,6 +35,7 @@ import {
   loginCommand,
   loginKeyWarning,
   MAX_LOGIN_FILE_BYTES,
+  nextCommands,
   oneLine,
   parseCreateArgs,
   devServerReads,
@@ -47,6 +48,7 @@ import {
   titleFromName,
   type CreateDeps,
 } from "./create.mts";
+import { npmCommand } from "./npm.mts";
 import { REPO_ROOT } from "./shared.mts";
 import RECEIPT_REVIEW_CODEGEN from "./fixtures/recorded/receipt-review.codegen.json" with { type: "json" };
 import RECEIPT_REVIEW_PIPE_IO from "./fixtures/recorded/receipt-review.pipe-io.json" with { type: "json" };
@@ -291,7 +293,7 @@ describe("the env file", () => {
     expect(written).not.toMatch(/^\s*(export\s+)?PIPELEX_API_KEY\s*=/m);
     expect(written).toContain(
       "# PIPELEX_API_KEY is read from .env.production.local by a production build only — " +
-        "put it in .env or .env.development.local before `npm run dev`.",
+        `put it in .env or .env.development.local before \`${npmCommand()} run dev\`.`,
     );
 
     const root = await mkdtemp(path.join(tmpdir(), "create-env-"));
@@ -330,7 +332,7 @@ describe("the env file", () => {
       const fromShell = await planEnvFile(root, { baseUrl: DEV, key: "sk-1" }, DEV, {});
       const said = fromShell.notes.join("\n");
       expect(said).toContain("(from your shell), and an empty PIPELEX_API_KEY line");
-      expect(said).toContain("put your own key there before `npm run dev`");
+      expect(said).toContain(`put your own key there before \`${npmCommand()} run dev\``);
       expect(said).toContain(
         "The key your shell exports is used for this run only, and never copied;",
       );
@@ -771,7 +773,7 @@ describe("runCreate", () => {
     expect(env).not.toContain("sk-test");
     expect(env.match(/PIPELEX_BASE_URL=/g)).toHaveLength(1);
     expect(output.join("\n")).toContain(
-      "Put your own PIPELEX_API_KEY in .env.local before `npm run dev`: create never copies a " +
+      `Put your own PIPELEX_API_KEY in .env.local before \`${npmCommand()} run dev\`: create never copies a ` +
         "key into the project, whether your shell exports it or the login saved it, and while a " +
         "shell exports one it wins over the file.",
     );
@@ -879,7 +881,31 @@ describe("runCreate", () => {
     expect(existsSync(path.join(root, BOOTSTRAP_DIR))).toBe(true);
     const printed = output.join("\n");
     expect(printed).toContain("npm run all is red");
-    expect(printed).toContain(`then remove ${BOOTSTRAP_DIR}/, once npm run all is green`);
-    expect(printed).not.toContain("npm install --package-lock-only\n  npm run all");
+    expect(printed).toContain(
+      `then remove ${BOOTSTRAP_DIR}/, once ${npmCommand()} run all is green`,
+    );
+    expect(printed).not.toContain(
+      `${npmCommand()} install --package-lock-only\n  ${npmCommand()} run all`,
+    );
+  });
+});
+
+describe("the commands create names last", () => {
+  it("spells npm as Windows PowerShell 5.1 runs it there, npm.cmd, and as npm elsewhere", () => {
+    const url = "http://127.0.0.1:4300";
+    expect(nextCommands(url, "win32")).toEqual([
+      `  npm.cmd run dev                     # ${url}`,
+      "  npm.cmd run serve                   # the same server in the background, proven; npm.cmd run serve -- stop stops it",
+      "  npm.cmd run add-method -- <method>  # a second method, as a tab beside the first",
+      "  npm.cmd run codegen                 # after editing the method, or bumping its tag",
+    ]);
+    for (const platform of ["darwin", "linux"] as const) {
+      expect(nextCommands(url, platform)).toEqual([
+        `  npm run dev                     # ${url}`,
+        "  npm run serve                   # the same server in the background, proven; npm run serve -- stop stops it",
+        "  npm run add-method -- <method>  # a second method, as a tab beside the first",
+        "  npm run codegen                 # after editing the method, or bumping its tag",
+      ]);
+    }
   });
 });

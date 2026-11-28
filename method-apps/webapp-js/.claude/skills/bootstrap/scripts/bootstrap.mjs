@@ -338,7 +338,7 @@ npm install     # once
 npm run dev     # http://127.0.0.1:4300, in this terminal
 \`\`\`
 
-\`npm run serve\` starts the same server in the background instead, prints its URL once the page answers, and \`npm run serve -- stop\` stops it. These commands run on every system, Windows included; with \`make\`, they are also \`make install\`, \`make dev\`, \`make serve\` and \`make stop\`.
+\`npm run serve\` starts the same server in the background instead, prints its URL once the page answers, and \`npm run serve -- stop\` stops it. These commands run on every system, Windows included; with \`make\`, they are also \`make install\`, \`make dev\`, \`make serve\` and \`make stop\`. In Windows PowerShell 5.1, whose default execution policy refuses a typed \`npm\`, type \`npm.cmd\` in its place, as in \`npm.cmd run serve\`.
 
 The app reads \`PIPELEX_API_KEY\` and \`PIPELEX_BASE_URL\` from \`.env.local\`; \`.env.example\` lists both.
 
@@ -631,12 +631,14 @@ export async function run(root, names, opts) {
   );
   if (!opts.dryRun) {
     // One command per line, run one after the other: Windows PowerShell 5.1 has
-    // no `&&` to chain them.
+    // no `&&` to chain them, and refuses a typed `npm` under its default
+    // execution policy, where `npm.cmd` runs in every Windows shell.
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
     console.log(
       "\nNext: sync the lock file (npm ci in CI validates its name/version), then run the gates:",
     );
-    console.log("  npm install --package-lock-only");
-    console.log("  npm run all");
+    console.log(`  ${npm} install --package-lock-only`);
+    console.log(`  ${npm} run all`);
     console.log("Then review with `git status` and `git diff` before committing.");
   }
 }
