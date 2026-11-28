@@ -17,8 +17,8 @@ def none_when_it_does_not_fit(value: Any, handler: ValidatorFunctionWrapHandler)
 
     The wrap validator of every leniently read wire field that reads as `None` when unset: a run's stored
     problem (`pipelex_sdk.answer_reading.LenientProblem`), a status read's degradation (`pipelex_sdk.runs`), a
-    file use's creator and method version (`pipelex_sdk.product_models.FileUse`), a branding's style and
-    typeface (`pipelex_sdk.product_models.OrganizationBranding`), and a stored layout's seed and style
+    file use's creator and method version (`pipelex_sdk.product_models.FileUse`), a branding's preset,
+    shell, typeface and design system (`pipelex_sdk.product_models.OrganizationBranding`), and a stored layout's seed and style
     (`pipelex_sdk.method_layout_models.LayoutProvenance`).
     """
     try:

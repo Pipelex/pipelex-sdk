@@ -1271,12 +1271,15 @@ export type IdempotencyErrorCode =
   "request.idempotency_key_in_use" | "request.idempotency_conflict";
 
 /**
- * The reason the platform gives a refused logo when `updateOrganizationBranding` refuses one. The
- * refusal is one problem naming both slots' failures at once, one item of its `errors` per broken
- * rule, and writes nothing:
+ * The reason the platform gives a refused logo when `updateOrganizationBranding` refuses one, in
+ * `params.reason`. The refusal is one `422` `request.unsupported` problem for every logo of the
+ * body, which writes nothing: the problem names the first broken rule in its `params.field`, the
+ * slot's key, and its `params.reason`, and when several rules are broken its `errors` hold one
+ * item per rule, each with its own `params.field` and `params.reason`. The item's `code` is
+ * `request.unsupported`, never one of these:
  *
  * - `logo_not_an_upload`: the URI is neither a new upload of the organization nor the `uri` the
- *   slot already holds: a run's or a method's file, a stale `branding/` copy, or the other slot's
+ *   slot already holds: a run's or a method's file, a stale `branding/` copy, or another slot's
  *   logo, since a logo cannot move between slots by its URI.
  * - `logo_not_found`: no such upload in the organization.
  * - `logo_too_large`: the file is over 1 MiB.
