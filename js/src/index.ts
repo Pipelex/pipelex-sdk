@@ -305,6 +305,7 @@ export type {
   OrgRole,
   BrandingColors,
   BrandingColorsUpdate,
+  BrandingDesignSystem,
   LogoDescriptor,
   OrganizationBranding,
   OrganizationBrandingUpdate,

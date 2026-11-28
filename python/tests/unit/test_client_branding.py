@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from pydantic import ValidationError
 
-from pipelex_sdk.errors import ApiResponseError
+from pipelex_sdk.errors import ApiResponseError, LogoRefusalCode
 from pipelex_sdk.product_models import BrandingColorsUpdate, OrganizationBranding, OrganizationBrandingUpdate
 from tests.unit.conftest import BASE_URL, problem_document
 from tests.unit.test_data import BrandingBodies
@@ -61,9 +61,18 @@ def _problem(
     return body
 
 
-def _field_item(field: str, detail: str) -> dict[str, Any]:
-    """The item of a refused branding write naming the logo slot or colour key `field`."""
-    return {"code": "request.invalid", "detail": detail, "location": {"field": field}}
+def _refusal_reasons(error: ApiResponseError) -> list[tuple[str | None, LogoRefusalCode]]:
+    """Each logo refusal of `error` as its slot and reason: its `errors` when it has some, else the problem itself."""
+    problem = error.problem
+    reasons: list[tuple[str | None, LogoRefusalCode]] = []
+    if problem.errors:
+        for item in problem.errors:
+            assert item.params is not None
+            reasons.append((item.location.field if item.location is not None else None, LogoRefusalCode(item.params.as_wire()["reason"])))
+    else:
+        assert problem.params is not None
+        reasons.append((problem.location.field if problem.location is not None else None, LogoRefusalCode(problem.params.as_wire()["reason"])))
+    return reasons
 
 
 def _item_fields(error: ApiResponseError) -> list[tuple[str | None, str, str]]:
@@ -97,10 +106,20 @@ class TestClientBranding:
         assert branding.square_logo.content_type == "image/png"
         assert branding.square_logo.width == pytest.approx(512.0)
         assert branding.wide_logo is None
-        assert branding.style == "editorial"
+        assert branding.dark_square_logo is not None
+        assert branding.dark_square_logo.uri == BrandingBodies.DARK_SQUARE_LOGO_URI
+        assert branding.dark_wide_logo is None
+        assert branding.preset == "corporate"
+        assert branding.shell == "masthead"
         assert branding.typeface == "source-sans-3"
+        assert branding.design_system == BrandingBodies.DESIGN_SYSTEM
         assert branding.white_label is False
         assert branding.model_dump(mode="json") == BrandingBodies.BRANDED
+
+    def test_the_branding_has_no_style_field(self) -> None:
+        # The preset replaced the app style: the platform no longer answers it, and the model names no such field.
+        assert "style" not in OrganizationBranding.model_fields
+        assert "style" not in OrganizationBrandingUpdate.model_fields
 
     def test_get_branding_reads_no_branding_as_every_value_none(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -114,13 +133,13 @@ class TestClientBranding:
     def test_get_branding_reads_an_answer_without_the_choices_as_unset(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        # A platform that predates the style, the typeface and the entitlement leaves them out.
+        # A platform that predates the dark logos, the choices, the design system and the entitlement leaves them out.
         patch_send(api_client, wire_response(200, json_body=BrandingBodies.BEFORE_CHOICES))
 
         branding = asyncio.run(api_client.get_branding())
 
-        assert branding.style is None
-        assert branding.typeface is None
+        assert (branding.dark_square_logo, branding.dark_wide_logo) == (None, None)
+        assert (branding.preset, branding.shell, branding.typeface, branding.design_system) == (None, None, None, None)
         assert branding.white_label is False
         assert branding.model_dump(mode="json") == BrandingBodies.UNBRANDED
 
@@ -136,10 +155,13 @@ class TestClientBranding:
     @pytest.mark.parametrize(
         "choices",
         [
-            pytest.param({"style": None, "typeface": None, "white_label": None}, id="null"),
-            pytest.param({"style": 3, "typeface": 4, "white_label": 1}, id="a-number"),
-            pytest.param({"style": {"id": "editorial"}, "typeface": [], "white_label": {}}, id="an-object"),
-            pytest.param({"style": None, "typeface": None, "white_label": "true"}, id="a-string-for-the-flag"),
+            pytest.param({"preset": None, "shell": None, "typeface": None, "design_system": None, "white_label": None}, id="null"),
+            pytest.param({"preset": 3, "shell": 5, "typeface": 4, "design_system": 6, "white_label": 1}, id="a-number"),
+            pytest.param({"preset": {"id": "corporate"}, "shell": [], "typeface": [], "design_system": [], "white_label": {}}, id="an-object"),
+            pytest.param(
+                {"preset": None, "shell": None, "typeface": None, "design_system": '{"color": {}}', "white_label": "true"},
+                id="a-string-for-the-flag-and-the-document",
+            ),
         ],
     )
     def test_get_branding_reads_a_choice_of_another_type_as_unset(
@@ -149,7 +171,7 @@ class TestClientBranding:
 
         branding = asyncio.run(api_client.get_branding())
 
-        assert (branding.style, branding.typeface, branding.white_label) == (None, None, False)
+        assert (branding.preset, branding.shell, branding.typeface, branding.design_system, branding.white_label) == (None, None, None, None, False)
         assert branding.colors.action == "#14213d"
 
     def test_get_branding_keeps_an_id_it_does_not_know(
@@ -157,11 +179,12 @@ class TestClientBranding:
     ) -> None:
         # The platform holds an id to a shape, never to a list, so the SDK keeps an id it does not know as it came;
         # reading it as unset is the application's call, against the list it knows.
-        patch_send(api_client, wire_response(200, json_body={**BrandingBodies.UNBRANDED, "style": "a-style-from-next-year", "typeface": "x" * 32}))
+        unknown = {"preset": "a-preset-from-next-year", "shell": "a-shell-from-next-year", "typeface": "x" * 32}
+        patch_send(api_client, wire_response(200, json_body={**BrandingBodies.UNBRANDED, **unknown}))
 
         branding = asyncio.run(api_client.get_branding())
 
-        assert (branding.style, branding.typeface) == ("a-style-from-next-year", "x" * 32)
+        assert (branding.preset, branding.shell, branding.typeface) == ("a-preset-from-next-year", "a-shell-from-next-year", "x" * 32)
 
     def test_get_branding_keeps_an_svg_logo_fractional_size(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -264,25 +287,65 @@ class TestClientBranding:
         assert _sent_body(send) == {}
         assert branding.org_name == "Acme Corp"
 
-    def test_update_sets_a_style_and_a_typeface(self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher) -> None:
-        send = patch_send(api_client, wire_response(200, json_body=BrandingBodies.BRANDED))
-
-        branding = asyncio.run(
-            api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(style="editorial", typeface="source-sans-3"))
-        )
-
-        assert _sent_body(send) == {"style": "editorial", "typeface": "source-sans-3"}
-        assert (branding.style, branding.typeface) == ("editorial", "source-sans-3")
-
-    def test_update_clears_a_style_with_none_and_keeps_the_typeface_it_leaves_unset(
+    def test_update_sets_a_preset_a_shell_and_a_typeface(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
-        send = patch_send(api_client, wire_response(200, json_body={**BrandingBodies.BRANDED, "style": None}))
+        send = patch_send(api_client, wire_response(200, json_body=BrandingBodies.BRANDED))
+        # Built from a dict: a `shell=` keyword reads to the linter as a subprocess call.
+        update = OrganizationBrandingUpdate.model_validate({"preset": "corporate", "shell": "masthead", "typeface": "source-sans-3"})
 
-        branding = asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(style=None)))
+        branding = asyncio.run(api_client.update_organization_branding(_ORG_ID, update))
 
-        assert _sent_body(send) == {"style": None}
-        assert (branding.style, branding.typeface) == (None, "source-sans-3")
+        assert _sent_body(send) == {"preset": "corporate", "shell": "masthead", "typeface": "source-sans-3"}
+        assert (branding.preset, branding.shell, branding.typeface) == ("corporate", "masthead", "source-sans-3")
+
+    def test_update_clears_a_preset_with_none_and_keeps_the_choices_it_leaves_unset(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(api_client, wire_response(200, json_body={**BrandingBodies.BRANDED, "preset": None}))
+
+        branding = asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(preset=None)))
+
+        assert _sent_body(send) == {"preset": None}
+        assert (branding.preset, branding.shell, branding.typeface) == (None, "masthead", "source-sans-3")
+
+    def test_update_sets_and_removes_a_dark_logo(self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher) -> None:
+        send = patch_send(api_client, wire_response(200, json_body=BrandingBodies.BRANDED))
+        update = OrganizationBrandingUpdate(dark_square_logo=BrandingBodies.SQUARE_UPLOAD_URI, dark_wide_logo=None)
+
+        branding = asyncio.run(api_client.update_organization_branding(_ORG_ID, update))
+
+        assert _sent_body(send) == {"dark_square_logo": BrandingBodies.SQUARE_UPLOAD_URI, "dark_wide_logo": None}
+        # The answer names the platform's copy of the dark logo, never the upload the write sent.
+        assert branding.dark_square_logo is not None
+        assert branding.dark_square_logo.uri == BrandingBodies.DARK_SQUARE_LOGO_URI
+
+    def test_update_sends_the_design_system_whole_and_removes_it_with_none(
+        self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
+    ) -> None:
+        send = patch_send(
+            api_client,
+            wire_response(200, json_body=BrandingBodies.BRANDED),
+            wire_response(200, json_body={**BrandingBodies.BRANDED, "design_system": None}),
+        )
+
+        written = asyncio.run(
+            api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(design_system=BrandingBodies.DESIGN_SYSTEM))
+        )
+        assert _sent_body(send) == {"design_system": BrandingBodies.DESIGN_SYSTEM}
+        assert written.design_system == BrandingBodies.DESIGN_SYSTEM
+
+        removed = asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(design_system=None)))
+        assert _sent_body(send) == {"design_system": None}
+        assert removed.design_system is None
+
+    def test_an_update_refuses_the_retired_style(self) -> None:
+        # The preset replaced the app style, and the platform refuses a body naming `style` as any key it does not
+        # know: the model refuses it at construction, so no request carrying it is ever built.
+        with pytest.raises(ValidationError) as exc_info:
+            OrganizationBrandingUpdate.model_validate({"style": "editorial"})
+
+        assert [(error["type"], error["loc"]) for error in exc_info.value.errors()] == [("extra_forbidden", ("style",))]
 
     def test_update_reads_the_answer_of_a_platform_that_predates_the_choices(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -308,8 +371,10 @@ class TestClientBranding:
             pytest.param(
                 "dark_colors.header", OrganizationBrandingUpdate(dark_colors=BrandingColorsUpdate(header="#14213g")), id="colour-not-hexadecimal"
             ),
-            pytest.param("style", OrganizationBrandingUpdate(style="Editorial"), id="style-upper-case"),
+            pytest.param("preset", OrganizationBrandingUpdate(preset="Corporate"), id="preset-upper-case"),
+            pytest.param("shell", OrganizationBrandingUpdate.model_validate({"shell": "master_head"}), id="shell-with-an-underscore"),
             pytest.param("typeface", OrganizationBrandingUpdate(typeface="source sans"), id="typeface-with-a-space"),
+            pytest.param("design_system", OrganizationBrandingUpdate(design_system={"color": {"a.b": {}}}), id="design-system-of-another-shape"),
         ],
     )
     def test_a_lone_refused_field_is_named_by_the_problem_itself(
@@ -352,85 +417,82 @@ class TestClientBranding:
         with pytest.raises(ValidationError):
             OrganizationBrandingUpdate.model_validate(payload)
 
-    def test_logo_refusals_reach_the_caller_with_the_sentence_for_each_slot(
+    def test_logo_refusals_name_each_broken_rule_by_its_slot_and_reason(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         patch_send(api_client, wire_response(422, json_body=BrandingBodies.LOGOS_REFUSED))
-        update = OrganizationBrandingUpdate(square_logo=BrandingBodies.SQUARE_UPLOAD_URI, wide_logo=BrandingBodies.WIDE_UPLOAD_URI)
+        update = OrganizationBrandingUpdate(square_logo=BrandingBodies.SQUARE_UPLOAD_URI, dark_wide_logo=BrandingBodies.WIDE_UPLOAD_URI)
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_organization_branding(_ORG_ID, update))
 
         error = exc_info.value
         assert error.status == 422
-        assert error.problem.code == "request.invalid"
-        assert (error.problem.domain, error.problem.retry) == ("input", "no")
-        assert _item_fields(error) == [
-            ("square_logo", "request.invalid", BrandingBodies.SQUARE_TOO_SMALL),
-            ("wide_logo", "request.invalid", BrandingBodies.WIDE_TOO_SHORT),
+        problem = error.problem
+        assert problem.code == "request.unsupported"
+        assert (problem.domain, problem.retry) == ("input", "no")
+        # The problem names the first broken rule; each broken rule has its item, with its own slot and reason.
+        assert problem.params is not None
+        assert problem.params.as_wire() == {"field": "square_logo", "reason": "logo_too_small"}
+        assert _refusal_reasons(error) == [
+            ("square_logo", LogoRefusalCode.TOO_SMALL),
+            ("dark_wide_logo", LogoRefusalCode.TOO_SHORT),
         ]
-        # What the settings screen does: one slot's sentences, read by the slot's key.
-        under_square = [field_detail for field, _, field_detail in _item_fields(error) if field == "square_logo"]
-        assert under_square == [BrandingBodies.SQUARE_TOO_SMALL]
+        assert [item.code for item in problem.errors or []] == ["request.unsupported", "request.unsupported"]
 
     @pytest.mark.parametrize(
-        ("field", "uri", "detail"),
+        ("field", "uri", "reason"),
         [
-            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, BrandingBodies.ACTIVE_CONTENT, id="svg-active-content"),
-            pytest.param("wide_logo", BrandingBodies.STRAY_BRANDING_URI, BrandingBodies.NOT_AN_UPLOAD, id="stray-branding-copy"),
+            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.ACTIVE_CONTENT, id="svg-active-content"),
+            pytest.param("wide_logo", BrandingBodies.STRAY_BRANDING_URI, LogoRefusalCode.NOT_AN_UPLOAD, id="stray-branding-copy"),
             # A logo cannot move between slots by its URI: the square logo's copy is refused in the wide slot.
-            pytest.param("wide_logo", BrandingBodies.SQUARE_LOGO_URI, BrandingBodies.NOT_AN_UPLOAD, id="other-slot-logo"),
-            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, BrandingBodies.PIXEL_CAP, id="raster-past-pixel-cap"),
-            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, BrandingBodies.CUT_SHORT, id="raster-cut-short"),
+            pytest.param("wide_logo", BrandingBodies.SQUARE_LOGO_URI, LogoRefusalCode.NOT_AN_UPLOAD, id="other-slot-logo"),
+            # A dark logo is held to its slot's rules and its refusal names its own key.
+            pytest.param("dark_square_logo", BrandingBodies.SQUARE_LOGO_URI, LogoRefusalCode.NOT_AN_UPLOAD, id="dark-slot-light-logo"),
+            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.NOT_FOUND, id="missing-upload"),
+            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.TOO_LARGE, id="too-large"),
+            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.UNREADABLE, id="raster-unreadable"),
             # A logo is a still image: an animated raster is refused as a type a logo may not be.
-            pytest.param(
-                "square_logo",
-                BrandingBodies.SQUARE_UPLOAD_URI,
-                BrandingBodies.ANIMATED_WEBP,
-                id="animated-webp",
-            ),
-            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, BrandingBodies.ANIMATED_PNG, id="animated-png"),
-            pytest.param(
-                "square_logo",
-                BrandingBodies.SQUARE_UPLOAD_URI,
-                BrandingBodies.SVG_SIDE_OUT_OF_RANGE,
-                id="svg-side-out-of-range",
-            ),
-            pytest.param(
-                "wide_logo",
-                BrandingBodies.WIDE_UPLOAD_URI,
-                BrandingBodies.SVG_VIEWBOX_OUT_OF_RANGE,
-                id="svg-viewbox-out-of-range",
-            ),
-            *(pytest.param(field, uri, detail, id=f"svg-{kind}") for kind, (field, uri, detail) in BrandingBodies.STYLE_ACTIVE_CONTENT.items()),
+            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.TYPE_NOT_ACCEPTED, id="animated-png"),
+            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.NOT_SQUARE, id="not-square"),
+            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.NOT_WIDE, id="not-wide"),
         ],
     )
-    def test_a_refused_logo_is_named_under_its_slot(
+    def test_a_lone_refused_logo_is_named_by_the_problem_itself(
         self,
         api_client: PipelexAPIClient,
         wire_response: ResponseBuilder,
         patch_send: SendPatcher,
         field: str,
         uri: str,
-        detail: str,
+        reason: LogoRefusalCode,
     ) -> None:
-        errors = [_field_item(field, detail)]
-        patch_send(
-            api_client,
-            wire_response(422, json_body=_problem(code="request.invalid", status=422, title="Invalid request", detail=detail, errors=errors)),
-        )
+        # One broken rule: the problem itself names the slot and the reason, and carries no `errors`.
+        body = {
+            **_problem(
+                code="request.unsupported",
+                status=422,
+                title="The request uses a form this runtime does not accept",
+                detail=f"This runtime does not accept the form the request's field '{field}' uses (reason: {reason}).",
+            ),
+            "params": {"field": field, "reason": str(reason)},
+            "location": {"field": field},
+        }
+        patch_send(api_client, wire_response(422, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate.model_validate({field: uri})))
 
-        assert exc_info.value.problem.code == "request.invalid"
-        assert _item_fields(exc_info.value) == [(field, "request.invalid", detail)]
+        problem = exc_info.value.problem
+        assert problem.code == "request.unsupported"
+        assert problem.errors is None
+        assert _refusal_reasons(exc_info.value) == [(field, reason)]
 
     def test_several_refused_fields_are_named_each_in_an_item_a_colour_by_its_dotted_key(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         patch_send(api_client, wire_response(422, json_body=BrandingBodies.FIELDS_REFUSED))
-        update = OrganizationBrandingUpdate(dark_colors=BrandingColorsUpdate(header="#14213g"), style="Editorial")
+        update = OrganizationBrandingUpdate(dark_colors=BrandingColorsUpdate(header="#14213g"), preset="Corporate")
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_organization_branding(_ORG_ID, update))
@@ -438,7 +500,7 @@ class TestClientBranding:
         assert exc_info.value.problem.code == "request.invalid"
         assert [(field, code) for field, code, _ in _item_fields(exc_info.value)] == [
             ("dark_colors.header", "request.invalid"),
-            ("style", "request.invalid"),
+            ("preset", "request.invalid"),
         ]
 
     @pytest.mark.parametrize(
@@ -470,15 +532,19 @@ class TestClientBranding:
         title: str,
         detail: str,
     ) -> None:
-        errors = [{"code": code, "detail": detail, "location": {"field": "square_logo"}}]
-        patch_send(api_client, wire_response(status, json_body=_problem(code=code, status=status, title=title, detail=detail, errors=errors)))
+        # Refused before any file is read: the problem itself names the slot, with no `errors`.
+        body = {**_problem(code=code, status=status, title=title, detail=detail), "location": {"field": "square_logo"}}
+        patch_send(api_client, wire_response(status, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(square_logo="https://example.com/logo.png")))
 
+        problem = exc_info.value.problem
         assert exc_info.value.status == status
-        assert exc_info.value.problem.code == code
-        assert [item.model_dump(exclude_none=True) for item in exc_info.value.problem.errors or []] == errors
+        assert problem.code == code
+        assert problem.errors is None
+        assert problem.location is not None
+        assert problem.location.field == "square_logo"
 
     @pytest.mark.parametrize(
         ("status", "code", "title", "detail"),

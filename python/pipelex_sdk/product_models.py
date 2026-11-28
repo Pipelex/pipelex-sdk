@@ -1085,8 +1085,9 @@ class MembershipsResponse(BaseModel):
 
 # ── Organization branding (`/v1/branding`, `/v1/organizations/{id}/branding`) ──
 #
-# An organization may set up to two logos, two colour sets of three colours, an app style and a
-# typeface, which its shared method apps and the apps scaffolded from the method-app template wear.
+# An organization may set its branding kit: a square and a wide logo, each with an optional dark-mode
+# variant, two colour sets of three colours, a preset, a page shell, a typeface and a design system, which
+# its shared method apps and the apps scaffolded from the method-app template wear.
 # Every member and every API key reads it with `get_branding`; a caller with the `admin` or the
 # `member` role, never a `runner`, writes it with `update_organization_branding`. Both answer the same `OrganizationBranding`, which also says whether
 # the organization holds the white-label entitlement. See `docs/organization-branding.md`.
@@ -1137,18 +1138,32 @@ class LogoDescriptor(BaseModel):
     height: float
 
 
+BrandingDesignSystem: TypeAlias = dict[str, Any]
+"""An organization's design system: a DTCG token document (the Design Tokens Community Group format).
+
+It holds the palette in both themes, typography, shape, depth, spacing, motion and the component treatments.
+The application that writes it owns its format; the platform stores it as it was written and checks only its
+shape: a JSON object of at most 64 KiB of compact JSON, nested at most 32 objects deep, in which every member
+whose name does not start with `$` is a token or a group, so an object; an object holding `$value` is a token
+and holds no token or group of its own; a name holds no `{`, `}` or `.`; and `$type` and `$description` are
+strings and `$extensions` an object wherever they appear.
+"""
+
+
 class OrganizationBranding(BaseModel):
     """An organization's branding — what `get_branding` and `update_organization_branding` answer.
 
     `colors` is the light set and `dark_colors` the dark one, used in dark mode only: a dark colour that
     is `None` falls back to the light colour of the same role, and a light one that is `None` to
-    Pipelex's own palette. A logo is `None` when its slot is empty. A personal workspace, or a team that
-    set nothing, answers every colour and logo `None`, no style and no typeface.
+    Pipelex's own palette. A logo is `None` when its slot is empty, and a dark logo that is `None` falls
+    back to the light logo of its slot. A personal workspace, or a team that set nothing, answers every
+    colour and logo `None`, no preset, shell or typeface, and no design system.
 
-    `style` and `typeface` are ids the platform holds to a shape and never to a list, so a client reads an
-    id it does not know as unset. Read as `@pipelex/sdk` reads them: both read as `None`, and `white_label`
-    as `False`, when the answer leaves them out, as a platform that predates them does, or sends a value of
-    another type, and the branding still validates.
+    `preset`, `shell` and `typeface` are ids the platform holds to a shape and never to a list, so a client
+    reads an id it does not know as unset. Read as `@pipelex/sdk` reads them: the three ids and
+    `design_system` read as `None`, and `white_label` as `False`, when the answer leaves them out, as a
+    platform that predates them does, or sends a value of another type, and the dark logos read as `None`
+    when the answer leaves them out, and the branding still validates.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -1165,13 +1180,25 @@ class OrganizationBranding(BaseModel):
     wide_logo: LogoDescriptor | None
     """The wide logo, at least one and a half times as wide as it is tall, for an app's header."""
 
-    style: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
-    """The id of the app style the team chose for its method apps, such as `editorial`: how their headings,
-    panels, corners and spacing look. `None` when not set. Both themes share it, and a client applies it
-    whenever one is set; it does not count towards whether an app is branded."""
+    dark_square_logo: LogoDescriptor | None = None
+    """The square logo for dark mode; `None` falls back to `square_logo`."""
+
+    dark_wide_logo: LogoDescriptor | None = None
+    """The wide logo for dark mode; `None` falls back to `wide_logo`."""
+
+    preset: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
+    """The id of the preset the team started its design system from, such as `corporate`; `None` when not set.
+    Both themes share it, and it does not count towards whether an app is branded."""
+
+    shell: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
+    """The id of the page shell the team's method apps wear, such as `masthead`; `None` when not set. Both themes
+    share it, and it does not count towards whether an app is branded."""
 
     typeface: Annotated[StrictStr | None, WrapValidator(none_when_it_does_not_fit)] = None
     """The id of the typeface the team sets its apps' text in, such as `manrope`; `None` when not set."""
+
+    design_system: Annotated[BrandingDesignSystem | None, WrapValidator(none_when_it_does_not_fit)] = None
+    """The team's design system, a DTCG token document (`BrandingDesignSystem`); `None` when there is none."""
 
     white_label: Annotated[StrictBool, WrapValidator(false_when_it_does_not_fit)] = False
     """Whether the organization holds the white-label entitlement: its method apps show no Pipelex mark anywhere
@@ -1204,22 +1231,25 @@ class OrganizationBrandingUpdate(BaseModel):
 
     - `colors` and `dark_colors` take a `BrandingColorsUpdate`, or `None` to clear all three colours of
       that set.
-    - `square_logo` and `wide_logo` take the `pipelex-storage://` URI of a file the organization
-      uploaded on its own (`upload`) to set a new logo, the `uri` the branding answers for that slot to
-      keep it, or `None` to remove it. Any other URI, a run's or a method's file, a stale `branding/` copy
-      or the other slot's logo, is refused as `logo_not_an_upload`, so a logo cannot move between slots by
-      its URI. The platform reads and measures an upload before it accepts it, keeps its own copy under
-      `branding/`, whose URI it answers, and erases the copy a write replaces or clears; the upload is left
-      as it is.
-    - `style` and `typeface` take an id of one to 32 lower-case letters, digits and hyphens
-      (`^[a-z0-9-]{1,32}$`), stored as it is whether or not such a style or typeface exists, or `None` to
-      clear it. Writing one leaves the colours, the logos and the other as they are.
+    - `square_logo`, `wide_logo`, `dark_square_logo` and `dark_wide_logo` take the `pipelex-storage://` URI
+      of a file the organization uploaded on its own (`upload`) to set a new logo, the `uri` the branding
+      answers for that slot to keep it, or `None` to remove it; a dark logo is held to its slot's rules, as
+      the light one is. Any other URI, a run's or a method's file, a stale `branding/` copy or another slot's
+      logo, is refused as `logo_not_an_upload`, so a logo cannot move between slots by its URI. The platform
+      reads and measures an upload before it accepts it, keeps its own copy under `branding/`, whose URI it
+      answers, and erases the copy a write replaces or clears; the upload is left as it is.
+    - `preset`, `shell` and `typeface` take an id of one to 32 lower-case letters, digits and hyphens
+      (`^[a-z0-9-]{1,32}$`), stored as it is whether or not such a preset, shell or typeface exists, or
+      `None` to clear it. Writing one leaves the colours, the logos and the others as they are.
+    - `design_system` takes a DTCG token document (`BrandingDesignSystem`), which replaces the stored one
+      whole, or `None` to remove it. One the platform refuses for its shape writes nothing at all.
 
     A field the platform refuses is named in `location.field`: a colour by its dotted key, such as
-    `colors.action`, a style or a typeface by its name. When it refuses one field alone, the problem itself
-    names it, in `params.field` too; when it refuses several, each item of its `errors` names one. There is
-    no `white_label` field: the entitlement is Pipelex staff's to grant, so the model refuses it at
-    construction, as the platform refuses a body naming it.
+    `colors.action`, a preset, a shell, a typeface or the design system by its name. When it refuses one
+    field alone, the problem itself names it, in `params.field` too; when it refuses several, each item of
+    its `errors` names one. There is no `white_label` field: the entitlement is Pipelex staff's to grant, so
+    the model refuses it at construction, as the platform refuses a body naming it, and so it refuses
+    `style`, the retired app style.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1228,8 +1258,12 @@ class OrganizationBrandingUpdate(BaseModel):
     dark_colors: BrandingColorsUpdate | None = None
     square_logo: str | None = None
     wide_logo: str | None = None
-    style: str | None = None
+    dark_square_logo: str | None = None
+    dark_wide_logo: str | None = None
+    preset: str | None = None
+    shell: str | None = None
     typeface: str | None = None
+    design_system: BrandingDesignSystem | None = None
 
 
 # ── Billing (`/v1/billing/*`) ────────────────────────────────────────────
