@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The verdicts name `npm.cmd` on Windows**: `npm run serve`, `npm run serve -- stop`, the closing lines of `npm run create` and the initializer's next steps name `npm.cmd run serve`, `npm.cmd run serve -- stop`, `npm.cmd install` and `npm.cmd run create -- …` when they run on Windows, where they named `npm`, since Windows PowerShell 5.1 refuses a typed `npm` under the execution policy Windows sets by default and `npm.cmd` runs in every Windows shell; elsewhere they name `npm` as before. The READMEs say to type `npm.cmd` in Windows PowerShell 5.1.
+- **The web app template's `npm run serve` refuses a `dev` script that is not the template's (Breaking)**: serve starts what the template's `dev` script runs, `node --experimental-strip-types scripts/run-next.mts dev`, itself, passing on any plain options the script adds for `next`, so a `dev` script that runs anything else, `next dev -H ${APP_HOST:-127.0.0.1}` included, or whose options a shell would read, is refused as the new `refused: dev-script`, and nothing is started; put the template's script back, or run `npm run dev` in the foreground.
+
+### Fixed
+
+- **`npm run serve` opens no console window on Windows**: serve starts `scripts/run-next.mts` with Node itself, where it ran `npm run dev`, so no npm and no `cmd.exe` stand between serve and the server, and the `cmd.exe` npm started, which opened a console window titled after the server for as long as it ran, is gone from the tree. `npm run serve -- stop` still ends every process the server started, the process group elsewhere and the process tree on Windows, and the template's Windows CI job checks that no `cmd.exe` is in the tree serve starts.
+
 ## [v0.71.1] - 2026-11-26
 
 ### Added

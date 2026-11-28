@@ -31,6 +31,7 @@ import {
   deriveIdentity,
   dropEnvLine,
   ENV_FILE,
+  nextCommands,
   oneLine,
   parseCreateArgs,
   devServerReads,
@@ -706,5 +707,25 @@ describe("runCreate", () => {
     expect(printed).toContain("npm run all is red");
     expect(printed).toContain(`then remove ${BOOTSTRAP_DIR}/, once npm run all is green`);
     expect(printed).not.toContain("npm install --package-lock-only\n  npm run all");
+  });
+});
+
+describe("the commands create names last", () => {
+  it("spells npm as Windows PowerShell 5.1 runs it there, npm.cmd, and as npm elsewhere", () => {
+    const url = "http://127.0.0.1:4300";
+    expect(nextCommands(url, "win32")).toEqual([
+      `  npm.cmd run dev                     # ${url}`,
+      "  npm.cmd run serve                   # the same server in the background, proven; npm.cmd run serve -- stop stops it",
+      "  npm.cmd run add-method -- <method>  # a second method, as a tab beside the first",
+      "  npm.cmd run codegen                 # after editing the method, or bumping its tag",
+    ]);
+    for (const platform of ["darwin", "linux"] as const) {
+      expect(nextCommands(url, platform)).toEqual([
+        `  npm run dev                     # ${url}`,
+        "  npm run serve                   # the same server in the background, proven; npm run serve -- stop stops it",
+        "  npm run add-method -- <method>  # a second method, as a tab beside the first",
+        "  npm run codegen                 # after editing the method, or bumping its tag",
+      ]);
+    }
   });
 });

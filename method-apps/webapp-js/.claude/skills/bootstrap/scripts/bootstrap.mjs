@@ -337,7 +337,7 @@ npm install     # once
 npm run dev     # http://127.0.0.1:4300, in this terminal
 \`\`\`
 
-\`npm run serve\` starts the same server in the background instead, prints its URL once the page answers, and \`npm run serve -- stop\` stops it. These commands run on every system, Windows included; with \`make\`, they are also \`make install\`, \`make dev\`, \`make serve\` and \`make stop\`.
+\`npm run serve\` starts the same server in the background instead, prints its URL once the page answers, and \`npm run serve -- stop\` stops it. These commands run on every system, Windows included; with \`make\`, they are also \`make install\`, \`make dev\`, \`make serve\` and \`make stop\`. In Windows PowerShell 5.1, whose default execution policy refuses a typed \`npm\`, type \`npm.cmd\` in its place, as in \`npm.cmd run serve\`.
 
 The app reads \`PIPELEX_API_KEY\` and \`PIPELEX_BASE_URL\` from \`.env.local\`; \`.env.example\` lists both.
 

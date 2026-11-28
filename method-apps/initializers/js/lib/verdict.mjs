@@ -73,3 +73,14 @@ export function shellQuote(word, platform = process.platform) {
 export function inTurn(commands) {
   return commands.map((command) => `\`${command}\``).join(", then ");
 }
+
+/**
+ * The npm a person types on this system, as the verdicts name it: `npm.cmd` on
+ * Windows, `npm` elsewhere. Windows PowerShell 5.1, under the execution policy
+ * Windows sets by default and an IT department may pin, runs a typed `npm` as
+ * `npm.ps1` and refuses it, while `npm.cmd` runs there, in PowerShell 7 and in
+ * `cmd` alike. The template's `scripts/lib/npm.mts` names it the same way.
+ */
+export function npmCommand(platform = process.platform) {
+  return platform === "win32" ? "npm.cmd" : "npm";
+}

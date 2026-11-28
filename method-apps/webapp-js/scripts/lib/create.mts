@@ -53,7 +53,7 @@ import {
   type AddMethodPlan,
 } from "./add-method.mts";
 import { methodVocabulary } from "./generate.mts";
-import { npmInvocation, type NpmInvocation } from "./npm.mts";
+import { npmCommand, npmInvocation, type NpmInvocation } from "./npm.mts";
 import { REPO_ROOT } from "./shared.mts";
 
 const { loadEnvConfig } = nextEnv;
@@ -682,7 +682,7 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
     throw new CreateError(
       "the bootstrap failed after the method was added (see above). The slice is in place; " +
         `fix the cause, then run the bootstrap by hand:\n  node ${bootstrap.map(quote).join(" ")}\n` +
-        `  then \`npm install --package-lock-only\`, \`npm run all\`, and remove ${BOOTSTRAP_DIR}/.`,
+        `  then \`${npmCommand()} install --package-lock-only\`, \`${npmCommand()} run all\`, and remove ${BOOTSTRAP_DIR}/.`,
     );
   }
 
@@ -696,8 +696,8 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
 
   const remaining = (from: number): string =>
     [
-      "npm install --package-lock-only",
-      "npm run all",
+      `${npmCommand()} install --package-lock-only`,
+      `${npmCommand()} run all`,
       `then remove ${BOOTSTRAP_DIR}/, once npm run all is green`,
     ]
       .slice(from)
@@ -740,13 +740,29 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
         : []),
       "",
       "Next:",
-      `  npm run dev                     # ${appUrl(process.env)}`,
-      "  npm run serve                   # the same server in the background, proven; npm run serve -- stop stops it",
-      "  npm run add-method -- <method>  # a second method, as a tab beside the first",
-      "  npm run codegen                 # after editing the method, or bumping its tag",
+      ...nextCommands(appUrl(process.env)),
     ].join("\n"),
   );
   return EXIT_OK;
+}
+
+/**
+ * The commands create's last lines name, each with what it does, spelled as a
+ * person types npm on `platform`: `npm.cmd` on Windows (`npmCommand`).
+ */
+export function nextCommands(url: string, platform: NodeJS.Platform = process.platform): string[] {
+  const npm = npmCommand(platform);
+  const rows = [
+    [`${npm} run dev`, url],
+    [
+      `${npm} run serve`,
+      `the same server in the background, proven; ${npm} run serve -- stop stops it`,
+    ],
+    [`${npm} run add-method -- <method>`, "a second method, as a tab beside the first"],
+    [`${npm} run codegen`, "after editing the method, or bumping its tag"],
+  ];
+  const width = Math.max(...rows.map(([command]) => command.length)) + 2;
+  return rows.map(([command, what]) => `  ${command.padEnd(width)}# ${what}`);
 }
 
 /** Quote one argument for a line the person may paste into a shell. */

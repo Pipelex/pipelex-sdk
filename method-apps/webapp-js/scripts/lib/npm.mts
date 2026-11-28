@@ -1,7 +1,7 @@
 /**
- * How the scripts run npm. A module of its own, needing nothing but Node, so
- * that `serve.mts`, which must run with the app's dependencies alone, can share
- * it with the scripts that load the SDK.
+ * How the scripts run npm, and how they name it to a person. A module of its
+ * own, needing nothing but Node, so that `serve.mts`, which must run with the
+ * app's dependencies alone, can share it with the scripts that load the SDK.
  */
 import path from "node:path";
 import process from "node:process";
@@ -38,4 +38,15 @@ export function npmInvocation(
     command: execPath,
     args: [path.win32.join(path.win32.dirname(execPath), "node_modules", "npm", "bin", NPM_SCRIPT)],
   };
+}
+
+/**
+ * The npm a person types on this system, as the verdicts and next steps name
+ * it: `npm.cmd` on Windows, `npm` elsewhere. Windows PowerShell 5.1, under the
+ * execution policy Windows sets by default and an IT department may pin, runs
+ * a typed `npm` as `npm.ps1` and refuses it, while `npm.cmd` runs there, in
+ * PowerShell 7 and in `cmd` alike.
+ */
+export function npmCommand(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? "npm.cmd" : "npm";
 }

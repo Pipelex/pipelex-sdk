@@ -3,19 +3,23 @@
  * background, proven. `make serve` and `make stop` are the same commands for
  * those who have `make`, and the verdicts name whichever of the two ran them.
  *
- * `npm run dev` holds a terminal. `npm run serve` starts the same dev server detached,
- * waits for its port, checks that the listener is the server it started and
- * that it listens on this machine alone, requests the page, and prints the URL
- * with the page's title. `npm run serve -- stop` stops what it started. Both stay in every
- * project, because a detached, proven server is as useful to a person or an
- * agent working on the app as it is right after the project is created.
+ * `npm run dev` holds a terminal. `npm run serve` starts the same dev server
+ * detached, running the `dev` script's `scripts/run-next.mts dev` itself, with
+ * this Node, rather than through npm, so that no npm and no shell stand between
+ * serve and the server (`devServerCommand`). It waits for its port, checks that
+ * the listener is the server it started and that it listens on this machine
+ * alone, requests the page, and prints the URL with the page's title.
+ * `npm run serve -- stop` stops what it started. Both stay in every project,
+ * because a detached, proven server is as useful to a person or an agent
+ * working on the app as it is right after the project is created.
  *
  * Every outcome is one verdict line, printed last, whose first word is stable:
  *
  *   serving, already-serving                     the page answered
  *   refused: not-loopback, refused: port-held,   nothing was started
  *   refused: no-lsof, refused: no-ps,
- *   refused: bad-port, refused: busy
+ *   refused: bad-port, refused: busy,
+ *   refused: dev-script
  *   failed: not-listening, failed: exited,       what was started is stopped
  *   failed: page <status>, failed: no-ps,
  *   failed: interrupted
@@ -30,10 +34,10 @@
  *    the key in the server's environment and nothing authenticates the browser
  *    calling them, so a server anyone on the network can reach spends the key
  *    for them from the moment its port opens. A host that is not loopback is
- *    refused before anything starts, and so is a `dev` script that does not bind
- *    the host it is given. Once the port opens, every socket the server's
- *    process group listens on, whatever its port, must be loopback, or the
- *    group is stopped.
+ *    refused before anything starts, and so is a `dev` script that adds a host
+ *    or a port of its own after `scripts/run-next.mts dev`. Once the port
+ *    opens, every socket the server's process group listens on, whatever its
+ *    port, must be loopback, or the group is stopped.
  *  - **A process group of its own.** The server is spawned in a new session, so
  *    the terminal's hangup does not reach it, and everything it starts shares
  *    its group. Stopping is one signal to the group, then a hard stop after a
@@ -89,6 +93,12 @@
  *    foreign address is the wildcard, which no locale translates, and the
  *    processes with PowerShell's `Get-CimInstance Win32_Process`: each one's
  *    parent, its start time to the microsecond and its command line.
+ *  - The process serve spawns is the `node` running `scripts/run-next.mts`,
+ *    never npm: npm runs a script through `cmd.exe`, and a `cmd.exe` started
+ *    by a process with no console, as a detached one is, opens a console
+ *    window of its own, which stayed open for as long as the server ran.
+ *    `run-next.mts` starts `next` hidden (`windowsHide`), and everything under
+ *    `next` shares its console.
  *  - The "group" is the tree under the process serve spawned, and a process
  *    belongs to it only when it is proven serve's: the first process, by its
  *    start time; every process serve saw in the tree once the server listened,
@@ -131,7 +141,7 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { npmInvocation } from "./npm.mts";
+import { npmCommand } from "./npm.mts";
 import { isHostOrPortOption } from "./run-next.mts";
 
 // The project's root, anchored on this file as `shared.mts` anchors its own.
@@ -159,7 +169,11 @@ export const USAGE =
 export interface ServeConfig {
   /** The project's root: where the server runs and `.serve/` lives. */
   checkout: string;
-  /** What starts the dev server, run in the checkout with `APP_HOST` and `APP_PORT` set. */
+  /**
+   * What starts the dev server, run in the checkout with `APP_HOST` and
+   * `APP_PORT` set, before the options the `dev` script gives `next` after
+   * `scripts/run-next.mts dev`.
+   */
   command: readonly string[];
   /** `APP_HOST` as given; blank is the default, `127.0.0.1`. */
   host: string;
@@ -199,38 +213,55 @@ export interface Commands {
 /** The names under `make`, which runs `npm run serve` for those who have it. */
 export const MAKE_COMMANDS: Commands = { serve: "make serve", stop: "make stop", dev: "make dev" };
 
-/** The names every system runs, Windows included. */
-export const NPM_COMMANDS: Commands = {
-  serve: "npm run serve",
-  stop: "npm run serve -- stop",
-  dev: "npm run dev",
-};
+/**
+ * npm's names for the commands, which every system runs, Windows included,
+ * spelled as a person types them there: `npm.cmd` on Windows (`npmCommand`).
+ */
+export function npmCommands(platform: NodeJS.Platform = process.platform): Commands {
+  const npm = npmCommand(platform);
+  return { serve: `${npm} run serve`, stop: `${npm} run serve -- stop`, dev: `${npm} run dev` };
+}
 
 /**
  * The commands to name, from the environment serve runs in: `make` sets
  * `MAKELEVEL` for every command its recipes run, so a serve started by
  * `make serve` names `make stop`, and one started by `npm run serve` names
- * `npm run serve -- stop`.
+ * `npm run serve -- stop`, or `npm.cmd run serve -- stop` on Windows.
  */
-export function commandsFor(env: NodeJS.ProcessEnv): Commands {
-  return env.MAKELEVEL?.trim() ? MAKE_COMMANDS : NPM_COMMANDS;
+export function commandsFor(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): Commands {
+  return env.MAKELEVEL?.trim() ? MAKE_COMMANDS : npmCommands(platform);
 }
 
 /** Where the OS differs enough that serve asks it other questions. */
 const WINDOWS = process.platform === "win32";
 
+/** The template's `dev` script, which serve runs itself, as `devServerCommand` says. */
+export const TEMPLATE_DEV_SCRIPT = "node --experimental-strip-types scripts/run-next.mts dev";
+
 /**
- * What starts the dev server: the `dev` script, through npm, run the way
- * `npmInvocation` runs it on this system.
+ * What starts the dev server: what the `dev` script runs, `scripts/run-next.mts
+ * dev`, run with this Node and named by its absolute path, with no npm and no
+ * shell in between. `npm run` would run the script through a shell, `cmd.exe`
+ * on Windows, which opened a console window there; and `run-next.mts` needs
+ * nothing `npm run` provides: it finds `next` in the checkout's `node_modules`
+ * on its own, reads only `APP_HOST` and `APP_PORT`, and serve runs it in the
+ * checkout with the environment serve was given, `npm run serve`'s included.
  */
-export function devCommand(env: NodeJS.ProcessEnv = process.env): string[] {
-  const npm = npmInvocation(env);
-  return [npm.command, ...npm.args, "run", "dev"];
+export function devServerCommand(checkout: string, execPath = process.execPath): string[] {
+  return [
+    execPath,
+    "--experimental-strip-types",
+    path.join(checkout, "scripts", "run-next.mts"),
+    "dev",
+  ];
 }
 
 export const DEFAULT_CONFIG: ServeConfig = {
   checkout: REPO_ROOT,
-  command: devCommand(),
+  command: devServerCommand(REPO_ROOT),
   host: "127.0.0.1",
   ports: DEFAULT_PORTS,
   waitMs: 60_000,
@@ -238,7 +269,7 @@ export const DEFAULT_CONFIG: ServeConfig = {
   graceMs: 5_000,
   lsof: WINDOWS ? "netstat.exe" : "lsof",
   ps: WINDOWS ? "powershell.exe" : "ps",
-  commands: NPM_COMMANDS,
+  commands: npmCommands(),
   print: (line) => console.log(line),
 };
 
@@ -319,22 +350,37 @@ export function isLoopbackAddress(address: string): boolean {
 }
 
 /**
- * Whether a `dev` script binds the host it is given, or a loopback address of
- * its own: `next dev` given no `-H` listens on every interface, and no
- * environment variable changes that. The template's script runs
- * `scripts/run-next.mts dev`, which hands `next dev` the `-H` that `APP_HOST`
- * names, loopback by default, on every system.
+ * What serve makes of the `dev` script: the options it gives `next` after
+ * `scripts/run-next.mts dev`, which serve passes on, or why serve will not
+ * start it.
+ *
+ *  - `host`: an option naming a host or a port. `run-next.mts` hands `next`
+ *    the host `APP_HOST` names first, loopback by default, and `next` takes the
+ *    last host it is given, so one after it would open the server wherever it
+ *    says; `run-next.mts` refuses one too.
+ *  - `other`: anything but the template's script followed by plain words.
+ *    Serve runs `scripts/run-next.mts dev` itself rather than through npm, so
+ *    a script that runs anything else, or whose options a shell would read,
+ *    would start another server under `npm run dev` than under serve.
  */
-export function devScriptBindsLoopback(script: string): boolean {
-  const runNext = /(^|\s)scripts\/run-next\.mts\s+dev(\s+(.*))?$/.exec(script);
-  if (runNext !== null) {
-    // run-next.mts hands `next` the host first, so a host option after it
-    // would win; run-next refuses one too.
-    return !(runNext[3] ?? "").split(/\s+/).some(isHostOrPortOption);
-  }
-  return /(^|\s)(-H|--hostname)(\s+|=)("?)(\$\{APP_HOST:-127\.0\.0\.1\}|127\.0\.0\.1|localhost|::1)\4(\s|$)/.test(
-    script,
-  );
+export type DevScript =
+  | { options: string[] }
+  | { problem: "host"; option: string }
+  | { problem: "other" };
+
+export function readDevScriptOptions(script: string): DevScript {
+  const match =
+    /^node\s+--experimental-strip-types\s+scripts\/run-next\.mts\s+dev(?:\s+(.*))?$/.exec(
+      script.trim(),
+    );
+  if (match === null) return { problem: "other" };
+  const options = (match[1] ?? "").split(/\s+/).filter(Boolean);
+  const option = options.find(isHostOrPortOption);
+  if (option !== undefined) return { problem: "host", option };
+  // Words no shell reads specially: a quote, `$`, `%` or an operator would
+  // mean one thing to npm's shell and another as a word passed as it is.
+  if (!options.every((word) => /^[\w@+=:,./-]+$/.test(word))) return { problem: "other" };
+  return { options };
 }
 
 function urlOf(address: string, port: number): string {
@@ -1412,15 +1458,23 @@ export async function serve(config: ServeConfig): Promise<number> {
     return EXIT_FAILED;
   }
   const script = readDevScript(checkout);
-  if (!devScriptBindsLoopback(script)) {
+  const devScript = readDevScriptOptions(script);
+  if ("problem" in devScript) {
     print(
-      `refused: not-loopback — the dev script in package.json (${JSON.stringify(script)}) ` +
-        `does not bind the server to this machine, so ${serveCommand} does not start it. ` +
-        "Run next through scripts/run-next.mts, or give it -H ${APP_HOST:-127.0.0.1}, as the " +
-        "template does.",
+      devScript.problem === "host"
+        ? `refused: not-loopback — the dev script in package.json (${JSON.stringify(script)}) ` +
+            `gives next ${devScript.option}, which would win over the host APP_HOST names, so ` +
+            `${serveCommand} does not start it. Name the host in APP_HOST and the port in ` +
+            "APP_PORT instead."
+        : `refused: dev-script — the dev script in package.json (${JSON.stringify(script)}) is ` +
+            `not ${JSON.stringify(TEMPLATE_DEV_SCRIPT)} followed by plain options for next, ` +
+            `which ${serveCommand} runs itself, with no npm or shell in between, so it would not ` +
+            `start the server ${dev} starts. Nothing was started: put the template's dev script ` +
+            `back, or run ${dev} in the foreground.`,
     );
     return EXIT_FAILED;
   }
+  const command = [...config.command, ...devScript.options];
   if (
     config.port !== undefined &&
     !(Number.isInteger(config.port) && config.port > 0 && config.port < 65536)
@@ -1431,7 +1485,7 @@ export async function serve(config: ServeConfig): Promise<number> {
 
   try {
     return await exclusive(config, checkout, (interrupt) =>
-      serveChecked(config, checkout, host, interrupt),
+      serveChecked({ ...config, command }, checkout, host, interrupt),
     );
   } catch (error) {
     if (error instanceof NoLsofError) {
@@ -1715,7 +1769,10 @@ async function start(
       cwd: checkout,
       // A new session: a group of its own for one signal to stop, and out of
       // reach of the terminal's hangup. On Windows, a process that outlives
-      // this one, outside the job Node ends with it, and with no window.
+      // this one, outside the job Node ends with it, and with no console at
+      // all: what it starts must then ask for a hidden one, as run-next.mts
+      // starts next with `windowsHide`, or Windows opens a visible console
+      // for it, as it did for the `cmd.exe` npm started here.
       detached: true,
       windowsHide: true,
       stdio: ["ignore", output, output],

@@ -58,7 +58,7 @@ import {
 } from "./npm.mjs";
 import { decodePack, PackError } from "./pack.mjs";
 import { loadTable, PACKAGE_ROOT } from "./templates.mjs";
-import { EXIT_OK, inTurn, shellQuote, Verdict } from "./verdict.mjs";
+import { EXIT_OK, inTurn, npmCommand, shellQuote, Verdict } from "./verdict.mjs";
 import { DestinationChanged, Interrupted, writeTree } from "./write.mjs";
 
 export const PACKS_DIR = path.join(PACKAGE_ROOT, "templates");
@@ -248,9 +248,16 @@ function planGit(args, dest, found, env) {
 /**
  * The commands to run next, without --dry-run, quoted for this system's shell
  * and in order: `cd` into the copy, then `npm run create`, after the
- * `npm install` it needs unless `installed`.
+ * `npm install` it needs unless `installed`, npm spelled as a person types it
+ * there (`npmCommand`).
  */
-function nextCreate(dest, table, template, values, { installed = false } = {}) {
+export function nextCreate(
+  dest,
+  table,
+  template,
+  values,
+  { installed = false, platform = process.platform } = {},
+) {
   const forwarded = { ...values };
   delete forwarded.DRY_RUN;
   const words = createWords(
@@ -258,10 +265,20 @@ function nextCreate(dest, table, template, values, { installed = false } = {}) {
     forwarded,
     table.switches,
     table.required,
-  ).map((word) => shellQuote(word));
+  ).map((word) => shellQuote(word, platform));
   if (values[table.required] === undefined) words.unshift("<method>");
-  const create = `npm run create -- ${words.join(" ")}`;
-  return inTurn([`cd ${shellQuote(dest)}`, ...(installed ? [] : ["npm install"]), create]);
+  const npm = npmCommand(platform);
+  const create = `${npm} run create -- ${words.join(" ")}`;
+  return inTurn([
+    `cd ${shellQuote(dest, platform)}`,
+    ...(installed ? [] : [`${npm} install`]),
+    create,
+  ]);
+}
+
+/** The commands to run once the app is created: `cd` into it, then `npm run serve`. */
+export function nextServe(dest, platform = process.platform) {
+  return inTurn([`cd ${shellQuote(dest, platform)}`, `${npmCommand(platform)} run serve`]);
 }
 
 async function create(argv, d, say, state) {
@@ -471,7 +488,7 @@ async function create(argv, d, say, state) {
     };
   }
   stampInstall(dest);
-  return { line: `created ${dest}; next: ${inTurn([`cd ${shellQuote(dest)}`, "npm run serve"])}` };
+  return { line: `created ${dest}; next: ${nextServe(dest)}` };
 }
 
 /**

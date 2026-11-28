@@ -68,8 +68,9 @@ jobs:
         run: make build
 
   # The tests of the scripts written for Windows, under PowerShell, with neither
-  # make nor bash: the dev server in the background (npm run serve), the dev and
-  # start scripts, and how the scripts run npm.
+  # make nor bash: the dev server in the background (npm run serve), with no
+  # cmd.exe in the tree it starts, the dev and start scripts, and how the
+  # scripts run npm.
   windows:
     name: Scripts on Windows (method-apps/webapp-js, next SDK)
     runs-on: windows-latest
