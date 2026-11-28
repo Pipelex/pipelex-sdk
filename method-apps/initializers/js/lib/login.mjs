@@ -37,7 +37,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { parseEnv } from "node:util";
+// The module, not the named export: `parseEnv` arrived in Node 20.12, and a
+// named import of it would fail to link on an older Node before the
+// initializer could print its `refused: node-too-old`.
+import util from "node:util";
 
 /** The home directory's name under the user's home, when `PIPELEX_HOME` is not set. */
 export const HOME_DIR_NAME = ".pipelex";
@@ -101,7 +104,7 @@ export function readLoginKey(env, { homedir = os.homedir } = {}) {
   }
   let values;
   try {
-    values = parseEnv(text.replace(/^﻿/, ""));
+    values = util.parseEnv(text.replace(/^\uFEFF/, ""));
   } catch {
     return { status: "unreadable", file };
   }

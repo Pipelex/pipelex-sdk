@@ -396,6 +396,18 @@ export function noKeyMessage(
   );
 }
 
+/**
+ * The warning a run on the login's key prints: the app it leaves reads its key
+ * from its environment and env files only, so it starts with none.
+ */
+export function loginKeyWarning(login: LoginUse): string {
+  return (
+    `the key the login saved in ${login.file} served this run only: the app does not read ` +
+    `that file, so put your own ${API_KEY_KEY} in ${ENV_FILE} before \`npm run dev\` or ` +
+    "`npm run serve`, or start them from a shell that exports it."
+  );
+}
+
 /** Where the key a run uses came from, when it is the login's. */
 export interface LoginUse {
   /** The login's file, as a message shows it. */
@@ -576,8 +588,14 @@ export async function planEnvFile(
   login?: LoginUse,
 ): Promise<EnvPlan> {
   const envPath = path.join(repoRoot, ENV_FILE);
+  const loginNote =
+    login === undefined
+      ? undefined
+      : `The key the login saved in ${login.file} is used for this run only, and never copied; ` +
+        "the app does not read that file.";
   if (existsSync(envPath)) {
     const notes = [`${ENV_FILE} exists and is left as it is.`];
+    if (loginNote !== undefined) notes.push(loginNote);
     const fileBase = envAssignment(await readFile(envPath, "utf-8"), BASE_URL_KEY);
     if (shell.baseUrl !== undefined && fileBase !== undefined && fileBase !== shell.baseUrl) {
       notes.push(
@@ -606,9 +624,8 @@ export async function planEnvFile(
         (shell.key !== undefined
           ? ". The key your shell exports is used for this run only, and never copied; while " +
             "a shell exports one, it wins over the file, so start the app from one that does not."
-          : login !== undefined
-            ? `. The key the login saved in ${login.file} is used for this run only, and never ` +
-              "copied; the app does not read that file."
+          : loginNote !== undefined
+            ? `. ${loginNote}`
             : ".")
       : devServerReads(keyFile)
         ? `, and no ${API_KEY_KEY} line: the key stays in ${keyFile}, which a line here would hide.`
@@ -617,6 +634,9 @@ export async function planEnvFile(
   const notes = [
     `${ENV_FILE} is written with ${BASE_URL_KEY}=${effectiveBaseUrl} (${baseOrigin})${keyNote}`,
   ];
+  // A key held only in a file the gesture does not load, such as `.env.development`:
+  // the run used the login's, which may be another organization's.
+  if (keyFile !== undefined && loginNote !== undefined) notes.push(loginNote);
   return { action: "write", content, notes, keyNeeded: keyFile === undefined };
 }
 
@@ -767,7 +787,8 @@ export function resolveCreateDeps(
 ): CreateDeps {
   const shell: ShellEnv = {
     baseUrl: process.env.PIPELEX_BASE_URL || undefined,
-    key: process.env.PIPELEX_API_KEY || undefined,
+    // A blank key is no key, as the initializer's preflight reads it.
+    key: process.env.PIPELEX_API_KEY?.trim() || undefined,
   };
   // The shell's alone: an env file the project ships never says where the login is.
   const pipelexHome = process.env.PIPELEX_HOME || undefined;
@@ -787,7 +808,7 @@ export function resolveCreateDeps(
   };
   let login: LoginUse | undefined;
   let credentials: ExplicitCredentials | undefined;
-  if (!process.env.PIPELEX_API_KEY) {
+  if (!process.env.PIPELEX_API_KEY?.trim()) {
     const read = readLoginKey(pipelexHome, homedir);
     if (read.status !== "key") throw new CreateError(noKeyMessage(read, homedir, platform));
     const setBaseUrl = process.env.PIPELEX_BASE_URL || undefined;
@@ -845,6 +866,10 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
   console.log(`  description: ${identity.description}`);
   printPlan(plan);
   for (const warning of plan.warnings) console.log(`\n! ${warning}`);
+  if (deps.login !== undefined && deps.envFiles?.key === undefined) {
+    // A warning, so the initializer repeats it after npm run all fills the tail.
+    console.log(`\n! ${loginKeyWarning(deps.login)}`);
+  }
   for (const note of envPlan.notes) console.log(`  env:    ${note}`);
 
   console.log("\ncreate: checking the project values with the bootstrap (--dry-run)\n");

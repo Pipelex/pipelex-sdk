@@ -33,6 +33,7 @@ import {
   dropEnvLine,
   ENV_FILE,
   loginCommand,
+  loginKeyWarning,
   MAX_LOGIN_FILE_BYTES,
   oneLine,
   parseCreateArgs,
@@ -489,6 +490,40 @@ describe("resolveCreateDeps", () => {
     expect(resolved.login?.baseUrl).toBe(false);
   });
 
+  it("reads a blank key in the shell as no key, as the initializer does, and goes on to the login", async () => {
+    vi.stubEnv("PIPELEX_API_KEY", "   ");
+    vi.stubEnv("PIPELEX_HOME", "");
+    await saveLogin("PIPELEX_API_KEY=sk-login\n");
+    const resolved = resolveCreateDeps(root, { homedir: home() });
+    expect(resolved.shell.key).toBeUndefined();
+    expect(resolved.login).toBeDefined();
+  });
+
+  it("says the login's key served the run when .env.local exists, or a key only .env.development holds", async () => {
+    const login = { file: "~/.pipelex/.env", baseUrl: false };
+    const said = "The key the login saved in ~/.pipelex/.env is used for this run only";
+    await writeFile(path.join(root, ".env.development"), "PIPELEX_API_KEY=sk-dev\n");
+    const devOnly = await planEnvFile(
+      root,
+      {},
+      "https://api.example",
+      { key: ".env.development" },
+      login,
+    );
+    expect(devOnly.notes.join("\n")).toContain(said);
+
+    await writeFile(path.join(root, ".env.local"), "PIPELEX_API_KEY=\n");
+    const kept = await planEnvFile(root, {}, "https://api.example", {}, login);
+    expect(kept.action).toBe("keep");
+    expect(kept.notes.join("\n")).toContain(said);
+  });
+
+  it("warns that the app does not read the login's file, in a line the initializer repeats", () => {
+    const warning = loginKeyWarning({ file: "~/.pipelex/.env", baseUrl: false });
+    expect(warning).toContain("the app does not read that file");
+    expect(warning).toContain("put your own PIPELEX_API_KEY in .env.local");
+  });
+
   it("reads no login when the shell exports a key", async () => {
     vi.stubEnv("PIPELEX_API_KEY", "sk-shell");
     vi.stubEnv("PIPELEX_HOME", "");
@@ -826,6 +861,15 @@ describe("runCreate", () => {
     expect(env).toContain("PIPELEX_BASE_URL=https://api.example\n");
     expect(output.join("\n")).toContain("the key stays in .env");
     expect(output.join("\n")).not.toContain("Put your own PIPELEX_API_KEY");
+  });
+
+  it("warns in a line opening with `! ` when the run used the login's key, and copies it nowhere", async () => {
+    const d = { ...deps({}, {}), login: { file: "~/.pipelex/.env", baseUrl: false } };
+    expect(await runCreate([RECEIPTS_DIR], d)).toBe(0);
+
+    const env = await readFile(path.join(root, ENV_FILE), "utf-8");
+    expect(env).toContain("PIPELEX_API_KEY=\n");
+    expect(output).toContain(`\n! ${loginKeyWarning(d.login)}`);
   });
 
   it("keeps the bootstrap and names what is left when npm run all is red", async () => {

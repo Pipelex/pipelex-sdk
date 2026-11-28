@@ -3,12 +3,11 @@
 A fresh copy of this template is an app with no method, under the template's own name. `npm run create` turns it into the app for the method you have, in one command, on every system, Windows included; `make create` runs the same gesture with make's variables:
 
 ```bash
-npx -y @pipelex/mcp@latest login   # once: saves your key in ~/.pipelex/.env
-npm run create -- path/to/my_method.mthds
+PIPELEX_API_KEY=… npm run create -- path/to/my_method.mthds
 npm run dev   # http://127.0.0.1:4300
 ```
 
-On Windows, type `npx.cmd` where these lines say `npx`, and `npm.cmd` where they say `npm`: Windows PowerShell 5.1 may refuse the bare names under its execution policy, and the `.cmd` spelling runs in every shell. Instead of the login, `PIPELEX_API_KEY` may come from your shell or an env file, as [the key and the base URL](#the-key-and-the-base-url) says.
+The key may also come from an env file, or from the Pipelex login, `npx -y @pipelex/mcp@latest login` (`npx.cmd` on Windows), as [the login's key](#the-logins-key) says.
 
 When it finishes, the page is your method's input form and result view, the project is named after the method, `.env.local` points at the API the gesture ran against and waits for your own key, and `npm run all` is green. Nothing is committed: the whole result is a working-tree change for you to review.
 
@@ -99,7 +98,7 @@ The file is created readable by you alone. An existing `.env.local` is yours and
 - **Where it is.** `PIPELEX_HOME` is read from your shell alone, never from an env file, which a cloned repository could ship. A leading `~/` (or `~\` on Windows), or `~` alone, is your home directory. A `PIPELEX_HOME` that is neither absolute nor starts with `~/` is refused rather than resolved against the working directory, and the refusal says so.
 - **What counts as the file.** A regular file of at most one mebibyte, a symlink followed to its target, read with Node's own `.env` parser. An empty value counts as no value.
 - **Its base URL comes with its key, and with it alone.** When the key is the login's, the gesture runs against the `PIPELEX_BASE_URL` your shell or an env file sets, else the one the login saved beside the key, else the default, so a development key saved beside a development base URL is not sent to production. That base URL is the one written into `.env.local`, and the plan says where it came from.
-- **The key is never copied**, like every other: `.env.local` still gets an empty `PIPELEX_API_KEY` line, and the plan says that the login's key was used for this run only. The app itself does not read the login's file, so put your own key in `.env.local` before `npm run dev`.
+- **The key is never copied**, like every other: `.env.local` still gets an empty `PIPELEX_API_KEY` line, or is left as it is when it exists, and the plan says that the login's key was used for this run only. The app itself does not read the login's file, so the gesture also prints a warning, a line opening with `! ` that the initializer repeats at the end, saying to put your own key in `.env.local` before `npm run dev` or `npm run serve`, or to start them from a shell that exports it.
 
 When no source holds a key, the refusal names the login first, with the file it looked in, then the env files and the shell. The family's initializer, `npm create @pipelex/method-app`, reads the same file under the same rules before it runs this gesture; both suites execute the same table of cases, `scripts/lib/fixtures/login-key.json` here, a copy of the family's `initializers/login-key.json`, and both follow the file's owner, `src/credentials.ts` in `pipelex-mcp`. The fixture goes with this document when the bootstrap runs.
 

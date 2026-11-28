@@ -36,7 +36,7 @@
     {
       "name": "a leading byte-order mark is not part of the first name",
       "file": "home/.pipelex/.env",
-      "content": "﻿PIPELEX_API_KEY=plx_sk_case_bom\n",
+      "content": "\uFEFFPIPELEX_API_KEY=plx_sk_case_bom\n",
       "expect": {
         "status": "key",
         "key": "plx_sk_case_bom",
