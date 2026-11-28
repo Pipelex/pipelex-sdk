@@ -36,6 +36,7 @@ import {
   commandRunsIn,
   commandsFor,
   DEFAULT_CONFIG,
+  devHooksOf,
   devServerCommand,
   isLoopbackAddress,
   isLoopbackHost,
@@ -107,6 +108,7 @@ import http from "node:http";
 
 const [role, mode] = process.argv.slice(2);
 appendFileSync("pids", process.pid + "\\n");
+if (role === "parent") appendFileSync("args", JSON.stringify(process.argv.slice(2)) + "\\n");
 const forever = () => setInterval(() => {}, 1 << 30);
 if (role === "parent") {
   if (mode === "exit") {
@@ -231,12 +233,15 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
-/** A checkout whose `dev` script is `devScript`, holding the fake dev server. */
-function checkoutWith(devScript = TEMPLATE_DEV): string {
+/**
+ * A checkout whose `dev` script is `devScript`, beside any other `scripts`,
+ * holding the fake dev server.
+ */
+function checkoutWith(devScript = TEMPLATE_DEV, scripts: Record<string, string> = {}): string {
   const dir = tempDir("serve-checkout-");
   writeFileSync(
     path.join(dir, "package.json"),
-    JSON.stringify({ name: "fake", private: true, scripts: { dev: devScript } }),
+    JSON.stringify({ name: "fake", private: true, scripts: { ...scripts, dev: devScript } }),
   );
   writeFileSync(path.join(dir, "fake-dev.mjs"), FAKE_DEV);
   return dir;
@@ -524,6 +529,12 @@ describe("the loopback rules", () => {
 
   it("takes the template's dev script, with plain options for next, and passes those on", () => {
     expect(TEMPLATE_DEV_SCRIPT).toBe(TEMPLATE_DEV);
+    // The template's own package.json, which every project starts from.
+    const shipped = JSON.parse(
+      readFileSync(path.resolve(import.meta.dirname, "..", "..", "package.json"), "utf-8"),
+    ) as { scripts: Record<string, string> };
+    expect(readDevScriptOptions(shipped.scripts.dev)).toEqual({ options: [] });
+    expect(devHooksOf(shipped.scripts)).toEqual([]);
     expect(readDevScriptOptions(TEMPLATE_DEV)).toEqual({ options: [] });
     expect(readDevScriptOptions(`  ${TEMPLATE_DEV}  `)).toEqual({ options: [] });
     expect(readDevScriptOptions(`${TEMPLATE_DEV} --turbopack`)).toEqual({
@@ -543,6 +554,12 @@ describe("the loopback rules", () => {
     ]) {
       expect(readDevScriptOptions(script), script).toEqual({ problem: "host", option });
     }
+  });
+
+  it("names the scripts npm runs around dev, which serve would not run", () => {
+    expect(devHooksOf({ dev: TEMPLATE_DEV })).toEqual([]);
+    expect(devHooksOf({ dev: TEMPLATE_DEV, predev: "npm run codegen" })).toEqual(["predev"]);
+    expect(devHooksOf({ predev: "a", postdev: "b", prebuild: "c" })).toEqual(["predev", "postdev"]);
   });
 
   it("refuses any other dev script, which serve would not start as npm run dev does", () => {
@@ -715,7 +732,7 @@ describe("what Windows says", () => {
     });
 
     it("keeps the members it recorded once their parents have ended, and their children", () => {
-      // npm (10) and run-next (11) have ended; next (12) and its worker (13) run on.
+      // run-next (10) and next (11) have ended; next's server (12) and its worker (13) run on.
       const table = [entry(12, 11, 12), entry(13, 12, 13)];
       const members = [11, 12, 13].map((pid) => ({ pid, started: at(pid) }));
       expect(pids(treeOf(table, { pgid: 10, leaderStart: at(10), members }))).toEqual([12, 13]);
@@ -922,6 +939,16 @@ describe("what is refused or answered before a server is looked for", () => {
     expect(pidsIn(checkout)).toEqual([]);
   });
 
+  it("refuses a predev or postdev script, which serve would not run, before starting anything", async () => {
+    const checkout = checkoutWith(TEMPLATE_DEV, { predev: "npm run codegen" });
+    const result = await run(serve, configFor(checkout, "ok", await freePorts(1)));
+    expect(result.code).toBe(1);
+    expect(result.verdict).toMatch(
+      /^refused: dev-script — package\.json has predev, .* Nothing was started: run make dev in the foreground, or remove it\.$/,
+    );
+    expect(pidsIn(checkout)).toEqual([]);
+  });
+
   it("refuses without lsof, before starting anything", async () => {
     const checkout = checkoutWith();
     const result = await run(
@@ -1065,6 +1092,18 @@ describe.skipIf(!CAN_SERVE)("make serve", SPAWNS, () => {
     );
     expect(await allGone(pids)).toBe(true);
     expect(stateOf(checkout)).toBeUndefined();
+  });
+
+  it("passes the dev script's options for next on to the server it starts", async () => {
+    const checkout = checkoutWith(`${TEMPLATE_DEV} --turbopack --experimental-https`);
+    const config = configFor(checkout, "ok", await freePorts(1));
+    const served = await run(serve, config);
+    expect(served.code, served.lines.join("\n")).toBe(0);
+    expect(readFileSync(path.join(checkout, "args"), "utf-8").trim()).toBe(
+      JSON.stringify(["parent", "ok", "--turbopack", "--experimental-https"]),
+    );
+    expect((await run(stop, config)).verdict).toMatch(/^stopped /);
+    expect(await allGone(pidsIn(checkout))).toBe(true);
   });
 
   it("stops a server that listens beyond loopback, with its whole group", async () => {

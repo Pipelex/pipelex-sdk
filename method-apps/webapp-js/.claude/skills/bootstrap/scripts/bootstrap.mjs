@@ -630,12 +630,14 @@ export async function run(root, names, opts) {
   );
   if (!opts.dryRun) {
     // One command per line, run one after the other: Windows PowerShell 5.1 has
-    // no `&&` to chain them.
+    // no `&&` to chain them, and refuses a typed `npm` under its default
+    // execution policy, where `npm.cmd` runs in every Windows shell.
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
     console.log(
       "\nNext: sync the lock file (npm ci in CI validates its name/version), then run the gates:",
     );
-    console.log("  npm install --package-lock-only");
-    console.log("  npm run all");
+    console.log(`  ${npm} install --package-lock-only`);
+    console.log(`  ${npm} run all`);
     console.log("Then review with `git status` and `git diff` before committing.");
   }
 }

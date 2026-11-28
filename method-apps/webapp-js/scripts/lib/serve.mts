@@ -361,7 +361,9 @@ export function isLoopbackAddress(address: string): boolean {
  *  - `other`: anything but the template's script followed by plain words.
  *    Serve runs `scripts/run-next.mts dev` itself rather than through npm, so
  *    a script that runs anything else, or whose options a shell would read,
- *    would start another server under `npm run dev` than under serve.
+ *    would start another server under `npm run dev` than under serve. So
+ *    would a `predev` or `postdev` script, which serve refuses too
+ *    (`devHooksOf`).
  */
 export type DevScript =
   | { options: string[] }
@@ -1421,15 +1423,23 @@ async function exclusive(
 
 // ── serve ───────────────────────────────────────────────────────────────────
 
-function readDevScript(checkout: string): string {
+function readScripts(checkout: string): Record<string, string> {
   try {
     const pkg = JSON.parse(readFileSync(path.join(checkout, "package.json"), "utf-8")) as {
       scripts?: Record<string, string>;
     };
-    return pkg.scripts?.dev ?? "";
+    return pkg.scripts ?? {};
   } catch {
-    return "";
+    return {};
   }
+}
+
+/**
+ * The scripts npm runs around `dev` (`predev`, `postdev`), which `npm run dev`
+ * runs and serve, starting `run-next.mts` itself, would not.
+ */
+export function devHooksOf(scripts: Readonly<Record<string, string>>): string[] {
+  return ["predev", "postdev"].filter((name) => scripts[name] !== undefined);
 }
 
 /** The loopback address a group listens on for a port, IPv4 first. */
@@ -1457,8 +1467,19 @@ export async function serve(config: ServeConfig): Promise<number> {
     );
     return EXIT_FAILED;
   }
-  const script = readDevScript(checkout);
+  const scripts = readScripts(checkout);
+  const script = scripts.dev ?? "";
   const devScript = readDevScriptOptions(script);
+  const hooks = devHooksOf(scripts);
+  if (!("problem" in devScript) && hooks.length > 0) {
+    print(
+      `refused: dev-script — package.json has ${hooks.join(" and ")}, which npm runs around ` +
+        `the dev script and ${serveCommand}, running scripts/run-next.mts itself with no npm in ` +
+        `between, would not, so it would not start the server ${dev} starts. Nothing was ` +
+        `started: run ${dev} in the foreground, or remove ${hooks.length > 1 ? "them" : "it"}.`,
+    );
+    return EXIT_FAILED;
+  }
   if ("problem" in devScript) {
     print(
       devScript.problem === "host"

@@ -698,7 +698,7 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
     [
       `${npmCommand()} install --package-lock-only`,
       `${npmCommand()} run all`,
-      `then remove ${BOOTSTRAP_DIR}/, once npm run all is green`,
+      `then remove ${BOOTSTRAP_DIR}/, once ${npmCommand()} run all is green`,
     ]
       .slice(from)
       .map((line) => `  ${line}`)

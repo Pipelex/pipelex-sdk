@@ -43,6 +43,7 @@ import {
   titleFromName,
   type CreateDeps,
 } from "./create.mts";
+import { npmCommand } from "./npm.mts";
 import { REPO_ROOT } from "./shared.mts";
 import RECEIPT_REVIEW_CODEGEN from "./fixtures/recorded/receipt-review.codegen.json" with { type: "json" };
 import RECEIPT_REVIEW_PIPE_IO from "./fixtures/recorded/receipt-review.pipe-io.json" with { type: "json" };
@@ -705,8 +706,12 @@ describe("runCreate", () => {
     expect(existsSync(path.join(root, BOOTSTRAP_DIR))).toBe(true);
     const printed = output.join("\n");
     expect(printed).toContain("npm run all is red");
-    expect(printed).toContain(`then remove ${BOOTSTRAP_DIR}/, once npm run all is green`);
-    expect(printed).not.toContain("npm install --package-lock-only\n  npm run all");
+    expect(printed).toContain(
+      `then remove ${BOOTSTRAP_DIR}/, once ${npmCommand()} run all is green`,
+    );
+    expect(printed).not.toContain(
+      `${npmCommand()} install --package-lock-only\n  ${npmCommand()} run all`,
+    );
   });
 });
 
