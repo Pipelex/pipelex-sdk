@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`RunResults.artifact_links`, `follow_artifact_links`, `fetch_run_artifact` and `parse_run_artifact`**: a hosted results read that hands its largest artifacts back by reference, because inline they would take the body past the API Gateway's limit, now exposes each one's signed link as the typed `artifact_links`, a `dict[str, RunArtifactLink]` (`url`, `expires_at`) read by `results.artifact_link(artifact)`, where it rode `model_extra`. `get_run_result`, `wait_for_result` and `start_and_wait` follow those links by default, before the main-stuff check and the stored-text load, so a referenced artifact reads as its content; `follow_artifact_links=False` hands the links back untouched for a caller that must not pull the file through itself, `client.follow_artifact_links(results)` follows them later, `client.fetch_run_artifact(artifact, link)` fetches one, and the pure `parse_run_artifact(artifact, content)` in `pipelex_sdk.run_artifact_links` reads a file the caller fetched itself, with the usage envelope unpacked (`docs/run-results.md`, "Artifacts handed back by reference").
+
+### Fixed
+
+- **A result handed back by reference no longer reads as missing**: a referenced `main_stuff` no longer raises `MissingMainStuffError`, which is now raised only for a `None` main stuff with no link; a referenced `working_memory` no longer makes the stored-text load raise `StoredTextLoadError` (`concepts_missing`) after `wait_for_result` polled again for it; and a referenced `graph_spec` or usage envelope no longer reads as not written. A `RunTimeoutError` raised while a completed run's artifacts or texts load says so.
+
 ## [v0.73.0] - 2026-11-28
 
 ### Changed

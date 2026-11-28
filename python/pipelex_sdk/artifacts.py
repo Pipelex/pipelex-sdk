@@ -831,6 +831,23 @@ async def _fetch_artifact(
         await storage_client.aclose()
 
 
+async def read_signed_url(client: ArtifactFetchClient, label: str, url: str, options: FetchArtifactOptions | None = None) -> tuple[bytes, int]:
+    """The whole body of a link the server has already signed, read under `fetch_artifact`'s bounds, and its status.
+
+    The link is checked as a resolved one is, redirects are refused, the byte cap is enforced against the declared
+    length and on every chunk, and the budget covers the whole exchange. `label` stands for the link in every error,
+    since a signed link carries its authorization in its query string and is never written into an error. What
+    `follow_artifact_links` reads a result artifact handed back by reference with.
+    """
+    bounds = _validated_bounds(options or FetchArtifactOptions(), origin_url=client.origin_url)
+    storage_client = _new_storage_client(bounds.timeout_seconds)
+    try:
+        async with _stream_resolved_url(storage_client, label, url, bounds) as stream:
+            return await stream.read(), stream.status_code
+    finally:
+        await storage_client.aclose()
+
+
 def _validated_bounds(options: FetchArtifactOptions, *, origin_url: str) -> _FetchBounds:
     """The per-file bounds, refusing nonsense before anything is resolved. `origin_url` is the client's own
     origin, the one on which a plain-http link is fetched without `allow_http`.
@@ -945,7 +962,7 @@ def _format_mib(byte_count: float) -> str:
 # ── load_stored_texts ────────────────────────────────────────────────
 
 #: The result artifacts the concept at each path is read from.
-_CONCEPT_ARTIFACTS: tuple[RunArtifact, ...] = (RunArtifact.WORKING_MEMORY, RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM)
+CONCEPT_ARTIFACTS: tuple[RunArtifact, ...] = (RunArtifact.WORKING_MEMORY, RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM)
 
 
 @dataclass(frozen=True)
@@ -1101,7 +1118,7 @@ def carries_concept_artifacts(selection: Sequence[RunArtifact] | None) -> bool:
     """Whether a results read narrowed to `selection` carried every artifact the concept at each path is read from:
     the working memory and both forms. `None`, a read of every artifact, does.
     """
-    return selection is None or all(artifact in selection for artifact in _CONCEPT_ARTIFACTS)
+    return selection is None or all(artifact in selection for artifact in CONCEPT_ARTIFACTS)
 
 
 async def with_concept_artifacts(
@@ -1117,7 +1134,7 @@ async def with_concept_artifacts(
     """
     if selection is None:
         return results
-    missing = [artifact for artifact in _CONCEPT_ARTIFACTS if artifact not in selection]
+    missing = [artifact for artifact in CONCEPT_ARTIFACTS if artifact not in selection]
     if not missing:
         return results
     state = await client.get_run_result(results.pipeline_run_id, artifacts=missing, load_stored_texts=False)

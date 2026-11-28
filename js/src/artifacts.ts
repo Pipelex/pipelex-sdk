@@ -865,6 +865,44 @@ export async function fetchArtifact(
   });
 }
 
+/**
+ * The whole body of a link the server has already signed, read under `fetchArtifact`'s bounds:
+ * the link checked as a resolved one is, redirects refused, the byte cap enforced against the
+ * declared length and mid-stream, the budget covering the whole exchange. `label` stands for the
+ * link in every error, since a signed link carries its authorization in its query string and is
+ * never written into an error. What `followArtifactLinks` reads a result artifact handed back by
+ * reference with.
+ */
+export async function readSignedUrl(
+  client: Pick<ArtifactCapableClient, "originUrl">,
+  label: string,
+  url: string,
+  options: FetchArtifactOptions = {},
+): Promise<{ bytes: Uint8Array; status: number }> {
+  const bounds = fetchBounds(options, client.originUrl);
+  const dispatcher = await dispatcherFor(bounds.timeoutMs);
+  const response = await fetchResolvedUrl(label, url, bounds, dispatcher, () => {
+    void dispatcher?.close().catch(() => undefined);
+  });
+  if (response.body === null) return { bytes: new Uint8Array(0), status: response.status };
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    chunks.push(chunk.value);
+    total += chunk.value.byteLength;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { bytes, status: response.status };
+}
+
 /** The bounds every fetch runs under, defaults filled in and validated. */
 interface FetchBounds {
   maxBytes: number;
@@ -1403,7 +1441,7 @@ export async function loadStoredTexts(
 }
 
 /** The result artifacts the concept at each path is read from. */
-const CONCEPT_ARTIFACTS = ["working_memory", "output_form", "input_form"] as const;
+export const CONCEPT_ARTIFACTS = ["working_memory", "output_form", "input_form"] as const;
 
 /**
  * The concept facts of a run's results: the results themselves when their read carried the

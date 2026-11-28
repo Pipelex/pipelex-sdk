@@ -350,7 +350,9 @@ class TestStoredTexts:
         assert time.monotonic() - started < 2
         assert exc_info.value.run_id == _RUN_ID
         assert exc_info.value.timeout_seconds == 0.2
-        assert f"Run {_RUN_ID} completed, but its stored texts did not load within 0.2s" in str(exc_info.value)
+        assert f"Run {_RUN_ID} completed, but its artifacts handed back by reference or its stored texts did not load within 0.2s" in str(
+            exc_info.value
+        )
 
     def test_blocking_fallback_keeps_wire_results_when_load_fails(self, mocker: MockerFixture) -> None:
         client = _client()

@@ -72,7 +72,7 @@ from pipelex_sdk.artifact_models import (
     FetchArtifactOptions,
     ResolvedArtifact,
 )
-from pipelex_sdk.artifacts import ArtifactStream, carries_concept_artifacts, may_hold_stored_texts, with_concept_artifacts
+from pipelex_sdk.artifacts import CONCEPT_ARTIFACTS, ArtifactStream, carries_concept_artifacts, may_hold_stored_texts, with_concept_artifacts
 from pipelex_sdk.artifacts import download_artifacts as _download_artifacts_impl
 from pipelex_sdk.artifacts import fetch_artifact as _fetch_artifact_impl
 from pipelex_sdk.artifacts import load_stored_texts as _load_stored_texts_impl
@@ -170,11 +170,15 @@ from pipelex_sdk.product_models import (
     UserProfile,
     read_method,
 )
+from pipelex_sdk.run_artifact_links import fetch_run_artifact as _fetch_run_artifact_impl
+from pipelex_sdk.run_artifact_links import follow_artifact_links as _follow_artifact_links_impl
+from pipelex_sdk.run_artifact_links import holds_artifact_links
 from pipelex_sdk.runs import (
     MAX_CONCEPTS_MISSING_POLLS,
     PipelexRunResultStart,
     PollInfo,
     RunArtifact,
+    RunArtifactLink,
     RunProgress,
     RunRead,
     RunResultCompleted,
@@ -1648,6 +1652,7 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         artifacts: Sequence[RunArtifact] | None = None,
         load_stored_texts: bool = True,
+        follow_artifact_links: bool = True,
     ) -> RunResultState:
         """Single-shot result lookup — `GET /v1/runs/{run_id}/results`.
 
@@ -1679,11 +1684,20 @@ class PipelexAPIClient(MthdsAPIClient):
                 and a `data:` URL are loaded; a stored text under any other URL raises `StoredTextLoadError`
                 (`unsupported_url`) without being fetched. `False` returns the wire shape, which
                 `pipelex_sdk.artifacts.load_stored_texts` loads later (`docs/run-results.md`, "Stored texts").
+            follow_artifact_links: Whether the artifacts the platform handed back by reference are fetched into
+                their fields, `True` by default. When inline they would take the body past the API Gateway's limit,
+                the platform answers the largest artifacts as `None` beside a signed link in `artifact_links`; followed,
+                they read as their content, before the main-stuff check and the stored-text load. `False` hands the
+                links back untouched, for a caller that passes the link on rather than pull the file through itself,
+                and the main-stuff check then raises only for a `None` main stuff with no link
+                (`docs/run-results.md`, "Artifacts handed back by reference").
 
         Raises:
             RequestArgumentError: If `artifacts` is an empty selection, which names nothing to read,
                 or names an artifact that is no `RunArtifact`.
-            MissingMainStuffError: If a completed run asked for its main stuff delivers none.
+            MissingMainStuffError: If a completed run asked for its main stuff delivers none, neither inline nor by
+                reference.
+            ArtifactFetchError: If an artifact handed back by reference could not be fetched or read.
             StoredTextLoadError: If a stored text of the run could not be loaded.
             RunLifecycleUnavailableError: If the lifecycle routes are absent (a bare runner).
             ApiUnreachableError: If the host cannot be reached (DNS / connect / TLS / timeout).
@@ -1715,18 +1729,16 @@ class PipelexAPIClient(MthdsAPIClient):
             self._raise_v1_refusal(method="GET", endpoint=endpoint, response=response)
         wants_main_stuff = selection is None or RunArtifact.MAIN_STUFF in selection
 
-        def read_results(payload: Any) -> RunResults:
-            # A completed run asked for its main stuff must deliver one. `.get(...) is None` covers both the
-            # missing-key and explicit-null cases for the same un-deliverable-output condition (a
-            # present-but-falsy main stuff — `[]`, `0` — stays). A selection that left `main_stuff` out
-            # asked for none, so its absence there is the answer, not a fault. A payload that is no
-            # object is no results at all, which `RunResults` refuses.
-            if wants_main_stuff and isinstance(payload, dict) and cast("dict[str, Any]", payload).get("main_stuff") is None:
-                msg = f"Completed run '{run_id}' returned no main stuff — a completed run always delivers a main stuff."
-                raise MissingMainStuffError(msg, run_id=run_id)
-            return RunResults.model_validate(payload)
-
-        result = self._read_v1_answer(read_results, method="GET", endpoint=endpoint, response=response)
+        result = self._read_v1_answer(RunResults.model_validate, method="GET", endpoint=endpoint, response=response)
+        if follow_artifact_links:
+            result = await _follow_artifact_links_impl(self, result)
+        # A completed run asked for its main stuff must deliver one, inline or by reference: a main stuff handed back
+        # by reference is there, at the end of its link. `is None` covers both the missing-key and explicit-null cases
+        # (a present-but-falsy main stuff — `[]`, `0` — stays). A selection that left `main_stuff` out asked for
+        # none, so its absence there is the answer, not a fault.
+        if wants_main_stuff and result.main_stuff is None and result.artifact_link(RunArtifact.MAIN_STUFF) is None:
+            msg = f"Completed run '{run_id}' returned no main stuff — a completed run always delivers a main stuff."
+            raise MissingMainStuffError(msg, run_id=run_id)
         if load_stored_texts and wants_main_stuff:
             result = await self._with_stored_texts_loaded(result, selection=selection)
         return RunResultCompleted(pipeline_run_id=run_id, result=result)
@@ -1741,9 +1753,15 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         if result.main_stuff is None:
             return result
-        if not carries_concept_artifacts(selection) and not may_hold_stored_texts(result.main_stuff):
+        # A concept artifact handed back by reference, from a read that did not follow its links, says nothing until
+        # fetched: it is read like one the selection left out, only when worth it.
+        linked_concepts = holds_artifact_links(result, CONCEPT_ARTIFACTS)
+        if (not carries_concept_artifacts(selection) or linked_concepts) and not may_hold_stored_texts(result.main_stuff):
             return result
         source = await with_concept_artifacts(self, result, selection=selection)
+        if linked_concepts:
+            # Fetched for the load alone: the result handed back keeps its links.
+            source = await _follow_artifact_links_impl(self, source, artifacts=CONCEPT_ARTIFACTS)
         loaded = await _load_stored_texts_impl(self, source)
         if loaded is source:
             return result
@@ -1756,6 +1774,7 @@ class PipelexAPIClient(MthdsAPIClient):
         *,
         artifacts: Sequence[RunArtifact] | None = None,
         load_stored_texts: bool = True,
+        follow_artifact_links: bool = True,
     ) -> RunResults:
         """Poll a run to a terminal state and return its result.
 
@@ -1773,6 +1792,9 @@ class PipelexAPIClient(MthdsAPIClient):
         shape at once. A completed result that does not yet say which of its values are stored texts (its
         `output_form`, which the runtime writes after `main_stuff`, not yet there) is polled again, at most
         `MAX_CONCEPTS_MISSING_POLLS` times, before the wait raises `StoredTextLoadError` (`concepts_missing`).
+        `follow_artifact_links` (on by default) fetches the artifacts the completed result handed back by reference
+        into their fields, as on `get_run_result`, after the status read and before the stored-text load, under the same
+        deadline, so a referenced `working_memory` tells the load which values are texts; `False` returns the links.
 
         With `options.on_progress`, each poll that finds the run still running also reads
         `get_run_progress` and hands the callback every snapshot fresher than the last it delivered
@@ -1811,15 +1833,22 @@ class PipelexAPIClient(MthdsAPIClient):
             # truthfully whether the run had completed.
             try:
                 async with asyncio.timeout(remaining):
-                    state = await self.get_run_result(run_id, artifacts=artifacts, load_stored_texts=False)
+                    state = await self.get_run_result(run_id, artifacts=artifacts, load_stored_texts=False, follow_artifact_links=False)
             except TimeoutError as exc:
                 raise RunTimeoutError(timeout_message(), run_id=run_id, timeout_seconds=opts.timeout_seconds) from exc
 
             if isinstance(state, RunResultCompleted):
-                if not load_stored_texts:
+                if not load_stored_texts and not follow_artifact_links:
                     return state.result
                 try:
-                    return await self._load_within_wait(state.result, artifacts=artifacts, opts=opts, started_at=started_at)
+                    return await self._load_within_wait(
+                        state.result,
+                        artifacts=artifacts,
+                        opts=opts,
+                        started_at=started_at,
+                        follow_artifact_links=follow_artifact_links,
+                        load_stored_texts=load_stored_texts,
+                    )
                 except StoredTextLoadError as exc:
                     # A result read between the runtime's writes of `main_stuff` and `output_form`: poll again, a few
                     # times, before saying the result does not tell its texts apart.
@@ -1868,16 +1897,23 @@ class PipelexAPIClient(MthdsAPIClient):
         artifacts: Sequence[RunArtifact] | None,
         opts: WaitForResultOptions,
         started_at: float,
+        follow_artifact_links: bool,
+        load_stored_texts: bool,
     ) -> RunResults:
-        """A completed result of `wait_for_result` with its stored texts loaded within the time the wait has left.
+        """A completed result of `wait_for_result` with its links followed and its stored texts loaded within the time
+        the wait has left.
 
-        A result with nothing to load returns without waiting on anything, so even a wait whose time is spent hands
-        it back; one whose load outlasts the wait raises `RunTimeoutError` saying the run completed.
+        The links come first, so a referenced `working_memory` tells the load which values are texts. A result with
+        nothing to fetch or load returns without waiting on anything, so even a wait whose time is spent hands it back;
+        one whose load outlasts the wait raises `RunTimeoutError` saying the run completed.
         """
         remaining = max(opts.timeout_seconds - (monotonic() - started_at), 0)
         try:
             async with asyncio.timeout(remaining):
-                return await self._with_stored_texts_loaded(result, selection=artifacts)
+                followed = await _follow_artifact_links_impl(self, result) if follow_artifact_links else result
+                if not load_stored_texts:
+                    return followed
+                return await self._with_stored_texts_loaded(followed, selection=artifacts)
         except TimeoutError as exc:
             msg = _loading_timeout_message(result.pipeline_run_id, opts.timeout_seconds)
             raise RunTimeoutError(msg, run_id=result.pipeline_run_id, timeout_seconds=opts.timeout_seconds) from exc
@@ -1995,6 +2031,7 @@ class PipelexAPIClient(MthdsAPIClient):
         callback_urls: Sequence[str] | None = None,
         artifacts: Sequence[RunArtifact] | None = None,
         load_stored_texts: bool = True,
+        follow_artifact_links: bool = True,
         on_started: Callable[[PipelexRunResultStart], None] | None = None,
         on_starting: Callable[[], None] | None = None,
         idempotency_key: str | None = None,
@@ -2031,6 +2068,8 @@ class PipelexAPIClient(MthdsAPIClient):
         never calls. `load_stored_texts` (on by default) loads the result's stored texts on both paths, as on
         `get_run_result`; `False` returns the wire shape. On the blocking path a text that cannot be loaded raises
         `StoredTextLoadError` carrying the completed result as its `wire_results`, since there is no run to read again.
+        `follow_artifact_links` (on by default) fetches the artifacts the hosted read handed back by reference into their
+        fields, as on `get_run_result`; the blocking path's answer carries every artifact inline, so it has none.
 
         `on_started` is called once with the start acknowledgement as soon as the durable run
         exists and before the first poll, so a caller that waits through this method holds the
@@ -2133,7 +2172,13 @@ class PipelexAPIClient(MthdsAPIClient):
                 )
             if on_started is not None:
                 on_started(started)
-            return await self.wait_for_result(started.pipeline_run_id, options=wait_options, artifacts=artifacts, load_stored_texts=load_stored_texts)
+            return await self.wait_for_result(
+                started.pipeline_run_id,
+                options=wait_options,
+                artifacts=artifacts,
+                load_stored_texts=load_stored_texts,
+                follow_artifact_links=follow_artifact_links,
+            )
 
         await asyncio.sleep(0)
         if on_starting is not None:
@@ -4010,6 +4055,29 @@ class PipelexAPIClient(MthdsAPIClient):
         """
         return _fetch_artifact_impl(self, uri, options)
 
+    async def fetch_run_artifact(self, artifact: RunArtifact, link: RunArtifactLink, options: FetchArtifactOptions | None = None) -> dict[str, Any]:
+        """Fetch one result artifact the platform handed back by reference — an entry of `RunResults.artifact_links` —
+        and read it as the result fields it fills: `{"graph_spec": ...}`, `{"main_stuff": ...}`, …, and
+        `{"tokens_usages": ..., "usage_assembly_error": ...}` unpacked from the usage envelope, under `fetch_artifact`'s
+        bounds. The links inside the artifact are as stored, never re-signed. See `docs/run-results.md`, "Artifacts
+        handed back by reference".
+        """
+        return await _fetch_run_artifact_impl(self, artifact, link, options)
+
+    async def follow_artifact_links(
+        self,
+        results: RunResults,
+        *,
+        artifacts: Sequence[RunArtifact] | None = None,
+        options: FetchArtifactOptions | None = None,
+    ) -> RunResults:
+        """`results` with the artifacts it handed back by reference fetched into their fields, every one or those
+        `artifacts` names, each followed entry dropped from `artifact_links`. What the result readers do by default;
+        for a result read with `follow_artifact_links=False`. Returns a new result, or the same one when it holds no
+        link to follow.
+        """
+        return await _follow_artifact_links_impl(self, results, artifacts=artifacts, options=options)
+
     async def download_artifacts(
         self,
         *,
@@ -5337,10 +5405,13 @@ def _timeout_message(run_id: str, timeout_seconds: float) -> str:
 
 
 def _loading_timeout_message(run_id: str, timeout_seconds: float) -> str:
-    """The `RunTimeoutError` message of a run that completed but whose stored texts did not load within the wait."""
+    """The `RunTimeoutError` message of a run that completed but whose referenced artifacts or stored texts did not load
+    within the wait.
+    """
     return (
-        f"Run {run_id} completed, but its stored texts did not load within {timeout_seconds}s; "
-        "read it again with get_run_result, or with load_stored_texts=False for the wire shape."
+        f"Run {run_id} completed, but its artifacts handed back by reference or its stored texts did not load within "
+        f"{timeout_seconds}s; read it again with get_run_result, or with follow_artifact_links=False and "
+        "load_stored_texts=False for the wire shape."
     )
 
 
