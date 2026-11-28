@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **The `mthds` floor moves from `^0.34.0` to `^0.38.0` (Breaking)**: `mthds` 0.38.0 follows the MTHDS standard's `9.2.0` cut, and what this package re-exports from `mthds/protocol` follows it: `MTHDS_ERROR_REGISTRY_VERSION` is `9.2.0`, whose `CORE_REGISTRY` adds `method.contract_fact_invalid` and the warning `method.choice_option_dubious` and gives `method.hint_invalid` the reasons `unknown_role`, `inapplicable_role`, `unknown_part`, `inapplicable_part` and `duplicate_part`, and the input-form descriptor types carry a `number` node's `unit` and `aggregate` (`Aggregate`, `AGGREGATES`), an `enum` node's `options` (`ChoiceOption`, `OptionTone`, `OPTION_TONES`) and the intent-hint vocabularies (`HINT_KEYS`, `INTENT_WORDS`, `ROLE_WORDS`, `PART_WORDS` and their guards). The same types are tighter: a text node's `format` is the closed `ContractFormat` (`CONTRACT_FORMATS`), its `examples` a non-empty list of strings and numbers and an `enum` node's `choices` `string[]`, so code building a descriptor with another shape no longer compiles. A project that also imports `mthds` itself moves to 0.38 with it, so that one copy is installed.
+- **`pipelex-sdk run --inputs-template` writes a `JSON` input as a bare object (Breaking)**: the template prints a `JSON` input, or one whose concept refines `JSON`, as the object it carries, `{}` to fill in, where it printed `{"concept": "native.JSON", "content": {"json_obj": {}}}`, since a run reads a bare object at a `JSON` position literally; inputs written in the explicit envelope still run.
+
+### Fixed
+
+- **An enum whose choices are not all strings is a malformed input form**: `pipelex-sdk run --inputs-template` and `pipelex-sdk script` refuse a pipe I/O answer whose enum field lists a choice that is not a string, as the Python command already does, instead of rendering a template from it.
+
 ## [v0.71.1] - 2026-11-26
 
 ### Fixed

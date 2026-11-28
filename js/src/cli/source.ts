@@ -130,8 +130,9 @@ export async function describePipe(
 /**
  * Whether an entry `inputFormFault` passed also holds what the inputs template reads beyond the
  * walk, in a shape it can render: every node's `concept_ref` a string, its `refines` a list of
- * strings, an enum's `choices` a list and a list's `item_count` a whole number of at least two,
- * the last three when present. Members the template only tests for truth are not checked.
+ * strings, an enum's `choices` a list of strings and a list's `item_count` a whole number of at
+ * least two, the last three when present. Members the template only tests for truth are not
+ * checked.
  */
 function templateReadable(entry: Record<string, unknown>): boolean {
   return (entry.fields as Array<Record<string, unknown>>).every(templateReadableNode);
@@ -162,7 +163,9 @@ function templateReadableNode(node: Record<string, unknown>): boolean {
     case "object":
       return templateReadable(node);
     case "enum":
-      return Array.isArray(node.choices);
+      return (
+        Array.isArray(node.choices) && node.choices.every((choice) => typeof choice === "string")
+      );
     case "list":
       return (
         (node.item_count === undefined ||
