@@ -986,6 +986,9 @@ describe("what is refused or answered before a server is looked for", () => {
         expect(pidsIn(checkout)).toEqual([]);
       }
     },
+    // Two refusals, each running lsof first, which a loaded machine slows past
+    // the default five seconds.
+    SPAWNS.timeout,
   );
 
   it.skipIf(!HAS_PS)("reads a start time that does not depend on the shell's time zone", () => {
