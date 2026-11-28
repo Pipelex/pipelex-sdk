@@ -1229,108 +1229,38 @@ class BrandingBodies:
         if key not in {"dark_square_logo", "dark_wide_logo", "preset", "shell", "typeface", "design_system", "white_label"}
     }
 
-    SQUARE_TOO_SMALL: ClassVar[str] = "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side."
-    WIDE_TOO_SHORT: ClassVar[str] = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall."
-
-    #: Both slots refused at once: one problem item per broken rule, naming its slot, the problem's `detail` their
-    #: sentences joined.
+    #: Logos refused for several broken rules, across both slots: one `422 request.unsupported` naming the first
+    #: rule's slot and reason, with one item per broken rule. Every `detail` is the code's sentence: the measured
+    #: sentences go to the platform's logs, never to the caller.
     LOGOS_REFUSED: ClassVar[dict[str, Any]] = {
-        "type": "https://mthds.ai/errors/request.invalid",
-        "title": "The request is invalid",
+        "type": "https://mthds.ai/errors/request.unsupported",
+        "title": "The request uses a form this runtime does not accept",
         "status": 422,
-        "code": "request.invalid",
-        "detail": f"{SQUARE_TOO_SMALL} {WIDE_TOO_SHORT}",
+        "code": "request.unsupported",
+        "detail": "This runtime does not accept the form the request's field 'square_logo' uses (reason: logo_too_small).",
         "domain": "input",
         "retry": "no",
         "next_step": {"kind": "change_input", "detail": "Change the branding and send it again."},
         "request_id": "a9a249b93c024bf08ac9a5fd0704ea92",
+        "params": {"field": "square_logo", "reason": "logo_too_small"},
+        "location": {"field": "square_logo"},
         "errors": [
-            {"code": "request.invalid", "detail": SQUARE_TOO_SMALL, "location": {"field": "square_logo"}},
-            {"code": "request.invalid", "detail": WIDE_TOO_SHORT, "location": {"field": "wide_logo"}},
+            {
+                "code": "request.unsupported",
+                "detail": "This runtime does not accept the form the request's field 'square_logo' uses (reason: logo_too_small).",
+                "params": {"field": "square_logo", "reason": "logo_too_small"},
+                "location": {"field": "square_logo"},
+            },
+            {
+                "code": "request.unsupported",
+                "detail": "This runtime does not accept the form the request's field 'dark_wide_logo' uses (reason: logo_too_short).",
+                "params": {"field": "dark_wide_logo", "reason": "logo_too_short"},
+                "location": {"field": "dark_wide_logo"},
+            },
         ],
     }
 
-    #: The platform's own sentences, from `services/logo_inspection.py`.
-    ACTIVE_CONTENT: ClassVar[str] = "The wide logo is an SVG that carries active content, which a logo may not: a <script> element."
-    NOT_AN_UPLOAD: ClassVar[str] = (
-        "The wide logo must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the wide logo already has."
-    )
-    DARK_SQUARE_NOT_AN_UPLOAD: ClassVar[str] = (
-        "The dark square logo must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) "
-        "or the URI the dark square logo already has."
-    )
-    PIXEL_CAP: ClassVar[str] = (
-        "The square logo looks like a PNG image but cannot be read: "
-        "at 5,000 × 5,000 px it has more than the 16,777,216 pixels (4096 × 4096) a logo may have."
-    )
-    CUT_SHORT: ClassVar[str] = "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete."
-    ANIMATED_WEBP: ClassVar[str] = "The square logo is an animated WebP; a logo must be a still image."
-    ANIMATED_PNG: ClassVar[str] = "The wide logo is an animated PNG; a logo must be a still image."
-    SVG_SIDE_OUT_OF_RANGE: ClassVar[str] = (
-        "The square logo is an SVG that cannot be read: its width or height lies outside the 0.001 to 1,000,000 px a logo's side may measure."
-    )
-    SVG_VIEWBOX_OUT_OF_RANGE: ClassVar[str] = (
-        "The wide logo is an SVG that cannot be read: "
-        "its viewBox's width or height lies outside the 0.001 to 1,000,000 units a logo's side may measure."
-    )
-    #: The style an SVG logo may not carry, by kind: a style sheet's processing instruction and the CSS a browser
-    #: reads. Each is the slot, the upload sent for it, and the platform's sentence.
-    STYLE_ACTIVE_CONTENT: ClassVar[dict[str, tuple[str, str, str]]] = {
-        "xml-stylesheet": (
-            "square_logo",
-            SQUARE_UPLOAD_URI,
-            (
-                "The square logo is an SVG that carries active content, which a logo may not: "
-                "an xml-stylesheet processing instruction, which loads a style sheet."
-            ),
-        ),
-        "css-import": (
-            "square_logo",
-            SQUARE_UPLOAD_URI,
-            ("The square logo is an SVG that carries active content, which a logo may not: a CSS @import, which loads a style sheet."),
-        ),
-        "css-url": (
-            "wide_logo",
-            WIDE_UPLOAD_URI,
-            (
-                "The wide logo is an SVG that carries active content, which a logo may not: "
-                "a CSS url() that links to something outside the file, "
-                "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed."
-            ),
-        ),
-        "css-src": (
-            "square_logo",
-            SQUARE_UPLOAD_URI,
-            (
-                "The square logo is an SVG that carries active content, which a logo may not: "
-                "a CSS src() that links to something outside the file, "
-                "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed."
-            ),
-        ),
-        "css-image-set": (
-            "square_logo",
-            SQUARE_UPLOAD_URI,
-            (
-                "The square logo is an SVG that carries active content, which a logo may not: "
-                "a CSS image-set() function, which can load an image from outside the file."
-            ),
-        ),
-        "css-image": (
-            "wide_logo",
-            WIDE_UPLOAD_URI,
-            (
-                "The wide logo is an SVG that carries active content, which a logo may not: "
-                "a CSS image() function, which can load an image from outside the file."
-            ),
-        ),
-        "css-escape": (
-            "square_logo",
-            SQUARE_UPLOAD_URI,
-            ("The square logo is an SVG that carries active content, which a logo may not: a CSS escape (a backslash), which can disguise a link."),
-        ),
-    }
-
-    #: A colour that is not `#rrggbb` and a style of the wrong shape, refused by the body's validation: the problem
+    #: A colour that is not `#rrggbb` and a preset of the wrong shape, refused by the body's validation: the problem
     #: names the first field, and each refused field has its item in `errors`, a colour named by its dotted key.
     FIELDS_REFUSED: ClassVar[dict[str, Any]] = {
         "type": "https://mthds.ai/errors/request.invalid",

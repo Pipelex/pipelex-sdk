@@ -4918,11 +4918,12 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * shape, or a key the body does not know, which names the field in `location.field`: the
    * problem's own when it refuses one field alone, each item's of its `errors` when it refuses
    * several. `white_label` is such a key, since only Pipelex staff grant it, and so is `style`, the
-   * retired app style. A logo's refusal names its slot in its problem's `errors`, each item's
-   * `location.field` being the slot's key, such as `square_logo` or `dark_wide_logo`, and its
-   * `detail` the sentence to show under that slot: `422` `pipelex.storage.uri_invalid` for a URI that is not a storage URI, `403`
-   * `pipelex.org.mismatch` for another organization's file, and `422` `request.invalid` with an
-   * item per broken rule, its code one `LogoRefusalCode` names, for a file the platform refused. A
+   * retired app style. A logo's refusal names its slot's key, such as `square_logo` or
+   * `dark_wide_logo`, in `location.field`: `422` `pipelex.storage.uri_invalid` for a URI that is
+   * not a storage URI and `403` `pipelex.org.mismatch` for another organization's file, both on the
+   * problem itself, and `422` `request.unsupported` for a file the platform refused, naming the
+   * first broken rule in `params.field` and `params.reason`, a `LogoRefusalCode`, and, when several
+   * rules are broken, one item per rule in its `errors`, each naming its own slot and reason. A
    * `503` `runtime.unavailable` is a failure of the platform's storage or its database, after which
    * the write may have landed or not: the same input sent again is safe.
    */

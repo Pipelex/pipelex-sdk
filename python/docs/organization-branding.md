@@ -96,15 +96,18 @@ A refused write changes nothing, whichever part of it was refused, and raises an
 | `403` | `pipelex.org.mismatch` | `org_id` is not the caller's active organization, or a logo's URI is a file of another organization. |
 | `404` | `pipelex.org.not_found` | The organization does not exist. |
 | `409` | `pipelex.org.not_manageable` | The organization is a personal workspace, which has no branding. |
-| `422` | `request.invalid` | A colour is not `#rrggbb`, a preset, a shell or a typeface is not an id of the shape `^[a-z0-9-]{1,32}$`, the design system is not of the shape the platform holds it to, or a logo was refused. |
+| `422` | `request.invalid` | A colour is not `#rrggbb`, a preset, a shell or a typeface is not an id of the shape `^[a-z0-9-]{1,32}$`, or the design system is not of the shape the platform holds it to. |
+| `422` | `request.unsupported` | A logo was refused ([below](#a-refused-logo)). |
 | `422` | `pipelex.storage.uri_invalid` | A logo's URI is not a storage URI. |
 | `503` | `runtime.unavailable` | The platform's storage failed while reading or copying a logo, or its database failed or could not be reached, so the write may have landed or not. Its `retry` is `yes`: the same `update` sent again is safe, and `get_branding` reads what the branding holds. |
 
 **A refused field is named by its `location.field`**, so a settings screen shows each sentence under the control it concerns: a colour by its dotted key, such as `colors.action` or `dark_colors.header`, and a preset, a shell, a typeface or the design system by its own key. When the write refuses one such field alone, the problem itself names it, in `problem.location.field` and in `problem.params.field`, and carries no `errors`; when it refuses several, it names the first and carries one `ProblemItem` per refused field in `errors`, each with its own `location.field`.
 
-**A refusal about a logo names it in its problem's `errors`**, one `ProblemItem` per refused logo. Each item's `location.field` is the slot's key, `square_logo`, `wide_logo`, `dark_square_logo` or `dark_wide_logo`; its `detail` is the sentence to show. A logo the platform read and refused carries one item per broken rule, every slot answered in one refusal, each item's `code` one `LogoRefusalCode` (`pipelex_sdk.errors`) names:
+### A refused logo
 
-| `code` | `LogoRefusalCode` | Example `detail` |
+**A refused logo is a `422` `request.unsupported`**, one problem for every logo of the body. It names the logo that broke the first rule in its `location.field` and `params.field`, the slot's key (`square_logo`, `wide_logo`, `dark_square_logo` or `dark_wide_logo`), and that rule in `params.reason`, one `LogoRefusalCode` (`pipelex_sdk.errors`) names. When several rules are broken, in one logo or across several, the problem also carries `errors`, one `ProblemItem` per broken rule, each with its own `location.field`, `params.field` and `params.reason`; a lone broken rule carries no `errors`. Every `detail` is the code's general sentence and never the measure: the platform keeps the sentences below for its logs, so a client writes the sentence it shows under a slot from the reason.:
+
+| `params.reason` | `LogoRefusalCode` | What the platform logs, for example |
 |---|---|---|
 | `logo_not_an_upload` | `NOT_AN_UPLOAD` | The square logo must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the square logo already has. |
 | `logo_not_found` | `NOT_FOUND` | The square logo file was not found in the organization's uploads; upload it again. |
@@ -117,13 +120,20 @@ A refused write changes nothing, whichever part of it was refused, and raises an
 | `logo_not_wide` | `NOT_WIDE` | The wide logo is 600 × 500 px, 1.2 times as wide as it is tall; a wide logo must be at least 1.5 times as wide as it is tall. |
 | `logo_too_short` | `TOO_SHORT` | The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall. |
 
-The two refusals of a logo URI that come before any file is read, `pipelex.storage.uri_invalid` and another organization's `pipelex.org.mismatch`, name the slot the same way, with the refusal's code on the item. Reading one slot's sentences is the same filter in every case:
+The two refusals of a logo URI that come before any file is read, `422` `pipelex.storage.uri_invalid` and `403` `pipelex.org.mismatch` for another organization's file, name the slot in the problem's own `location.field`, with no `errors`. So one slot's refusals are read the same way in every case: the problem's `errors` when it carries some, else the problem itself, kept when its `location.field` is the slot.
 
 ```python
 try:
     await client.update_organization_branding(org_id, OrganizationBrandingUpdate(square_logo=uri))
 except ApiResponseError as exc:
-    under_square = [item.detail for item in exc.problem.errors or [] if item.location is not None and item.location.field == "square_logo"]
+    problem = exc.problem
+    refusals = problem.errors or [problem]
+    under_square = [
+        (refusal.params.as_wire().get("reason") if refusal.params is not None else None) or refusal.code
+        for refusal in refusals
+        if refusal.location is not None and refusal.location.field == "square_logo"
+    ]
+    # Write a sentence for each reason under the square logo's slot; an error naming no field goes elsewhere.
 ```
 
 `get_branding` raises `403` `pipelex.org.required` when the caller has no active organization and `404` when its organization's row is missing. Either method raises the `ApiResponseError` of an answer it cannot read for a `2xx` that is not the branding, an empty one included.

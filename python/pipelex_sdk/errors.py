@@ -381,9 +381,12 @@ class IdempotencyErrorCode(StrEnum):
 class LogoRefusalCode(StrEnum):
     """The reason the platform gives a refused logo when `update_organization_branding` refuses one.
 
-    The refusal is one problem naming every slot's failures at once, one item of its `errors` per broken rule,
-    and writes nothing. Being a `StrEnum` each member equals its string (`match item.code:` with
-    `case LogoRefusalCode.TOO_SMALL:`).
+    It is carried in `params.reason`. The refusal is one `422` `request.unsupported` problem for every logo of
+    the body, which writes nothing: the problem names the first broken rule in its `params.field`, the slot's
+    key, and its `params.reason`, and when several rules are broken its `errors` hold one item per rule, each
+    with its own `params.field` and `params.reason`. An item's `code` is `request.unsupported`, never one of
+    these. Being a `StrEnum` each member equals its string (`LogoRefusalCode(reason)` reads a reason, then
+    `match` on it).
     """
 
     NOT_AN_UPLOAD = "logo_not_an_upload"

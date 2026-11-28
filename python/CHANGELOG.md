@@ -6,6 +6,10 @@
 
 - **`OrganizationBranding` and `OrganizationBrandingUpdate` carry the branding kit, and `style` is gone (Breaking)**: both models gain `dark_square_logo` and `dark_wide_logo` (a dark-mode logo, `None` falling back to the slot's light logo), `preset` and `shell` (ids of the shape `^[a-z0-9-]{1,32}$`) and `design_system`, a DTCG token document typed by the new `BrandingDesignSystem` alias, which a write replaces whole and `None` removes; `style` is removed from both, since the platform no longer answers it and refuses a write naming it, so `OrganizationBrandingUpdate(style=…)` is now refused when it is built and a caller sets `preset` instead. `get_branding` and `update_organization_branding` read each new field as `None` when the answer leaves it out or, for the ids and the design system, sends another type (`docs/organization-branding.md`).
 
+### Fixed
+
+- **A refused logo is documented as the platform sends it**: `docs/organization-branding.md`, `docs/errors.md`, `update_organization_branding` and `LogoRefusalCode` now say that a logo the platform read and refused is a `422` `request.unsupported` naming the slot in `location.field` and `params.field` and the `LogoRefusalCode` in `params.reason`, with one item per broken rule in `errors` only when several rules are broken, and that a logo URI refused before any read names its slot on the problem itself; they used to promise an item per refused logo whose `code` was the `LogoRefusalCode` and whose `detail` was the sentence to show, which the platform never sends.
+
 ## [v0.71.0] - 2026-11-26
 
 ### Changed

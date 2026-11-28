@@ -146,6 +146,29 @@ function fieldItem(field: string, detail: string) {
   return { code: "request.invalid", detail, location: { field } };
 }
 
+const UNSUPPORTED_TITLE = "The request uses a form this runtime does not accept";
+
+/** The code's own sentence for a refused logo: the measured sentence goes to the platform's logs. */
+function unsupportedDetail(field: string, reason: string): string {
+  return `This runtime does not accept the form the request's field '${field}' uses (reason: ${reason}).`;
+}
+
+/** One broken rule of a logo refusal with several, as an item of its `errors`. */
+function logoRefusalItem(field: string, reason: LogoRefusalCode) {
+  return {
+    code: "request.unsupported",
+    detail: unsupportedDetail(field, reason),
+    params: { field, reason },
+    location: { field },
+  };
+}
+
+/** Each logo refusal of `err` as its slot and reason: its `errors` when it has some, else the problem. */
+function refusalReasons(err: ApiResponseError): [string | undefined, unknown][] {
+  const refusals = err.problem.errors ?? [err.problem];
+  return refusals.map((item) => [item.location?.field, item.params?.reason]);
+}
+
 /** The URL, method and parsed body of the single fetch call recorded by the spy. */
 function lastRequest(spy: ReturnType<typeof vi.spyOn>): {
   url: string;
@@ -583,180 +606,95 @@ describe("updateOrganizationBranding", () => {
     >();
   });
 
-  it("hands both slots' logo refusals to the caller, each with the sentence for its slot", async () => {
+  it("names each broken rule of the logos by its slot and reason, the first on the problem", async () => {
     const client = makeClient();
-    const squareDetail =
-      "The square logo is 100 × 100 px; a square logo must be at least 128 px on each side.";
-    const wideDetail = "The wide logo is 240 × 48 px; a wide logo must be at least 64 px tall.";
-    const errors = [fieldItem("square_logo", squareDetail), fieldItem("wide_logo", wideDetail)];
+    const errors = [
+      logoRefusalItem("square_logo", "logo_too_small"),
+      logoRefusalItem("dark_wide_logo", "logo_too_short"),
+    ];
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      problemResponse(
-        422,
-        problem("request.invalid", "Invalid request", `${squareDetail} ${wideDetail}`, errors),
-      ),
+      problemResponse(422, {
+        ...problem(
+          "request.unsupported",
+          UNSUPPORTED_TITLE,
+          unsupportedDetail("square_logo", "logo_too_small"),
+          errors,
+        ),
+        params: { field: "square_logo", reason: "logo_too_small" },
+        location: { field: "square_logo" },
+      }),
     );
 
     const err = await caught(
       client.updateOrganizationBranding(ORG_ID, {
         square_logo: SQUARE_UPLOAD_URI,
-        wide_logo: WIDE_UPLOAD_URI,
+        dark_wide_logo: WIDE_UPLOAD_URI,
       }),
     );
 
     expect(err.status).toBe(422);
-    expect(err.code).toBe("request.invalid");
+    expect(err.code).toBe("request.unsupported");
     expect(err.domain).toBe("input");
     expect(err.retry).toBe("no");
+    expect(err.problem.params).toEqual({ field: "square_logo", reason: "logo_too_small" });
     expect(err.problem.errors).toEqual(errors);
-    // What the settings screen does: one slot's sentences, read by the slot's key.
-    const underSquare = err.problem.errors?.filter(
-      (entry) => entry.location?.field === "square_logo",
-    );
-    expect(underSquare?.map((entry) => entry.detail)).toEqual([squareDetail]);
+    expect(refusalReasons(err)).toEqual([
+      ["square_logo", "logo_too_small"],
+      ["dark_wide_logo", "logo_too_short"],
+    ]);
   });
 
-  /** The platform's sentence for a URI a slot may not take (`not_an_upload_refusal`). */
-  const notAnUpload = (slot: string) =>
-    `The ${slot} must be a newly uploaded file (pipelex-storage://<organization>/assets/<file>) or the URI the ${slot} already has.`;
-
-  /** The platform's sentence for an SVG's active content, `what` being the construct it names. */
-  const activeContent = (slot: string, what: string) =>
-    `The ${slot} is an SVG that carries active content, which a logo may not: ${what}.`;
-
-  /** The tail of the platform's sentence for a link that leaves the file, an `href` or a CSS one. */
-  const INERT_LINKS_ONLY =
-    "where only a reference inside it or an embedded PNG, JPEG, GIF or WebP image is allowed";
-
-  it.each([
-    [
-      "an SVG carrying active content",
-      "wide_logo",
-      WIDE_UPLOAD_URI,
-      "The wide logo is an SVG that carries active content, which a logo may not: a <script> element.",
-    ],
+  it.each<[string, string, string, LogoRefusalCode]>([
+    ["an SVG carrying active content", "wide_logo", WIDE_UPLOAD_URI, "logo_active_content"],
     [
       "a branding copy no slot holds",
       "wide_logo",
       `pipelex-storage://${ORG_ID}/branding/0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d.svg`,
-      notAnUpload("wide logo"),
+      "logo_not_an_upload",
     ],
     [
       "the other slot's logo, which cannot move by its URI",
       "wide_logo",
       SQUARE_LOGO_URI,
-      notAnUpload("wide logo"),
+      "logo_not_an_upload",
     ],
     [
       "the light logo in its dark slot, a dark logo being held to its slot's rules",
       "dark_square_logo",
       SQUARE_LOGO_URI,
-      notAnUpload("dark square logo"),
+      "logo_not_an_upload",
     ],
-    [
-      "a raster past the pixel cap",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      "The square logo looks like a PNG image but cannot be read: at 5,000 × 5,000 px it has more than the 16,777,216 pixels (4096 × 4096) a logo may have.",
-    ],
-    [
-      "a raster cut short",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      "The square logo looks like a JPEG image but cannot be read: the file is damaged or incomplete.",
-    ],
-    [
-      "an animated WebP, since a logo is a still image",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      "The square logo is an animated WebP; a logo must be a still image.",
-    ],
+    ["an upload that is not there", "square_logo", SQUARE_UPLOAD_URI, "logo_not_found"],
+    ["a file over 1 MiB", "square_logo", SQUARE_UPLOAD_URI, "logo_too_large"],
+    ["a raster that cannot be read", "square_logo", SQUARE_UPLOAD_URI, "logo_unreadable"],
     [
       "an animated PNG, since a logo is a still image",
       "wide_logo",
       WIDE_UPLOAD_URI,
-      "The wide logo is an animated PNG; a logo must be a still image.",
+      "logo_type_not_accepted",
     ],
-    [
-      "an SVG whose width and height lie outside the range a side may measure",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      "The square logo is an SVG that cannot be read: its width or height lies outside the 0.001 to 1,000,000 px a logo's side may measure.",
-    ],
-    [
-      "an SVG whose viewBox lies outside the range a side may measure",
-      "wide_logo",
-      WIDE_UPLOAD_URI,
-      "The wide logo is an SVG that cannot be read: its viewBox's width or height lies outside the 0.001 to 1,000,000 units a logo's side may measure.",
-    ],
-    [
-      "an SVG with an xml-stylesheet processing instruction",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      activeContent(
-        "square logo",
-        "an xml-stylesheet processing instruction, which loads a style sheet",
-      ),
-    ],
-    [
-      "an SVG whose CSS imports a style sheet",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      activeContent("square logo", "a CSS @import, which loads a style sheet"),
-    ],
-    [
-      "an SVG whose CSS url() leaves the file",
-      "wide_logo",
-      WIDE_UPLOAD_URI,
-      activeContent(
-        "wide logo",
-        `a CSS url() that links to something outside the file, ${INERT_LINKS_ONLY}`,
-      ),
-    ],
-    [
-      "an SVG whose CSS src() leaves the file",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      activeContent(
-        "square logo",
-        `a CSS src() that links to something outside the file, ${INERT_LINKS_ONLY}`,
-      ),
-    ],
-    [
-      "an SVG whose CSS holds an image-set()",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      activeContent(
-        "square logo",
-        "a CSS image-set() function, which can load an image from outside the file",
-      ),
-    ],
-    [
-      "an SVG whose CSS holds an image()",
-      "wide_logo",
-      WIDE_UPLOAD_URI,
-      activeContent(
-        "wide logo",
-        "a CSS image() function, which can load an image from outside the file",
-      ),
-    ],
-    [
-      "an SVG whose CSS holds an escape",
-      "square_logo",
-      SQUARE_UPLOAD_URI,
-      activeContent("square logo", "a CSS escape (a backslash), which can disguise a link"),
-    ],
-  ])("refuses %s under its slot", async (_topic, field, uri, detail) => {
-    const client = makeClient();
-    const errors = [fieldItem(field, detail)];
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      problemResponse(422, problem("request.invalid", "Invalid request", detail, errors)),
-    );
+    ["a square logo that is not square", "square_logo", SQUARE_UPLOAD_URI, "logo_not_square"],
+    ["a wide logo that is not wide", "wide_logo", WIDE_UPLOAD_URI, "logo_not_wide"],
+  ])(
+    "refuses %s, the problem itself naming the slot and the reason",
+    async (_topic, field, uri, reason) => {
+      const client = makeClient();
+      // One broken rule: the problem itself names it, and carries no `errors`.
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        problemResponse(422, {
+          ...problem("request.unsupported", UNSUPPORTED_TITLE, unsupportedDetail(field, reason)),
+          params: { field, reason },
+          location: { field },
+        }),
+      );
 
-    const err = await caught(client.updateOrganizationBranding(ORG_ID, { [field]: uri }));
+      const err = await caught(client.updateOrganizationBranding(ORG_ID, { [field]: uri }));
 
-    expect(err.code).toBe("request.invalid");
-    expect(err.problem.errors).toEqual(errors);
-  });
+      expect(err.code).toBe("request.unsupported");
+      expect(err.problem.errors).toBeUndefined();
+      expect(refusalReasons(err)).toEqual([[field, reason]]);
+    },
+  );
 
   it("hands back a storage failure while reading or copying a logo as a retryable 503", async () => {
     const client = makeClient();
@@ -834,9 +772,12 @@ describe("updateOrganizationBranding", () => {
     "names the slot of a logo URI refused before any read (%i %s)",
     async (status, code, title, detail) => {
       const client = makeClient();
-      const errors = [{ code, detail, location: { field: "square_logo" } }];
+      // Refused before any file is read: the problem itself names the slot, with no `errors`.
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
-        problemResponse(status, problem(code, title, detail, errors)),
+        problemResponse(status, {
+          ...problem(code, title, detail),
+          location: { field: "square_logo" },
+        }),
       );
 
       const err = await caught(
@@ -845,7 +786,8 @@ describe("updateOrganizationBranding", () => {
 
       expect(err.status).toBe(status);
       expect(err.code).toBe(code);
-      expect(err.problem.errors).toEqual(errors);
+      expect(err.problem.errors).toBeUndefined();
+      expect(err.problem.location?.field).toBe("square_logo");
     },
   );
 

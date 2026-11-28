@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from pydantic import ValidationError
 
-from pipelex_sdk.errors import ApiResponseError
+from pipelex_sdk.errors import ApiResponseError, LogoRefusalCode
 from pipelex_sdk.product_models import BrandingColorsUpdate, OrganizationBranding, OrganizationBrandingUpdate
 from tests.unit.conftest import BASE_URL, problem_document
 from tests.unit.test_data import BrandingBodies
@@ -61,9 +61,18 @@ def _problem(
     return body
 
 
-def _field_item(field: str, detail: str) -> dict[str, Any]:
-    """The item of a refused branding write naming the logo slot or colour key `field`."""
-    return {"code": "request.invalid", "detail": detail, "location": {"field": field}}
+def _refusal_reasons(error: ApiResponseError) -> list[tuple[str | None, LogoRefusalCode]]:
+    """Each logo refusal of `error` as its slot and reason: its `errors` when it has some, else the problem itself."""
+    problem = error.problem
+    reasons: list[tuple[str | None, LogoRefusalCode]] = []
+    if problem.errors:
+        for item in problem.errors:
+            assert item.params is not None
+            reasons.append((item.location.field if item.location is not None else None, LogoRefusalCode(item.params.as_wire()["reason"])))
+    else:
+        assert problem.params is not None
+        reasons.append((problem.location.field if problem.location is not None else None, LogoRefusalCode(problem.params.as_wire()["reason"])))
+    return reasons
 
 
 def _item_fields(error: ApiResponseError) -> list[tuple[str | None, str, str]]:
@@ -408,81 +417,76 @@ class TestClientBranding:
         with pytest.raises(ValidationError):
             OrganizationBrandingUpdate.model_validate(payload)
 
-    def test_logo_refusals_reach_the_caller_with_the_sentence_for_each_slot(
+    def test_logo_refusals_name_each_broken_rule_by_its_slot_and_reason(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
     ) -> None:
         patch_send(api_client, wire_response(422, json_body=BrandingBodies.LOGOS_REFUSED))
-        update = OrganizationBrandingUpdate(square_logo=BrandingBodies.SQUARE_UPLOAD_URI, wide_logo=BrandingBodies.WIDE_UPLOAD_URI)
+        update = OrganizationBrandingUpdate(square_logo=BrandingBodies.SQUARE_UPLOAD_URI, dark_wide_logo=BrandingBodies.WIDE_UPLOAD_URI)
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_organization_branding(_ORG_ID, update))
 
         error = exc_info.value
         assert error.status == 422
-        assert error.problem.code == "request.invalid"
-        assert (error.problem.domain, error.problem.retry) == ("input", "no")
-        assert _item_fields(error) == [
-            ("square_logo", "request.invalid", BrandingBodies.SQUARE_TOO_SMALL),
-            ("wide_logo", "request.invalid", BrandingBodies.WIDE_TOO_SHORT),
+        problem = error.problem
+        assert problem.code == "request.unsupported"
+        assert (problem.domain, problem.retry) == ("input", "no")
+        # The problem names the first broken rule; each broken rule has its item, with its own slot and reason.
+        assert problem.params is not None
+        assert problem.params.as_wire() == {"field": "square_logo", "reason": "logo_too_small"}
+        assert _refusal_reasons(error) == [
+            ("square_logo", LogoRefusalCode.TOO_SMALL),
+            ("dark_wide_logo", LogoRefusalCode.TOO_SHORT),
         ]
-        # What the settings screen does: one slot's sentences, read by the slot's key.
-        under_square = [field_detail for field, _, field_detail in _item_fields(error) if field == "square_logo"]
-        assert under_square == [BrandingBodies.SQUARE_TOO_SMALL]
+        assert [item.code for item in problem.errors or []] == ["request.unsupported", "request.unsupported"]
 
     @pytest.mark.parametrize(
-        ("field", "uri", "detail"),
+        ("field", "uri", "reason"),
         [
-            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, BrandingBodies.ACTIVE_CONTENT, id="svg-active-content"),
-            pytest.param("wide_logo", BrandingBodies.STRAY_BRANDING_URI, BrandingBodies.NOT_AN_UPLOAD, id="stray-branding-copy"),
+            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.ACTIVE_CONTENT, id="svg-active-content"),
+            pytest.param("wide_logo", BrandingBodies.STRAY_BRANDING_URI, LogoRefusalCode.NOT_AN_UPLOAD, id="stray-branding-copy"),
             # A logo cannot move between slots by its URI: the square logo's copy is refused in the wide slot.
-            pytest.param("wide_logo", BrandingBodies.SQUARE_LOGO_URI, BrandingBodies.NOT_AN_UPLOAD, id="other-slot-logo"),
+            pytest.param("wide_logo", BrandingBodies.SQUARE_LOGO_URI, LogoRefusalCode.NOT_AN_UPLOAD, id="other-slot-logo"),
             # A dark logo is held to its slot's rules and its refusal names its own key.
-            pytest.param("dark_square_logo", BrandingBodies.SQUARE_LOGO_URI, BrandingBodies.DARK_SQUARE_NOT_AN_UPLOAD, id="dark-slot-light-logo"),
-            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, BrandingBodies.PIXEL_CAP, id="raster-past-pixel-cap"),
-            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, BrandingBodies.CUT_SHORT, id="raster-cut-short"),
+            pytest.param("dark_square_logo", BrandingBodies.SQUARE_LOGO_URI, LogoRefusalCode.NOT_AN_UPLOAD, id="dark-slot-light-logo"),
+            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.NOT_FOUND, id="missing-upload"),
+            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.TOO_LARGE, id="too-large"),
+            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.UNREADABLE, id="raster-unreadable"),
             # A logo is a still image: an animated raster is refused as a type a logo may not be.
-            pytest.param(
-                "square_logo",
-                BrandingBodies.SQUARE_UPLOAD_URI,
-                BrandingBodies.ANIMATED_WEBP,
-                id="animated-webp",
-            ),
-            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, BrandingBodies.ANIMATED_PNG, id="animated-png"),
-            pytest.param(
-                "square_logo",
-                BrandingBodies.SQUARE_UPLOAD_URI,
-                BrandingBodies.SVG_SIDE_OUT_OF_RANGE,
-                id="svg-side-out-of-range",
-            ),
-            pytest.param(
-                "wide_logo",
-                BrandingBodies.WIDE_UPLOAD_URI,
-                BrandingBodies.SVG_VIEWBOX_OUT_OF_RANGE,
-                id="svg-viewbox-out-of-range",
-            ),
-            *(pytest.param(field, uri, detail, id=f"svg-{kind}") for kind, (field, uri, detail) in BrandingBodies.STYLE_ACTIVE_CONTENT.items()),
+            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.TYPE_NOT_ACCEPTED, id="animated-png"),
+            pytest.param("square_logo", BrandingBodies.SQUARE_UPLOAD_URI, LogoRefusalCode.NOT_SQUARE, id="not-square"),
+            pytest.param("wide_logo", BrandingBodies.WIDE_UPLOAD_URI, LogoRefusalCode.NOT_WIDE, id="not-wide"),
         ],
     )
-    def test_a_refused_logo_is_named_under_its_slot(
+    def test_a_lone_refused_logo_is_named_by_the_problem_itself(
         self,
         api_client: PipelexAPIClient,
         wire_response: ResponseBuilder,
         patch_send: SendPatcher,
         field: str,
         uri: str,
-        detail: str,
+        reason: LogoRefusalCode,
     ) -> None:
-        errors = [_field_item(field, detail)]
-        patch_send(
-            api_client,
-            wire_response(422, json_body=_problem(code="request.invalid", status=422, title="Invalid request", detail=detail, errors=errors)),
-        )
+        # One broken rule: the problem itself names the slot and the reason, and carries no `errors`.
+        body = {
+            **_problem(
+                code="request.unsupported",
+                status=422,
+                title="The request uses a form this runtime does not accept",
+                detail=f"This runtime does not accept the form the request's field '{field}' uses (reason: {reason}).",
+            ),
+            "params": {"field": field, "reason": str(reason)},
+            "location": {"field": field},
+        }
+        patch_send(api_client, wire_response(422, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate.model_validate({field: uri})))
 
-        assert exc_info.value.problem.code == "request.invalid"
-        assert _item_fields(exc_info.value) == [(field, "request.invalid", detail)]
+        problem = exc_info.value.problem
+        assert problem.code == "request.unsupported"
+        assert problem.errors is None
+        assert _refusal_reasons(exc_info.value) == [(field, reason)]
 
     def test_several_refused_fields_are_named_each_in_an_item_a_colour_by_its_dotted_key(
         self, api_client: PipelexAPIClient, wire_response: ResponseBuilder, patch_send: SendPatcher
@@ -528,15 +532,19 @@ class TestClientBranding:
         title: str,
         detail: str,
     ) -> None:
-        errors = [{"code": code, "detail": detail, "location": {"field": "square_logo"}}]
-        patch_send(api_client, wire_response(status, json_body=_problem(code=code, status=status, title=title, detail=detail, errors=errors)))
+        # Refused before any file is read: the problem itself names the slot, with no `errors`.
+        body = {**_problem(code=code, status=status, title=title, detail=detail), "location": {"field": "square_logo"}}
+        patch_send(api_client, wire_response(status, json_body=body))
 
         with pytest.raises(ApiResponseError) as exc_info:
             asyncio.run(api_client.update_organization_branding(_ORG_ID, OrganizationBrandingUpdate(square_logo="https://example.com/logo.png")))
 
+        problem = exc_info.value.problem
         assert exc_info.value.status == status
-        assert exc_info.value.problem.code == code
-        assert [item.model_dump(exclude_none=True) for item in exc_info.value.problem.errors or []] == errors
+        assert problem.code == code
+        assert problem.errors is None
+        assert problem.location is not None
+        assert problem.location.field == "square_logo"
 
     @pytest.mark.parametrize(
         ("status", "code", "title", "detail"),
