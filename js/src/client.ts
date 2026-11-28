@@ -70,6 +70,7 @@ import {
   throwIfAborted,
   withCheckedProgressHealth,
   type GetRunResultOptions,
+  type RunArtifactLink,
   type RunProgress,
   type RunRead,
   type RunResultArtifact,
@@ -237,6 +238,7 @@ import { prepareInputs as prepareInputsImpl } from "./prepare-inputs.js";
 import type { PrepareInputsRequest, PreparedInputs } from "./prepare-inputs.js";
 import {
   carriesConceptArtifacts,
+  CONCEPT_ARTIFACTS,
   downloadArtifacts as downloadArtifactsImpl,
   fetchArtifact as fetchArtifactImpl,
   loadStoredTexts as loadStoredTextsImpl,
@@ -244,6 +246,12 @@ import {
   resolveArtifacts as resolveArtifactsImpl,
   withConceptArtifacts,
 } from "./artifacts.js";
+import {
+  fetchRunArtifact as fetchRunArtifactImpl,
+  followArtifactLinks as followArtifactLinksImpl,
+  holdsArtifactLinks,
+} from "./run-artifact-links.js";
+import type { FollowArtifactLinksOptions } from "./run-artifact-links.js";
 import type {
   BulkResolveStorageUrlsInput,
   BulkResolvedStorageUrls,
@@ -734,6 +742,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 1_200_000; // 20 min — matches the runner's
 const POLL_REQUEST_TIMEOUT_MS = 30_000; // single status/result GETs; the hosted gateway caps responses at ~30s.
 const DEFAULT_DEGRADED_RETRY_SECONDS = 5; // matches the platform's `_DEGRADE_RETRY_AFTER_SECONDS`.
 const VALIDATE_MARKDOWN_RENDER_FORMAT = "markdown";
+/** What the stored-text load reads: the main stuff, and the artifacts telling its texts by concept. */
+const LOAD_ARTIFACTS: readonly RunResultArtifact[] = ["main_stuff", ...CONCEPT_ARTIFACTS];
 
 /**
  * `VersionInfo.implementation` of the bare open-source runner (no run store).
@@ -2807,7 +2817,13 @@ export class PipelexApiClient implements HostedProtocolSurface {
    * selected one the run never wrote is `null`. Omitted, every artifact is
    * read. An empty selection or an unknown name throws a `RequestArgumentError`
    * before any request. `MissingMainStuffError` is thrown only for a read that asked
-   * for `main_stuff` — no selection, or one naming it.
+   * for `main_stuff` — no selection, or one naming it — and found it `null` with no link.
+   *
+   * An artifact the platform handed back by reference, because inline it would have taken the
+   * body past the API Gateway's limit, is fetched from its signed link into its field by default
+   * (`followArtifactLinks`), before the main-stuff check and the stored-text load, so it reads as
+   * its content. `followArtifactLinks: false` hands the links back on `artifact_links`, each such
+   * field `null`, for a caller that passes the link on rather than pull the file through itself.
    *
    * A completed result is read with `parseExactJson`, so an integer past
    * `Number.MAX_SAFE_INTEGER` anywhere in it, the main output, the working memory and the graph
@@ -2849,8 +2865,17 @@ export class PipelexApiClient implements HostedProtocolSurface {
       this.throwApiResponseError("GET", endpoint, res);
     }
     // Read exactly: the output, the working memory and the graph hold the run's data.
-    const result = this.readObjectAnswer<RunResults>("GET", endpoint, res, {}, parseExactJson);
-    if (selectionIncludesMainStuff(options.artifacts) && result.main_stuff == null) {
+    let result = this.readObjectAnswer<RunResults>("GET", endpoint, res, {}, parseExactJson);
+    if (options.followArtifactLinks !== false) {
+      result = await followArtifactLinksImpl(this, result, { signal: options.signal });
+    }
+    // A `main_stuff` handed back by reference is there, at the end of its link: only a null one
+    // with no link breaks the main-stuff invariant.
+    if (
+      selectionIncludesMainStuff(options.artifacts) &&
+      result.main_stuff == null &&
+      result.artifact_links?.main_stuff == null
+    ) {
       throw new MissingMainStuffError(
         `Completed run '${runId}' returned no main stuff — a completed run always delivers a main stuff.`,
         runId,
@@ -2878,9 +2903,16 @@ export class PipelexApiClient implements HostedProtocolSurface {
     signal: AbortSignal | undefined,
   ): Promise<RunResults> {
     if (result.main_stuff == null) return result;
-    if (!carriesConceptArtifacts(selection) && !mayHoldStoredTexts(result.main_stuff)) {
+    // A concept artifact handed back by reference, from a read that did not follow its links,
+    // says nothing until fetched: read like one the selection left out, only when worth it.
+    const linkedConcepts = holdsArtifactLinks(result, CONCEPT_ARTIFACTS);
+    if (
+      (!carriesConceptArtifacts(selection) || linkedConcepts) &&
+      !mayHoldStoredTexts(result.main_stuff)
+    ) {
       return result;
     }
+    // The loader fetches a linked concept artifact for the load alone: the result keeps its links.
     const source = await withConceptArtifacts(this, result, selection, signal);
     const loaded = await loadStoredTextsImpl(this, { ...result, ...source } as RunResults, {
       signal,
@@ -2900,14 +2932,30 @@ export class PipelexApiClient implements HostedProtocolSurface {
    */
   async waitForResult(runId: string, options?: WaitForResultOptions): Promise<RunResults> {
     const selection = options?.artifacts;
+    const follows = options?.followArtifactLinks !== false;
+    const loads = options?.loadStoredTexts !== false && selectionIncludesMainStuff(selection);
     return pollUntilResult(
       (id, opts) => this.getRunResult(id, opts),
       runId,
       options,
       (id, opts) => this.getRunProgress(id, opts),
-      options?.loadStoredTexts === false || !selectionIncludesMainStuff(selection)
+      !follows && !loads
         ? undefined
-        : (result, opts) => this.withStoredTextsLoaded(result, selection, opts.signal),
+        : async (result, opts) => {
+            let current = result;
+            if (follows && loads) {
+              // What the load reads first, and only that: a load that finds the concepts missing
+              // polls again, so nothing else is fetched before it has passed.
+              current = await followArtifactLinksImpl(this, current, {
+                artifacts: LOAD_ARTIFACTS,
+                signal: opts.signal,
+              });
+            }
+            if (loads) current = await this.withStoredTextsLoaded(current, selection, opts.signal);
+            return follows
+              ? followArtifactLinksImpl(this, current, { signal: opts.signal })
+              : current;
+          },
     );
   }
 
@@ -5100,6 +5148,35 @@ export class PipelexApiClient implements HostedProtocolSurface {
    */
   async fetchArtifact(uri: string, options?: FetchArtifactOptions): Promise<Response> {
     return fetchArtifactImpl(this, uri, options);
+  }
+
+  /**
+   * Fetch one result artifact the platform handed back by reference — an entry of
+   * `RunResults.artifact_links` — and read it as the result fields it fills: `{ graph_spec }`,
+   * `{ main_stuff }`, …, and `{ tokens_usages, usage_assembly_error }` unpacked from the usage
+   * envelope. Read exactly (`parseExactJson`), under `fetchArtifact`'s bounds. The links inside the
+   * artifact are as stored, never re-signed. See `docs/run-results.md`, "Artifacts handed back by
+   * reference".
+   */
+  async fetchRunArtifact(
+    artifact: RunResultArtifact,
+    link: RunArtifactLink,
+    options?: FetchArtifactOptions,
+  ): Promise<Partial<RunResults>> {
+    return fetchRunArtifactImpl(this, artifact, link, options);
+  }
+
+  /**
+   * A result with the artifacts it handed back by reference fetched into their fields, every one
+   * or those `options.artifacts` names, each followed entry dropped from `artifact_links`. What the
+   * result readers do by default; for a result read with `followArtifactLinks: false`. Returns a
+   * new result, or the same one when it holds no link to follow.
+   */
+  async followArtifactLinks(
+    results: RunResults,
+    options?: FollowArtifactLinksOptions,
+  ): Promise<RunResults> {
+    return followArtifactLinksImpl(this, results, options);
   }
 
   /**

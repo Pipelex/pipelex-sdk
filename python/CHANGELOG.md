@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`RunResults.artifact_links`, `follow_artifact_links`, `fetch_run_artifact` and `parse_run_artifact`**: a hosted results read that hands its largest artifacts back by reference, because inline they would take the body past the API Gateway's limit, now exposes each one's signed link as the typed `artifact_links`, a `dict[str, RunArtifactLink]` (`url`, `expires_at`) read by `results.artifact_link(artifact)`, where it rode `model_extra`. `get_run_result`, `wait_for_result` and `start_and_wait` follow those links by default, before the main-stuff check and the stored-text load, so a referenced artifact reads as its content; `follow_artifact_links=False` hands the links back untouched for a caller that must not pull the file through itself, `client.follow_artifact_links(results)` follows them later, `client.fetch_run_artifact(artifact, link)` fetches one, and the pure `parse_run_artifact(artifact, content)` in `pipelex_sdk.artifacts` reads a file the caller fetched itself, with the usage envelope unpacked (`docs/run-results.md`, "Artifacts handed back by reference").
+
+### Fixed
+
+- **A result handed back by reference no longer reads as missing**: a referenced `main_stuff` no longer raises `MissingMainStuffError`, which is now raised only for a `None` main stuff with no link; a referenced `working_memory` no longer makes the stored-text load raise `StoredTextLoadError` (`concepts_missing`) after `wait_for_result` polled again for it; and a referenced `graph_spec` or usage envelope no longer reads as not written. A `RunTimeoutError` raised while a completed run's artifacts or texts load says so.
+- **`load_stored_texts` and `download_artifacts` read a result whose artifacts came back by reference**: `load_stored_texts` follows a referenced `main_stuff` into the result and fetches a referenced working memory or form for the load alone, where it raised `concepts_missing`; `download_artifacts` follows its scope's link and the concept links its walk needs under its own `max_bytes`, `timeout_seconds` and `allow_http`, where a result read without following raised `ScopeUnavailableError`. `follow_artifact_links` refuses an empty selection, and a followed file that does not validate names its own artifact. `ArtifactFetchError` now documents the `unreadable` reason. The `run` command no longer says a completed run whose output could not be fetched may still be going.
+
 ## [v0.73.0] - 2026-11-28
 
 ### Changed

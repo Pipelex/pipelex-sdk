@@ -31,6 +31,7 @@ console.log(results.main_stuff, summarizeUsage(results).total_cost_usd);
 | `tokens_usages` | `TokensUsageRecord[] \| null` | the `tokens_usages.json` artifact | lifted off `pipe_output` |
 | `usage_assembly_error` | `string \| null` | relayed | lifted off `pipe_output` |
 | `pipe_output` | `DictPipeOutput \| null \| undefined` | absent | the runner's whole native output |
+| `artifact_links` | `RunArtifactLinks \| undefined` | the artifacts handed back by reference, when some were and the read did not follow them | absent |
 
 ## Reading only some artifacts — `artifacts`
 
@@ -44,6 +45,36 @@ const results = await client.waitForResult(runId, { artifacts: ["working_memory"
 **Absent versus null.** With a selection, an artifact the caller did not name is absent from the result, reading `undefined`, while one it named that the run never wrote is `null`. So `undefined` means "not asked for" and `null` means "asked for, not there". That is also why `main_stuff` is declared optional: it is never null on a completed run, but it is absent from a read that left it out, and `MissingMainStuffError` is thrown only by a read that asked for it — one with no selection, or one naming `main_stuff`.
 
 An empty selection or a name outside the list is a `RequestArgumentError` thrown before any request, `client.argument_invalid`, the same refusal the platform would answer with a `400`. `waitForResult` and `startAndWaitForResult` take the same `artifacts` in their poll options and send it on every poll; `startAndWaitForResult` refuses a bad selection before it starts the run. Against a bare runner the selection has nothing to narrow: the blocking fallback returns every artifact the runner sent. `downloadArtifacts` given a `run_id` asks for its scope's artifact alone.
+
+## Artifacts handed back by reference — `artifact_links`
+
+The API Gateway in front of the hosted platform refuses to deliver a body past its 10 MB limit, which a wide batch's graph spec reaches on its own. So the platform measures the artifacts a completed run wrote before it answers, and when inline they would take the body past its budget it hands the largest back by reference until the rest fits: each such artifact's field reads `null`, both `tokens_usages` and `usage_assembly_error` for the usage envelope, and `artifact_links` maps its name, as `artifacts` names it, to a `RunArtifactLink`, `{ url, expires_at }`, a GET of its stored file signed for about fifteen minutes. `main_stuff` is the last to leave, so a read of the output alone gets it inline whenever it fits. `artifact_links` is absent from every answer that fits, and a `null` field with no entry in it still means the artifact was not written.
+
+**The result readers follow the links by default.** `getRunResult`, `waitForResult` and `startAndWaitForResult` fetch each linked file into its field before the main-stuff check and the stored-text load, so a referenced artifact reads as its content and the result looks like one answered inline: the followed entries are dropped and `artifact_links` is absent. A referenced `working_memory` is therefore there to tell the stored-text load which values are texts, and a referenced `main_stuff` is no `MissingMainStuffError`. `waitForResult` follows the links after the status read, under its `timeoutMs` like the stored-text load, so a deadline that passes while they download says the run completed. Each file is fetched under `fetchArtifact`'s bounds (`maxBytes` 1 GiB, `timeoutMs` 120 s, redirects refused, no credential sent) and read exactly with `parseExactJson`, as an inline answer is. The file is the one the runner wrote, so the links inside it are as stored and never re-signed: a produced file's `public_url` in a followed artifact may have expired, and its `pipelex-storage://` reference is what to resolve ([Produced files](#produced-files)). A link the store refuses, an expired one included, throws `ArtifactFetchError` naming it as `artifact_links.<name>`, never the signed link itself; reading the results again hands back a fresh one.
+
+**Pass the link instead of the content when the file must not cross your server.** A server whose responses are capped, such as a Vercel function at about 4.5 MB, cannot relay an artifact that was referenced precisely because it passes 10 MB. It reads with `followArtifactLinks: false`, which fetches nothing and hands the links back on `artifact_links`, each referenced field `null`; the main-stuff check then throws `MissingMainStuffError` only for a `null` `main_stuff` with no link, so "handed back by reference" (`results.artifact_links?.main_stuff` is set) is told apart from "not written". The server hands the link to its client, which fetches the file from storage directly within its fifteen minutes and reads it with `parseRunArtifact(name, text)`, the pure parse the SDK applies, which needs no client or key and unpacks the usage envelope. A stored-text load on such a read still needs the run's concepts: when `main_stuff` holds a value shaped like a stored text's reference and the working memory or a form came back by reference, the load fetches that artifact for its own use and the result keeps the link; pass `loadStoredTexts: false` as well to fetch nothing at all. `loadStoredTexts(results)` called later on such a result does the same, and follows a `main_stuff` handed back by reference into the result first, since its texts are what it loads.
+
+```ts
+// On the capped server: no file crosses it, a stored text included.
+const state = await client.getRunResult(runId, {
+  followArtifactLinks: false,
+  loadStoredTexts: false,
+});
+if (state.state === "completed") {
+  const { main_stuff, artifact_links } = state.result;
+  // `stringifyExactJson`, never `Response.json`: an exact read may hold a `bigint`.
+  const body = stringifyExactJson({ main_stuff, links: artifact_links ?? {} });
+  return new Response(body, { headers: { "content-type": "application/json" } });
+}
+
+// In the browser, given the link.
+const response = await fetch(link.url);
+const { graph_spec } = parseRunArtifact("graph_spec", await response.text());
+```
+
+`followArtifactLinks(results, { artifacts })`, a client method and an export taking the client, follows the links of a result read without following, every one or only the named ones, and returns a new result; `fetchRunArtifact(name, link)` fetches one link and returns the fields it fills, `{ tokens_usages, usage_assembly_error }` for the usage envelope. A link under a name this version does not know is left in place. `downloadArtifacts` follows its scope's link itself, and the link of a concept artifact its walk needs, whether it was given a `run_id` or a result read without following, under its own `maxBytes`, `timeoutMs` and `allowHttp`; such a fetch that fails throws its `ArtifactFetchError` rather than becoming an item's error, since no file can be walked without it. An empty `artifacts` names nothing to follow and throws `RequestArgumentError`, as the result readers refuse an empty selection.
+
+**What following costs in memory.** Each linked file is buffered whole before it is parsed, and the links of one result are fetched at once, so a default read of a large run holds every referenced artifact in memory, as raw text and then parsed, before it returns: the parsed result is what the caller asked for, but a small serverless worker reading a wide batch may not have the room. Such a caller reads with `followArtifactLinks: false` and follows only what it needs, `followArtifactLinks(results, { artifacts: ["main_stuff"] })`, or passes the links on.
 
 ## `pipeline_run_id` — the durable handle
 
@@ -199,7 +230,7 @@ async function refresh(runId: string): Promise<void> {
 
 ## `main_stuff` — the output
 
-`main_stuff` is the resolved content of the run's main output and is always present for a completed run, unless the read's `artifacts` selection left it out. On the hosted path it is the `main_stuff.json` artifact; on the blocking path the SDK resolves it out of the returned working memory through the response's `main_stuff_name`. Both deliver the same content shape, so there is no shape-guessing and no path-dependent branch to write. A completed run that cannot deliver one throws `MissingMainStuffError` rather than handing back a half-filled result.
+`main_stuff` is the resolved content of the run's main output and is always present for a completed run, unless the read's `artifacts` selection left it out or a read with `followArtifactLinks: false` found it handed back by reference ([above](#artifacts-handed-back-by-reference--artifact_links)). On the hosted path it is the `main_stuff.json` artifact; on the blocking path the SDK resolves it out of the returned working memory through the response's `main_stuff_name`. Both deliver the same content shape, so there is no shape-guessing and no path-dependent branch to write. A completed run that cannot deliver one, neither inline nor by reference, throws `MissingMainStuffError` rather than handing back a half-filled result.
 
 It is typed `unknown` because the content is polymorphic: a structured output arrives as an object of the concept's fields, and a multiple output as the envelope `{ items: [...] }` that the runtime's `ListContent` serialises to. Every content type serialises to an object, natives included — a text output is `{ "text": "…" }` and a number `{ "number": 0 }` — so a guard written for a bare `""` or `0` never fires, and an empty multiple output is `{ "items": [] }` rather than `[]`. Narrow it where you read it, ideally through the types generated for the method rather than a hand-written cast.
 

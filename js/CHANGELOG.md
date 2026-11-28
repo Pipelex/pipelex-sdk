@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`RunResults.artifact_links`, `followArtifactLinks`, `fetchRunArtifact` and `parseRunArtifact`**: a hosted results read that hands its largest artifacts back by reference, because inline they would take the body past the API Gateway's limit, now exposes each one's signed link as `artifact_links`, typed `RunArtifactLinks` of `RunArtifactLink` (`{ url, expires_at }`). `getRunResult`, `waitForResult` and `startAndWaitForResult` follow those links by default, before the main-stuff check and the stored-text load, so a referenced artifact reads as its content; `followArtifactLinks: false` hands the links back untouched for a caller that must not pull the file through itself, `client.followArtifactLinks(results)` follows them later, `client.fetchRunArtifact(name, link)` fetches one, and the pure `parseRunArtifact(name, text)` reads a file the caller fetched itself, exactly and with the usage envelope unpacked (`docs/run-results.md`, "Artifacts handed back by reference").
+
+### Fixed
+
+- **A result handed back by reference no longer reads as missing**: a referenced `main_stuff` no longer throws `MissingMainStuffError`, which is now thrown only for a `null` main stuff with no link; a referenced `working_memory` no longer makes the stored-text load throw `StoredTextLoadError` (`concepts_missing`) after `waitForResult` polled again for it; and a referenced `graph_spec` or usage envelope no longer reads as not written. A `RunTimeoutError` thrown while a completed run's artifacts or texts load says so.
+- **`loadStoredTexts` and `downloadArtifacts` read a result whose artifacts came back by reference**: `loadStoredTexts` follows a referenced `main_stuff` into the result and fetches a referenced working memory or form for the load alone, where it threw `concepts_missing`; `downloadArtifacts` follows its scope's link and the concept links its walk needs under its own `maxBytes`, `timeoutMs` and `allowHttp`, where a result read without following threw `ScopeUnavailableError`. A linked file is held to the rules an inline answer is read by, so a number `JSON.parse` would read as `Infinity` is refused as `unreadable`, a reason `ArtifactFetchError` now documents. The `run` command no longer says a completed run whose output could not be fetched may still be going.
+
 ## [v0.73.0] - 2026-11-28
 
 ### Changed
