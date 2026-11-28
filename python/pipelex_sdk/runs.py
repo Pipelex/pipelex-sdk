@@ -801,15 +801,16 @@ class RunResults(BaseModel):
         """The link `artifact` was handed back by, or `None` when the read carried it inline or did not write it."""
         if self.artifact_links is None:
             return None
-        return self.artifact_links.get(str(artifact))
+        return self.artifact_links.get(artifact)
 
     def carries(self, artifact: RunArtifact) -> bool:
         """Whether the results body carried `artifact` at all, whatever its value.
 
         `False` means the read did not ask for it (a selection that left it out), so its field reads
         `None` without saying anything about the run. `True` with a `None` value means the artifact
-        was asked for and the platform relayed `null`: it was never written. Always `True` on the
-        blocking path, which answers for every field.
+        was asked for and the platform relayed `null`: it was never written, unless `artifact_link(artifact)`
+        is set, which says it was handed back by reference on a read with `follow_artifact_links=False`.
+        Always `True` on the blocking path, which answers for every field.
         """
         return all(field_name in self.model_fields_set for field_name in artifact.results_fields)
 

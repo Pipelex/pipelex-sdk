@@ -106,7 +106,15 @@ class _FakeClient:
             raise AssertionError(msg)
         return self._resolve(list(uris))
 
-    async def get_run_result(self, run_id: str, *, artifacts: Sequence[RunArtifact] | None = None, load_stored_texts: bool = True) -> RunResultState:
+    async def get_run_result(
+        self,
+        run_id: str,
+        *,
+        artifacts: Sequence[RunArtifact] | None = None,
+        load_stored_texts: bool = True,
+        follow_artifact_links: bool = True,
+    ) -> RunResultState:
+        del follow_artifact_links  # this fake hands back results with no link to follow
         self.run_result_calls.append(run_id)
         self.load_stored_texts_flags.append(load_stored_texts)
         self.run_result_selections.append(None if artifacts is None else list(artifacts))

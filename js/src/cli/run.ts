@@ -10,6 +10,7 @@
  */
 
 import {
+  ArtifactFetchError,
   MissingMainStuffError,
   ProblemError,
   RunFailedError,
@@ -148,15 +149,18 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
 
 /**
  * The run a failure leaves going on the server: the run that exists when the failure is not its
- * own outcome, a failed run or a completed one without its output or with a stored text the
- * command could not load, but an unreachable API or a refused poll.
+ * own outcome, a failed run or a completed one without its output, with a stored text the command
+ * could not load or with an output handed back by reference that it could not fetch, but an
+ * unreachable API or a refused poll.
  */
 function waitedOnRun(stage: Stage, error: unknown): string | undefined {
   if (stage.kind !== "started") return undefined;
   if (
     error instanceof RunFailedError ||
     error instanceof MissingMainStuffError ||
-    error instanceof StoredTextLoadError
+    error instanceof StoredTextLoadError ||
+    // Only following a completed run's link fetches an artifact while the command waits.
+    error instanceof ArtifactFetchError
   ) {
     return undefined;
   }

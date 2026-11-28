@@ -19,8 +19,9 @@
  * `pipelex-storage://` reference is what to resolve (`docs/run-results.md`).
  */
 
+import { parseJsonBody } from "mthds/protocol";
 import { ArtifactFetchError, responseUnreadableProblem } from "./errors.js";
-import { parseExactJson } from "./exact-json.js";
+import { ExactJsonUnsupportedError, parseExactJson } from "./exact-json.js";
 import { readSignedUrl } from "./artifacts.js";
 import type { ArtifactCapableClient, FetchArtifactOptions } from "./artifacts.js";
 import { RUN_RESULT_ARTIFACTS, assertArtifactSelection } from "./runs.js";
@@ -82,10 +83,21 @@ function parseArtifactText(
   status: number,
 ): Partial<RunResults> {
   assertArtifactSelection([artifact]);
+  // Held to the rules an inline answer is read by first: a number `JSON.parse` would read as
+  // `Infinity`, or nesting past the protocol's depth, is no JSON the SDK reads.
+  if (!parseJsonBody(text).ok) throw unreadable(artifact, "it is not JSON", status);
   let value: unknown;
   try {
     value = parseExactJson(text);
   } catch (error) {
+    if (error instanceof ExactJsonUnsupportedError) {
+      throw unreadable(
+        artifact,
+        "it holds a number past Number.MAX_SAFE_INTEGER, which this runtime cannot read exactly",
+        status,
+        error,
+      );
+    }
     if (error instanceof SyntaxError) throw unreadable(artifact, "it is not JSON", status, error);
     throw error;
   }

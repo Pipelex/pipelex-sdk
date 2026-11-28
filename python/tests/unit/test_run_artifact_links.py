@@ -9,6 +9,7 @@ that passes the link on. The boundary is mocked per URL: the results route, the 
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
@@ -16,9 +17,9 @@ import httpx
 import pytest
 from pytest_mock import MockerFixture
 
+from pipelex_sdk.artifacts import RUN_ARTIFACT_UNREADABLE, download_artifacts, follow_artifact_links, load_stored_texts, parse_run_artifact
 from pipelex_sdk.client import PipelexAPIClient
 from pipelex_sdk.errors import ArtifactFetchError, MissingMainStuffError, RequestArgumentError
-from pipelex_sdk.run_artifact_links import RUN_ARTIFACT_UNREADABLE, follow_artifact_links, parse_run_artifact
 from pipelex_sdk.runs import RunArtifact, RunArtifactLink, RunResultCompleted, RunResults, WaitForResultOptions
 
 _BASE_URL = "http://localhost:8081"
@@ -313,3 +314,90 @@ class TestRunArtifactLinks:
         fields = asyncio.run(client.fetch_run_artifact(RunArtifact.TOKENS_USAGES, link))
 
         assert fields == _USAGE_ENVELOPE
+
+    def test_refuses_an_empty_selection_to_follow(self, mocker: MockerFixture) -> None:
+        client = _client()
+        _Boundary(mocker, client, body=_referenced_body(), files=_REFERENCED_FILES)
+        read = _completed(asyncio.run(client.get_run_result(_RUN_ID, follow_artifact_links=False)))
+
+        with pytest.raises(RequestArgumentError) as exc_info:
+            asyncio.run(client.follow_artifact_links(read, artifacts=[]))
+
+        assert exc_info.value.problem.code == "client.argument_invalid"
+
+    def test_names_the_artifact_whose_file_does_not_validate(self, mocker: MockerFixture) -> None:
+        client = _client()
+        body = {
+            **_referenced_body(),
+            "main_stuff": {"text": "Short."},
+            "working_memory": None,
+            "artifact_links": {"graph_spec": _link_to("graphspec.json"), "working_memory": _link_to("working_memory.json")},
+        }
+        _Boundary(mocker, client, body=body, files={**_REFERENCED_FILES, "working_memory.json": "[1, 2]"})
+
+        with pytest.raises(ArtifactFetchError) as exc_info:
+            asyncio.run(client.get_run_result(_RUN_ID, load_stored_texts=False))
+
+        assert exc_info.value.uri == "artifact_links.working_memory"
+        assert exc_info.value.reason == RUN_ARTIFACT_UNREADABLE
+        assert exc_info.value.status == 200
+
+    def test_waits_fetching_what_the_load_reads_before_the_other_links(self, mocker: MockerFixture) -> None:
+        client = _client()
+        body = {
+            **_referenced_memory_body(),
+            "artifact_links": {"graph_spec": _link_to("graphspec.json"), "working_memory": _link_to("working_memory.json")},
+        }
+        boundary = _Boundary(
+            mocker,
+            client,
+            body=body,
+            files={"working_memory.json": json.dumps(_MEMORY), "graphspec.json": _GRAPH_TEXT},
+            texts={_STORED_TEXT: "A long text."},
+        )
+
+        result = asyncio.run(client.wait_for_result(_RUN_ID, WaitForResultOptions(interval_seconds=0.01)))
+
+        assert result.main_stuff == {"text": "A long text."}
+        assert result.artifact_links is None
+        assert boundary.fetched.index("/results/working_memory.json") < boundary.fetched.index("/results/graphspec.json")
+        text_read = next(index for index, path in enumerate(boundary.fetched) if path.startswith("/texts/"))
+        assert text_read < boundary.fetched.index("/results/graphspec.json")
+
+    # ── the loader and the download follow what they are handed ──────
+
+    def test_loads_a_result_read_without_following_its_main_stuff_followed_and_its_memory_fetched_alone(self, mocker: MockerFixture) -> None:
+        client = _client()
+        reference = {"url": _STORED_TEXT, "size": 12, "mime_type": "text/plain", "preview": "A long"}
+        body = {
+            **_referenced_memory_body(),
+            "main_stuff": None,
+            "artifact_links": {"main_stuff": _link_to("main_stuff.json"), "working_memory": _link_to("working_memory.json")},
+        }
+        _Boundary(
+            mocker,
+            client,
+            body=body,
+            files={"main_stuff.json": json.dumps(reference), "working_memory.json": json.dumps(_MEMORY)},
+            texts={_STORED_TEXT: "A long text."},
+        )
+        read = _completed(asyncio.run(client.get_run_result(_RUN_ID, follow_artifact_links=False, load_stored_texts=False)))
+
+        loaded = asyncio.run(load_stored_texts(client, read))
+
+        assert loaded.main_stuff == {"text": "A long text."}
+        assert loaded.working_memory is None
+        assert sorted(loaded.artifact_links or {}) == ["working_memory"]
+
+    def test_downloads_a_main_stuff_handed_back_by_reference_in_a_result_in_hand(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        client = _client()
+        report = "pipelex-storage://org/method/run-referenced/generated/a/report.pdf"
+        body = {**_referenced_body(), "artifact_links": {"main_stuff": _link_to("main_stuff.json")}}
+        boundary = _Boundary(mocker, client, body=body, files={"main_stuff.json": json.dumps({"url": report})}, texts={report: "%PDF-1.7"})
+        read = _completed(asyncio.run(client.get_run_result(_RUN_ID, follow_artifact_links=False)))
+
+        verdict = asyncio.run(download_artifacts(client, dir_path=tmp_path, results=read))
+
+        assert verdict.all_saved
+        assert "/results/main_stuff.json" in boundary.fetched
+        assert [Path(path).read_text(encoding="utf-8") for path in verdict.saved_paths] == ["%PDF-1.7"]

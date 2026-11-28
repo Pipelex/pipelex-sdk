@@ -72,9 +72,18 @@ from pipelex_sdk.artifact_models import (
     FetchArtifactOptions,
     ResolvedArtifact,
 )
-from pipelex_sdk.artifacts import CONCEPT_ARTIFACTS, ArtifactStream, carries_concept_artifacts, may_hold_stored_texts, with_concept_artifacts
+from pipelex_sdk.artifacts import (
+    CONCEPT_ARTIFACTS,
+    ArtifactStream,
+    carries_concept_artifacts,
+    holds_artifact_links,
+    may_hold_stored_texts,
+    with_concept_artifacts,
+)
 from pipelex_sdk.artifacts import download_artifacts as _download_artifacts_impl
 from pipelex_sdk.artifacts import fetch_artifact as _fetch_artifact_impl
+from pipelex_sdk.artifacts import fetch_run_artifact as _fetch_run_artifact_impl
+from pipelex_sdk.artifacts import follow_artifact_links as _follow_artifact_links_impl
 from pipelex_sdk.artifacts import load_stored_texts as _load_stored_texts_impl
 from pipelex_sdk.artifacts import resolve_artifacts as _resolve_artifacts_impl
 from pipelex_sdk.crate_models import (
@@ -170,9 +179,6 @@ from pipelex_sdk.product_models import (
     UserProfile,
     read_method,
 )
-from pipelex_sdk.run_artifact_links import fetch_run_artifact as _fetch_run_artifact_impl
-from pipelex_sdk.run_artifact_links import follow_artifact_links as _follow_artifact_links_impl
-from pipelex_sdk.run_artifact_links import holds_artifact_links
 from pipelex_sdk.runs import (
     MAX_CONCEPTS_MISSING_POLLS,
     PipelexRunResultStart,
@@ -248,6 +254,8 @@ _DEFAULT_DEGRADED_RETRY_SECONDS = 5  # matches the platform's `_DEGRADE_RETRY_AF
 # How much of a body that is no problem document an error's message quotes; `response_body` keeps it
 # whole. The same limit as the `mthds` base, so a refusal reads the same from either client.
 _REASON_BODY_LIMIT = 500
+#: What the stored-text load reads: the main stuff, and the artifacts telling its texts by concept.
+_LOAD_ARTIFACTS: tuple[RunArtifact, ...] = (RunArtifact.MAIN_STUFF, *CONCEPT_ARTIFACTS)
 
 # The hosted gateway caps synchronous requests at ~30s. A failure at/after this elapsed threshold
 # is the gateway's cut-off, not a transient outage — the threshold guards against mislabeling a fast
@@ -1758,12 +1766,10 @@ class PipelexAPIClient(MthdsAPIClient):
         linked_concepts = holds_artifact_links(result, CONCEPT_ARTIFACTS)
         if (not carries_concept_artifacts(selection) or linked_concepts) and not may_hold_stored_texts(result.main_stuff):
             return result
+        # The loader fetches a linked concept artifact for the load alone: the result handed back keeps its links.
         source = await with_concept_artifacts(self, result, selection=selection)
-        if linked_concepts:
-            # Fetched for the load alone: the result handed back keeps its links.
-            source = await _follow_artifact_links_impl(self, source, artifacts=CONCEPT_ARTIFACTS)
         loaded = await _load_stored_texts_impl(self, source)
-        if loaded is source:
+        if loaded.main_stuff is source.main_stuff:
             return result
         return result.model_copy(update={"main_stuff": loaded.main_stuff})
 
@@ -1903,17 +1909,23 @@ class PipelexAPIClient(MthdsAPIClient):
         """A completed result of `wait_for_result` with its links followed and its stored texts loaded within the time
         the wait has left.
 
-        The links come first, so a referenced `working_memory` tells the load which values are texts. A result with
-        nothing to fetch or load returns without waiting on anything, so even a wait whose time is spent hands it back;
-        one whose load outlasts the wait raises `RunTimeoutError` saying the run completed.
+        The links the load reads come first, `main_stuff` and the concept artifacts, so a referenced `working_memory`
+        tells the load which values are texts, and only those: a load that finds the concepts missing polls again, so
+        nothing else is fetched before it has passed. The other links are followed last. A result with nothing to fetch
+        or load returns without waiting on anything, so even a wait whose time is spent hands it back; one whose load
+        outlasts the wait raises `RunTimeoutError` saying the run completed.
         """
         remaining = max(opts.timeout_seconds - (monotonic() - started_at), 0)
         try:
             async with asyncio.timeout(remaining):
-                followed = await _follow_artifact_links_impl(self, result) if follow_artifact_links else result
-                if not load_stored_texts:
-                    return followed
-                return await self._with_stored_texts_loaded(followed, selection=artifacts)
+                current = result
+                if follow_artifact_links and load_stored_texts:
+                    current = await _follow_artifact_links_impl(self, current, artifacts=_LOAD_ARTIFACTS)
+                if load_stored_texts:
+                    current = await self._with_stored_texts_loaded(current, selection=artifacts)
+                if follow_artifact_links:
+                    current = await _follow_artifact_links_impl(self, current)
+                return current
         except TimeoutError as exc:
             msg = _loading_timeout_message(result.pipeline_run_id, opts.timeout_seconds)
             raise RunTimeoutError(msg, run_id=result.pipeline_run_id, timeout_seconds=opts.timeout_seconds) from exc

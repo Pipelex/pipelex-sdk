@@ -7,6 +7,9 @@
  * mocked per URL: the results route, the bulk resolve route and the object store.
  */
 
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PipelexApiClient } from "../src/client.js";
 import { ArtifactFetchError, MissingMainStuffError } from "../src/errors.js";
@@ -347,5 +350,124 @@ describe("followArtifactLinks: false hands the links back", () => {
     );
 
     expect(fields).toEqual(USAGE_ENVELOPE);
+  });
+});
+
+describe("what the review asked of following", () => {
+  const STORED_MEMORY = {
+    root: { summary: { concept: "native.Text", content: { url: STORED_TEXT } } },
+    aliases: { main_stuff: "summary" },
+  };
+  const STORED_REFERENCE = {
+    url: STORED_TEXT,
+    size: 12,
+    mime_type: "text/plain",
+    preview: "A long",
+  };
+
+  it("refuses a file holding a number JSON.parse would read as Infinity, as an inline answer is", () => {
+    try {
+      parseRunArtifact("graph_spec", '{"cost":1e999}');
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactFetchError);
+      expect((error as ArtifactFetchError).reason).toBe(RUN_ARTIFACT_UNREADABLE);
+    }
+  });
+
+  it("refuses an empty selection to follow", async () => {
+    mockBoundary({ body: referencedBody(), files: REFERENCED_FILES });
+    const client = makeClient();
+    const read = await completedResult(client.getRunResult(RUN_ID, { followArtifactLinks: false }));
+
+    await expect(client.followArtifactLinks(read, { artifacts: [] })).rejects.toMatchObject({
+      problem: { code: "client.argument_invalid" },
+    });
+  });
+
+  it("waits fetching what the load reads before the other links", async () => {
+    const boundary = mockBoundary({
+      body: {
+        pipeline_run_id: RUN_ID,
+        main_stuff: STORED_REFERENCE,
+        working_memory: null,
+        graph_spec: null,
+        output_form: {},
+        input_form: {},
+        artifact_links: {
+          graph_spec: linkTo("graphspec.json"),
+          working_memory: linkTo("working_memory.json"),
+        },
+      },
+      files: {
+        "working_memory.json": JSON.stringify(STORED_MEMORY),
+        "graphspec.json": REFERENCED_FILES["graphspec.json"],
+      },
+      texts: { [STORED_TEXT]: "A long text." },
+    });
+
+    const result = await makeClient().waitForResult(RUN_ID, { intervalMs: 10 });
+
+    expect(result.main_stuff).toEqual({ text: "A long text." });
+    expect(result).not.toHaveProperty("artifact_links");
+    const graphRead = boundary.fetched.indexOf("/results/graphspec.json");
+    expect(boundary.fetched.indexOf("/results/working_memory.json")).toBeLessThan(graphRead);
+    expect(boundary.fetched.findIndex((path) => path.startsWith("/texts/"))).toBeLessThan(
+      graphRead,
+    );
+  });
+
+  it("loads a result read without following: its main stuff followed, its memory fetched alone", async () => {
+    mockBoundary({
+      body: {
+        pipeline_run_id: RUN_ID,
+        main_stuff: null,
+        working_memory: null,
+        output_form: {},
+        input_form: {},
+        artifact_links: {
+          main_stuff: linkTo("main_stuff.json"),
+          working_memory: linkTo("working_memory.json"),
+        },
+      },
+      files: {
+        "main_stuff.json": JSON.stringify(STORED_REFERENCE),
+        "working_memory.json": JSON.stringify(STORED_MEMORY),
+      },
+      texts: { [STORED_TEXT]: "A long text." },
+    });
+    const client = makeClient();
+    const read = await completedResult(
+      client.getRunResult(RUN_ID, { followArtifactLinks: false, loadStoredTexts: false }),
+    );
+
+    const loaded = await sdk.loadStoredTexts(client, read);
+
+    expect(loaded.main_stuff).toEqual({ text: "A long text." });
+    expect(loaded.working_memory).toBeNull();
+    expect(Object.keys(loaded.artifact_links ?? {})).toEqual(["working_memory"]);
+  });
+
+  it("downloads a main stuff handed back by reference in a result in hand", async () => {
+    const report = "pipelex-storage://org/method/run-referenced/generated/a/report.pdf";
+    const boundary = mockBoundary({
+      body: { ...referencedBody(), artifact_links: { main_stuff: linkTo("main_stuff.json") } },
+      files: { "main_stuff.json": JSON.stringify({ url: report }) },
+      texts: { [report]: "%PDF-1.7" },
+    });
+    const client = makeClient();
+    const read = await completedResult(client.getRunResult(RUN_ID, { followArtifactLinks: false }));
+    const dir = await mkdtemp(join(tmpdir(), "artifact-links-"));
+
+    try {
+      const verdict = await client.downloadArtifacts({ results: read, dir });
+
+      expect(verdict.all_saved).toBe(true);
+      expect(boundary.fetched).toContain("/results/main_stuff.json");
+      const saved = await Promise.all(verdict.saved_paths.map((path) => readFile(path, "utf8")));
+      expect(saved).toEqual(["%PDF-1.7"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

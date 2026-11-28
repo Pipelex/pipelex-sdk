@@ -742,6 +742,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 1_200_000; // 20 min — matches the runner's
 const POLL_REQUEST_TIMEOUT_MS = 30_000; // single status/result GETs; the hosted gateway caps responses at ~30s.
 const DEFAULT_DEGRADED_RETRY_SECONDS = 5; // matches the platform's `_DEGRADE_RETRY_AFTER_SECONDS`.
 const VALIDATE_MARKDOWN_RENDER_FORMAT = "markdown";
+/** What the stored-text load reads: the main stuff, and the artifacts telling its texts by concept. */
+const LOAD_ARTIFACTS: readonly RunResultArtifact[] = ["main_stuff", ...CONCEPT_ARTIFACTS];
 
 /**
  * `VersionInfo.implementation` of the bare open-source runner (no run store).
@@ -2910,14 +2912,8 @@ export class PipelexApiClient implements HostedProtocolSurface {
     ) {
       return result;
     }
-    let source = await withConceptArtifacts(this, result, selection, signal);
-    if (linkedConcepts) {
-      // Fetched for the load alone: the result handed back keeps its links.
-      source = await followArtifactLinksImpl(this, source as RunResults, {
-        artifacts: CONCEPT_ARTIFACTS,
-        signal,
-      });
-    }
+    // The loader fetches a linked concept artifact for the load alone: the result keeps its links.
+    const source = await withConceptArtifacts(this, result, selection, signal);
     const loaded = await loadStoredTextsImpl(this, { ...result, ...source } as RunResults, {
       signal,
     });
@@ -2946,11 +2942,19 @@ export class PipelexApiClient implements HostedProtocolSurface {
       !follows && !loads
         ? undefined
         : async (result, opts) => {
-            // The links first, so a referenced `working_memory` tells the load which values are texts.
-            const followed = follows
-              ? await followArtifactLinksImpl(this, result, { signal: opts.signal })
-              : result;
-            return loads ? this.withStoredTextsLoaded(followed, selection, opts.signal) : followed;
+            let current = result;
+            if (follows && loads) {
+              // What the load reads first, and only that: a load that finds the concepts missing
+              // polls again, so nothing else is fetched before it has passed.
+              current = await followArtifactLinksImpl(this, current, {
+                artifacts: LOAD_ARTIFACTS,
+                signal: opts.signal,
+              });
+            }
+            if (loads) current = await this.withStoredTextsLoaded(current, selection, opts.signal);
+            return follows
+              ? followArtifactLinksImpl(this, current, { signal: opts.signal })
+              : current;
           },
     );
   }
