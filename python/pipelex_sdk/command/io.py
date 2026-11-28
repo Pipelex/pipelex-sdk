@@ -71,6 +71,13 @@ def run_still_going_line(run_id: str) -> str:
     return f"Run {run_id} may still be going on the server, so do not start it again."
 
 
+def run_output_unfetched_line(run_id: str) -> str:
+    """The line under a completed run whose output, handed back by reference, could not be fetched: the run is over,
+    and a second one would be paid for again.
+    """
+    return f"Run {run_id} completed, but its output could not be fetched: read its results again rather than start it again."
+
+
 class CommandError(Exception):
     """A failure the command words itself: a usage error (exit code 2) or a refusal it reads off an
     answer (exit code 1).

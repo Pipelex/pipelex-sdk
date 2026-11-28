@@ -11,6 +11,10 @@ usable without the next:
   credentials forwarded, headers neutral.
 - `download_artifacts(client, ...)` — a run's produced files saved under a directory by a bounded
   pool of tasks, each named after the field it fills (`artifact_filename`), as a produced verdict.
+- `follow_artifact_links(client, results)` — the result artifacts a large run handed back by reference
+  (`RunResults.artifact_links`) fetched into their fields; `fetch_run_artifact` fetches one link and
+  `parse_run_artifact` reads one such file, purely. The loader and the download follow the links they
+  are handed through it.
 
 A produced file is never embedded in a run's results: the content carries its durable
 `pipelex-storage://` reference beside a signed `public_url` that expires on the provider's
@@ -52,7 +56,7 @@ from mthds.protocol.problem.registry import CoreCode
 from mthds.runners.api.problem import transport_failure_problem
 from pydantic import BaseModel, ValidationError
 
-from pipelex_sdk._answer_json import dumps_as_javascript
+from pipelex_sdk._answer_json import decode_json_as_written, dumps_as_javascript
 from pipelex_sdk._url_origin import ComparableOrigin, comparable_origin
 from pipelex_sdk.artifact_models import (
     BULK_RESOLVE_MAX_URIS,
@@ -79,6 +83,7 @@ from pipelex_sdk.errors import (
     ArtifactFetchError,
     ArtifactOperationError,
     FieldNotIncludedError,
+    RequestArgumentError,
     RunFailedError,
     RunStillRunningError,
     ScopeUnavailableError,
@@ -86,7 +91,7 @@ from pipelex_sdk.errors import (
     argument_invalid_problem,
     response_unreadable_problem,
 )
-from pipelex_sdk.runs import RunArtifact, RunResultCompleted, RunResultFailed, RunResultRunning, RunResults
+from pipelex_sdk.runs import RunArtifact, RunArtifactLink, RunResultCompleted, RunResultFailed, RunResultRunning, RunResults
 from pipelex_sdk.stored_texts import (
     STORED_TEXT_REFERENCE_FIELDS,
     STORED_TEXT_VALUE_FIELDS,
@@ -216,6 +221,7 @@ class ArtifactCapableClient(ArtifactFetchClient, Protocol):
         *,
         artifacts: Sequence[RunArtifact] | None = None,
         load_stored_texts: bool = True,
+        follow_artifact_links: bool = True,
     ) -> RunResultState: ...
 
 
@@ -831,6 +837,23 @@ async def _fetch_artifact(
         await storage_client.aclose()
 
 
+async def read_signed_url(client: ArtifactFetchClient, label: str, url: str, options: FetchArtifactOptions | None = None) -> tuple[bytes, int]:
+    """The whole body of a link the server has already signed, read under `fetch_artifact`'s bounds, and its status.
+
+    The link is checked as a resolved one is, redirects are refused, the byte cap is enforced against the declared
+    length and on every chunk, and the budget covers the whole exchange. `label` stands for the link in every error,
+    since a signed link carries its authorization in its query string and is never written into an error. What
+    `follow_artifact_links` reads a result artifact handed back by reference with.
+    """
+    bounds = _validated_bounds(options or FetchArtifactOptions(), origin_url=client.origin_url)
+    storage_client = _new_storage_client(bounds.timeout_seconds)
+    try:
+        async with _stream_resolved_url(storage_client, label, url, bounds) as stream:
+            return await stream.read(), stream.status_code
+    finally:
+        await storage_client.aclose()
+
+
 def _validated_bounds(options: FetchArtifactOptions, *, origin_url: str) -> _FetchBounds:
     """The per-file bounds, refusing nonsense before anything is resolved. `origin_url` is the client's own
     origin, the one on which a plain-http link is fetched without `allow_http`.
@@ -945,7 +968,7 @@ def _format_mib(byte_count: float) -> str:
 # ── load_stored_texts ────────────────────────────────────────────────
 
 #: The result artifacts the concept at each path is read from.
-_CONCEPT_ARTIFACTS: tuple[RunArtifact, ...] = (RunArtifact.WORKING_MEMORY, RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM)
+CONCEPT_ARTIFACTS: tuple[RunArtifact, ...] = (RunArtifact.WORKING_MEMORY, RunArtifact.OUTPUT_FORM, RunArtifact.INPUT_FORM)
 
 
 @dataclass(frozen=True)
@@ -994,6 +1017,11 @@ async def load_stored_texts(
     `options.max_total_bytes` (256 MiB by default), both checked first against the sizes the references state, before
     anything is sent, then as the bytes arrive; the first text that fails stops every other read in flight.
 
+    A result read with `follow_artifact_links=False` is loaded too: a `main_stuff` it handed back by reference is
+    followed into the result first, its link dropped, and a working memory or a form it handed back by reference is
+    fetched for the load alone, its link kept (`follow_artifact_links`, under this load's `timeout_seconds` and
+    `allow_http`).
+
     The result passed in is never changed: a new one is returned, or the same one when there is nothing to load.
 
     Raises:
@@ -1001,19 +1029,27 @@ async def load_stored_texts(
             the resolve route included (`resolve_failed`, the route's error as its cause), the load's total over
             `max_total_bytes` as `total_limit_exceeded`, and a result that does not say which values are texts as
             `concepts_missing`.
+        ArtifactFetchError: An artifact handed back by reference that the load needed could not be fetched.
         ArtifactOperationError: For nonsense bounds.
     """
-    if results.main_stuff is None:
-        return results
-    if lacks_stored_text_concepts(results):
-        raise _concepts_missing_error(results)
-    node = main_stuff_node(results)
+    opts = options or LoadStoredTextsOptions()
+    link_bounds = FetchArtifactOptions(timeout_seconds=opts.timeout_seconds, allow_http=opts.allow_http)
+    target = await follow_artifact_links(client, results, artifacts=[RunArtifact.MAIN_STUFF], options=link_bounds)
+    if target.main_stuff is None:
+        return target
+    # A linked concept is fetched only when something is shaped like a stored text's reference.
+    source = target
+    if may_hold_stored_texts(target.main_stuff):
+        source = await follow_artifact_links(client, target, artifacts=CONCEPT_ARTIFACTS, options=link_bounds)
+    if lacks_stored_text_concepts(source):
+        raise _concepts_missing_error(source)
+    node = main_stuff_node(source)
     if node is None:
-        return results
-    loaded = await _load_stored_text_values(client, results.main_stuff, node, options or LoadStoredTextsOptions(), run_id=results.pipeline_run_id)
-    if loaded is results.main_stuff:
-        return results
-    return results.model_copy(update={"main_stuff": loaded})
+        return target
+    loaded = await _load_stored_text_values(client, target.main_stuff, node, opts, run_id=target.pipeline_run_id)
+    if loaded is target.main_stuff:
+        return target
+    return target.model_copy(update={"main_stuff": loaded})
 
 
 def may_hold_stored_texts(value: Any) -> bool:
@@ -1101,7 +1137,7 @@ def carries_concept_artifacts(selection: Sequence[RunArtifact] | None) -> bool:
     """Whether a results read narrowed to `selection` carried every artifact the concept at each path is read from:
     the working memory and both forms. `None`, a read of every artifact, does.
     """
-    return selection is None or all(artifact in selection for artifact in _CONCEPT_ARTIFACTS)
+    return selection is None or all(artifact in selection for artifact in CONCEPT_ARTIFACTS)
 
 
 async def with_concept_artifacts(
@@ -1117,7 +1153,7 @@ async def with_concept_artifacts(
     """
     if selection is None:
         return results
-    missing = [artifact for artifact in _CONCEPT_ARTIFACTS if artifact not in selection]
+    missing = [artifact for artifact in CONCEPT_ARTIFACTS if artifact not in selection]
     if not missing:
         return results
     state = await client.get_run_result(results.pipeline_run_id, artifacts=missing, load_stored_texts=False)
@@ -1501,7 +1537,9 @@ async def download_artifacts(
     Returns one entry per reference, errors as values. It raises only when no verdict can be produced:
     `RunStillRunningError` or `RunFailedError` for a run that has not completed, `FieldNotIncludedError`
     when the results read did not carry the scope's key, `ScopeUnavailableError` when the key was
-    relayed as `None`, `ArtifactAuthenticationError` (carrying the verdict so far) when the resolve
+    relayed as `None`, `ArtifactFetchError` when the scope's artifact, or a concept artifact the walk
+    needs, was handed back by reference and could not be fetched under the download's bounds,
+    `ArtifactAuthenticationError` (carrying the verdict so far) when the resolve
     route refuses the credential, `ArtifactOperationError` for an unusable directory, an unknown
     scope or nonsense bounds, and the transport and lifecycle errors of the reads it makes
     (`ApiResponseError` for a deployment without the bulk route, `RunLifecycleUnavailableError` for a
@@ -1522,13 +1560,21 @@ async def download_artifacts(
         msg = "download_artifacts takes exactly one of `run_id` (the results are re-read) or `results` (a RunResults in hand)."
         raise ArtifactOperationError(msg, problem=argument_invalid_problem(argument="run_id", reason="not_exactly_one_selector"))
     read_results = results if results is not None else await _read_completed_results(client, cast("str", run_id), scope)
+    # The walked artifact, handed back by reference by a large run or in a result read with
+    # `follow_artifact_links=False`, is fetched under the download's own bounds.
+    link_bounds = FetchArtifactOptions(max_bytes=opts.max_bytes, timeout_seconds=opts.timeout_seconds, allow_http=opts.allow_http)
+    read_results = await follow_artifact_links(client, read_results, artifacts=[scope.run_artifact], options=link_bounds)
     walked = _scope_value(read_results, scope, read_here=results is None)
 
     # The concept at each path tells a stored text, a value of the run, from a file. A run read by id
-    # asked for its scope alone, so its concepts are read beside it when the walk may need them.
+    # asked for its scope alone, so its concepts are read beside it when the walk may need them; a
+    # result in hand that holds them by reference has them fetched for the walk alone.
     source = read_results
-    if results is None and may_hold_stored_texts(walked):
-        source = await with_concept_artifacts(client, read_results, selection=[scope.run_artifact])
+    if may_hold_stored_texts(walked):
+        if results is None:
+            source = await with_concept_artifacts(client, read_results, selection=[scope.run_artifact])
+        else:
+            source = await follow_artifact_links(client, read_results, artifacts=CONCEPT_ARTIFACTS, options=link_bounds)
     node: InputFormItem | None
     match scope:
         case ArtifactScope.MAIN_STUFF:
@@ -1601,8 +1647,9 @@ async def _read_completed_results(client: ArtifactCapableClient, run_id: str, sc
     Asks for the scope's one artifact only, so a download never pays for the graph, the forms or
     the usage it does not walk.
     """
-    # Files only: the stored texts are values, which the walk skips by concept rather than loads.
-    state = await client.get_run_result(run_id, artifacts=[scope.run_artifact], load_stored_texts=False)
+    # Files only: the stored texts are values, which the walk skips by concept rather than loads. A scope handed back
+    # by reference is followed by the download itself, under its own bounds.
+    state = await client.get_run_result(run_id, artifacts=[scope.run_artifact], load_stored_texts=False, follow_artifact_links=False)
     if isinstance(state, RunResultRunning):
         retry = state.retry_after_seconds
         hint = f" — retry in {retry}s." if retry is not None else "."
@@ -1913,3 +1960,198 @@ def _assemble_verdict(scope: ArtifactScope, artifacts: list[DownloadedArtifact])
         saved_paths=saved_paths,
         all_saved=len(saved_paths) == len(artifacts),
     )
+
+
+# ── Result artifacts handed back by reference ────────────────────────
+#
+# The platform measures a completed run's results before answering, and when inline they would take the body past the
+# API Gateway's limit it hands its largest artifacts back as links: each such artifact's fields read `None` and
+# `artifact_links` maps its name to `{url, expires_at}`, a GET of its stored file signed for about fifteen minutes. The
+# file is the one the runner wrote, so the links inside it are as stored, never re-signed: a produced file's
+# `public_url` inside a followed artifact may have expired, and its `pipelex-storage://` reference is what to resolve
+# (`docs/run-results.md`).
+
+#: The reason an `ArtifactFetchError` gives for a referenced file that is not the artifact's JSON.
+RUN_ARTIFACT_UNREADABLE = "unreadable"
+
+
+def _known_artifact(artifact: RunArtifact | str) -> RunArtifact:
+    """`artifact` as a `RunArtifact`, or the `RequestArgumentError` a name the platform does not know is refused with."""
+    try:
+        return RunArtifact(artifact)
+    except ValueError as exc:
+        msg = f"Unknown result artifact {artifact!r}; valid artifacts are: {', '.join(RunArtifact)}."
+        problem = make_client_problem(CoreCode.CLIENT_ARGUMENT_INVALID, params={"argument": "artifact", "reason": "unknown_value"})
+        raise RequestArgumentError(msg, problem=problem) from exc
+
+
+def _link_label(artifact: RunArtifact) -> str:
+    """The label that stands for an artifact's link in an error: the signed link itself is never written there."""
+    return f"artifact_links.{artifact}"
+
+
+def _unreadable(artifact: RunArtifact, detail: str, status: int) -> ArtifactFetchError:
+    msg = f"The {artifact} artifact handed back by reference could not be read: {detail}."
+    return ArtifactFetchError(
+        msg, uri=_link_label(artifact), reason=RUN_ARTIFACT_UNREADABLE, status=status, problem=response_unreadable_problem(status=status)
+    )
+
+
+def parse_run_artifact(artifact: RunArtifact, content: bytes | str) -> dict[str, Any]:
+    """The result fields one artifact's stored file fills, read from the file's content.
+
+    `{"graph_spec": ...}`, `{"main_stuff": ...}` and so on, and `{"tokens_usages": ..., "usage_assembly_error": ...}`
+    for `RunArtifact.TOKENS_USAGES`, whose file is the envelope holding both. The values are the JSON as written,
+    read by the rules an inline answer is read by, its numbers kept as written; `follow_artifact_links` validates
+    them as `RunResults` fields. Pure — no network, no key.
+
+    Raises:
+        RequestArgumentError: `artifact` is no `RunArtifact`.
+        ArtifactFetchError: The content is not UTF-8 JSON, or a usage file is not the envelope object; its reason is
+            `unreadable` (`RUN_ARTIFACT_UNREADABLE`).
+    """
+    return _parse(_known_artifact(artifact), content, status=200)
+
+
+def _parse(artifact: RunArtifact, content: bytes | str, *, status: int) -> dict[str, Any]:
+    if isinstance(content, bytes):
+        try:
+            # A byte order mark is dropped, as a `TextDecoder` drops it.
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise _unreadable(artifact, "it is not UTF-8 text", status) from exc
+    else:
+        text = content
+    decoded = decode_json_as_written(text)
+    if not decoded.is_json:
+        raise _unreadable(artifact, "it is not JSON", status)
+    value: Any = decoded.value
+    match artifact:
+        case RunArtifact.TOKENS_USAGES:
+            if not isinstance(value, dict):
+                raise _unreadable(artifact, "it is not the usage envelope object", status)
+            envelope = cast("dict[str, Any]", value)
+            return {"tokens_usages": envelope.get("tokens_usages"), "usage_assembly_error": envelope.get("usage_assembly_error")}
+        case (
+            RunArtifact.GRAPH_SPEC
+            | RunArtifact.PIPE_IO_CONTRACTS
+            | RunArtifact.INPUT_FORM
+            | RunArtifact.OUTPUT_FORM
+            | RunArtifact.MAIN_STUFF
+            | RunArtifact.WORKING_MEMORY
+        ):
+            return {artifact: value}
+
+
+async def fetch_run_artifact(
+    client: ArtifactFetchClient,
+    artifact: RunArtifact,
+    link: RunArtifactLink,
+    options: FetchArtifactOptions | None = None,
+) -> dict[str, Any]:
+    """Fetch one artifact the platform handed back by reference and read it as the result fields it fills.
+
+    The link is fetched under `fetch_artifact`'s bounds — redirects refused, no credential of ours sent, `max_bytes`
+    (1 GiB by default) enforced before and while the body arrives, `timeout_seconds` (120 s by default) over the
+    whole exchange, a plain `http:` link refused unless it is on the client's own origin or `allow_http` is set — then
+    read as `parse_run_artifact` reads it.
+
+    A link lasts about fifteen minutes from the read that handed it back; past that the store refuses it, an
+    `ArtifactFetchError`, and reading the results again hands back a fresh one. Every failure is an
+    `ArtifactFetchError` naming the link as `artifact_links.<name>`, never the signed link itself.
+    """
+    known = _known_artifact(artifact)
+    body, status = await read_signed_url(client, _link_label(known), link.url, options)
+    return _parse(known, body, status=status)
+
+
+async def follow_artifact_links(
+    client: ArtifactFetchClient,
+    results: RunResults,
+    *,
+    artifacts: Sequence[RunArtifact] | None = None,
+    options: FetchArtifactOptions | None = None,
+) -> RunResults:
+    """`results` with the artifacts it handed back by reference fetched into their fields.
+
+    Every link is followed, or only those `artifacts` names; each followed entry is dropped from `artifact_links`,
+    which reads `None` once none is left, so a followed result reads as one answered inline. A link under a name this
+    version does not know is left in place. The links are fetched at once, and the first that fails cancels the others
+    and is raised (`fetch_run_artifact`); the fetched fields are validated as `RunResults` fields, a file that does not
+    validate raising `ArtifactFetchError` (`unreadable`) naming its artifact. An empty `artifacts` names nothing to
+    follow and raises `RequestArgumentError`. The result passed in is never changed: a new one is returned, or the
+    same one when it holds no link to follow.
+
+    The result readers (`get_run_result`, `wait_for_result`, `start_and_wait`) call it by default; a caller that read
+    with `follow_artifact_links=False`, to pass the links on rather than pull the files through itself, calls it where
+    the content is wanted after all.
+    """
+    only: set[RunArtifact] | None = None
+    if artifacts is not None:
+        only = {_known_artifact(artifact) for artifact in artifacts}
+        if not only:
+            msg = "An artifact selection must name at least one RunArtifact; pass artifacts=None to follow every link."
+            raise RequestArgumentError(msg, problem=argument_invalid_problem(argument="artifacts", reason="empty"))
+    links = results.artifact_links or {}
+    followed: list[RunArtifact] = []
+    for name in links:
+        known = _maybe_artifact(name)
+        if known is not None and (only is None or known in only):
+            followed.append(known)
+    if not followed:
+        return results
+    # `gather`, not a `TaskGroup`: the first failure is raised as itself, never wrapped in an exception group, and the
+    # `finally` cancels the fetches still in flight.
+    tasks = [asyncio.ensure_future(_fetch_validated(client, artifact, links[artifact], options, results.pipeline_run_id)) for artifact in followed]
+    try:
+        fetched = await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    update: dict[str, Any] = {}
+    for one_artifact in fetched:
+        update.update(one_artifact)
+    remaining = {name: link for name, link in links.items() if _maybe_artifact(name) not in followed}
+    update["artifact_links"] = remaining or None
+    return results.model_copy(update=update)
+
+
+async def _fetch_validated(
+    client: ArtifactFetchClient,
+    artifact: RunArtifact,
+    link: RunArtifactLink,
+    options: FetchArtifactOptions | None,
+    run_id: str,
+) -> dict[str, Any]:
+    """One link fetched and its fields validated as `RunResults` fields, a file that does not validate naming its own
+    artifact in the `ArtifactFetchError` it raises.
+    """
+    fields = await fetch_run_artifact(client, artifact, link, options)
+    try:
+        validated = RunResults.model_validate({"pipeline_run_id": run_id, **fields})
+    except ValidationError as exc:
+        # Where it fails, never the values: a stored file holds signed links, which no error may carry.
+        where = "; ".join(".".join(str(part) for part in error["loc"]) for error in exc.errors(include_input=False))
+        msg = f"The {artifact} artifact handed back by reference could not be read as the run's results, at {where}."
+        raise ArtifactFetchError(
+            msg,
+            uri=_link_label(artifact),
+            reason=RUN_ARTIFACT_UNREADABLE,
+            status=200,
+            problem=response_unreadable_problem(status=200, pipeline_run_id=run_id),
+        ) from exc
+    return {field_name: getattr(validated, field_name) for field_name in fields}
+
+
+def _maybe_artifact(name: str) -> RunArtifact | None:
+    """The `RunArtifact` a link's key names, or `None` for a name this version does not know."""
+    try:
+        return RunArtifact(name)
+    except ValueError:
+        return None
+
+
+def holds_artifact_links(results: RunResults, artifacts: Sequence[RunArtifact]) -> bool:
+    """Whether `results` holds a link for any of `artifacts`."""
+    return any(results.artifact_link(artifact) is not None for artifact in artifacts)
