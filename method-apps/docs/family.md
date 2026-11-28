@@ -17,6 +17,7 @@ scripts/                         the family's own tooling (the create contract, 
 docs/                            the family's documentation: this page, and the CLI template's lineage
 initializers/js/                 @pipelex/create-method-app, the npm initializer that writes the Node templates
 initializers/cases.json          the cases every initializer's suite executes
+initializers/login-key.json      how an initializer and npm run create read the login's key
 webapp-js/                       the Next.js web app template — a complete project on its own
 cli-python/                      the Python command-line template — a complete project on its own
 ```
@@ -82,6 +83,8 @@ npm run serve
 **Each initializer's table of templates is `templates.json` at its root**, which says which templates it serves, the extras each one's `make create` takes, and, under `otherEcosystems`, where a person asking it for another ecosystem's template is sent (`refused: other-ecosystem`): to that ecosystem's initializer, by its command, or, while the ecosystem has none, to the template's README, which shows how to copy it out of a release. JSON, so the root reads every initializer's table whatever its language: `scripts/initializers.test.mjs` fails when a template of `TEMPLATES` whose ecosystem has an initializer is served by none or by more than one, when a table's variables are not the `make create` contract's, and when a table's `otherEcosystems` leaves out an ecosystem of `TEMPLATES`, names a copy-out for one that has an initializer, or points a template at a heading its README does not have. A template's ecosystem is the last word of its name, and an ecosystem with no directory under `initializers/` has no initializer yet: its templates are served by none until it has one. `cli-python` is in that case until `initializers/python/` exists, so a project starts from it by copying its directory out of a release's tag, as its README shows, and the npm initializer answers `--template cli-python` with that README's address.
 
 **`initializers/cases.json` is the table of cases every initializer executes**: destinations (missing, empty, a lone `.git` with and without history, a lone `.git` with a staged file and no commit, a `.DS_Store`, a file of the user's, spelled `.`, a name with a space), git states (none, inside another work tree, under a path that work tree ignores or re-includes, in one that ignores every file but no directory, inside a template's checkout, an identity only the enclosing repository holds, `--no-git`), flags, and the verdict each must print. The npm initializer's suite runs it now, and the Python one will, so the two print the same verdicts for the same situations.
+
+**`initializers/login-key.json` is the table of how the family reads the key the Pipelex login saved**, `~/.pipelex/.env` or the `.env` of `PIPELEX_HOME`, which an initializer's preflight and a template's `npm run create` read as the last source of the key. The npm initializer's suite runs it, and so does the web app template's, from the copy the repository's `make shared-files` writes into its `scripts/lib/fixtures/`, since a template reaches nothing above its directory; the two readers are restated in each and held identical by the table.
 
 ## The version and the release
 

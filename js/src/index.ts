@@ -110,6 +110,15 @@ export {
   DEFAULT_STORED_TEXT_CONCURRENCY,
   STORED_TEXT_CONCEPTS_MISSING,
 } from "./artifacts.js";
+// Result artifacts handed back by reference (`RunResults.artifact_links`): the pure parse of one
+// stored file, for a browser that fetched the link itself, and the fetches the result readers make.
+export {
+  parseRunArtifact,
+  fetchRunArtifact,
+  followArtifactLinks,
+  RUN_ARTIFACT_UNREADABLE,
+} from "./run-artifact-links.js";
+export type { FollowArtifactLinksOptions } from "./run-artifact-links.js";
 // Stored texts — which values of a run the runtime holds by reference, told by concept.
 export {
   STORED_TEXT_CONCEPT_REFS,
@@ -397,6 +406,8 @@ export type {
   RunDegradation,
   RunProgress,
   RunProgressStatus,
+  RunArtifactLink,
+  RunArtifactLinks,
   RunResultArtifact,
   RunStatus,
   RunPublic,

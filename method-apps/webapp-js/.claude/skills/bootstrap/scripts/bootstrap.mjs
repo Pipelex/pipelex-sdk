@@ -88,6 +88,7 @@ export const REMOVALS = [
   "scripts/create.mts",
   "scripts/lib/create.mts",
   "scripts/lib/create.test.mts",
+  "scripts/lib/fixtures/login-key.json",
   "docs/create.md",
   "e2e/resultTile.spec.ts",
   "e2e/fixtures/generate-image",

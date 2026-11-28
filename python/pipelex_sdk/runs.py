@@ -664,6 +664,22 @@ class TokensUsageRecord(BaseModel):
     completed_at: str | None = None
 
 
+class RunArtifactLink(BaseModel):
+    """Where a result artifact handed back by reference can be fetched — one entry of `RunResults.artifact_links`.
+
+    The platform hands an artifact back this way when, inline, it would take the results body past the API
+    Gateway's limit. `url` is a GET of the artifact's stored file, signed for about fifteen minutes; the file is the
+    one the runner wrote — the usage envelope `{tokens_usages, usage_assembly_error}` for `tokens_usages`, every other
+    artifact its own document, with the links inside it as stored, never re-signed. `expires_at` is the link's UTC
+    expiry, ISO 8601. Extension-open, as every wire model here.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    url: str
+    expires_at: str
+
+
 class RunResults(BaseModel):
     """Result artifacts for a completed run — `GET /v1/runs/{pipeline_run_id}/results`.
 
@@ -772,14 +788,29 @@ class RunResults(BaseModel):
     #: separates "usage broke" from "usage was off" / "pre-artifact run" — all three leave
     #: `tokens_usages` as `None`, so a caller that cares must branch on this, not on the list.
     usage_assembly_error: str | None = None
+    #: The artifacts the platform handed back by reference, keyed by their name as `RunArtifact` names them, each a
+    #: signed link to its stored file. Present only when the read handed some back, because inline they would have
+    #: taken the body past the API Gateway's limit; each such artifact's own fields are then `None`, both
+    #: `tokens_usages` and `usage_assembly_error` for the usage envelope. A `None` field with no entry here still
+    #: means the artifact was not written. The result readers follow these links by default (`follow_artifact_links`)
+    #: and drop each entry they follow, leaving `None` once none is left; `artifact_link(artifact)` reads one entry.
+    #: Keyed by `str` so that a name a newer platform adds never fails the parse.
+    artifact_links: dict[str, RunArtifactLink] | None = None
+
+    def artifact_link(self, artifact: RunArtifact) -> RunArtifactLink | None:
+        """The link `artifact` was handed back by, or `None` when the read carried it inline or did not write it."""
+        if self.artifact_links is None:
+            return None
+        return self.artifact_links.get(artifact)
 
     def carries(self, artifact: RunArtifact) -> bool:
         """Whether the results body carried `artifact` at all, whatever its value.
 
         `False` means the read did not ask for it (a selection that left it out), so its field reads
         `None` without saying anything about the run. `True` with a `None` value means the artifact
-        was asked for and the platform relayed `null`: it was never written. Always `True` on the
-        blocking path, which answers for every field.
+        was asked for and the platform relayed `null`: it was never written, unless `artifact_link(artifact)`
+        is set, which says it was handed back by reference on a read with `follow_artifact_links=False`.
+        Always `True` on the blocking path, which answers for every field.
         """
         return all(field_name in self.model_fields_set for field_name in artifact.results_fields)
 

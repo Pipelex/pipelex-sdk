@@ -668,12 +668,14 @@ export class ScopeUnavailableError extends ArtifactOperationError {
  * `auth.forbidden` for a reference outside the caller's scope), then the fetch boundary's —
  * `unsupported_url`, `plain_http_refused`, `redirect_refused`, `store_refused`
  * (a 401/403 from the object store), `not_found` (404/410), `store_error`
- * (any other non-2xx), `too_large`, `timeout`, `network`, and `unknown` for a failure the SDK
- * cannot place. `status` is the store's HTTP status when one was received, and `requirement` the
+ * (any other non-2xx), `too_large`, `timeout`, `network`, `unreadable` for a result artifact
+ * handed back by reference whose file is not the artifact's JSON (`RUN_ARTIFACT_UNREADABLE`, its
+ * `uri` then `artifact_links.<name>`), and `unknown` for a failure the SDK cannot place. `status` is the store's HTTP status when one was received, and `requirement` the
  * `requirement` the resolve route's refusal of the reference names in its `params`, when it names
  * one: it is what tells a self-hosted runner's scope refusal (`read_scope_under_caller`) from any
- * other `auth.forbidden`, whose problem keeps no `requirement`. `downloadArtifacts` never lets this
- * escape: it becomes the item's `error`.
+ * other `auth.forbidden`, whose problem keeps no `requirement`. `downloadArtifacts` lets it escape
+ * only for an artifact of the results handed back by reference that it could not fetch; a
+ * reference it walks becomes the item's `error`.
  *
  * Its problem is `options.problem` when given, else follows `reason`, `status` and
  * `options.requirement`, the `requirement` the route's refusal names in its `params`

@@ -16,7 +16,8 @@
  * The order is the safety story, as it is for `add-method`:
  *
  *  1. **Read-only.** Check this is the un-bootstrapped template, resolve the
- *     key and the base URL, run `add-method`'s read-only half (which fetches the
+ *     key and the base URL (the shell, then the env files, then the key the
+ *     Pipelex login saved, as "The login's key" below says), run `add-method`'s read-only half (which fetches the
  *     method once — everything below reads that one fetch), derive the app's
  *     name, title and description from it, plan the env file, and run the
  *     bootstrap with `--dry-run`, which validates every value it will be given.
@@ -31,10 +32,12 @@
  * with the rest of what only the template needs, from the project it creates.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { parseEnv } from "node:util";
 
 // `@next/env` is CommonJS — see the note in `generate.mts`.
 import nextEnv from "@next/env";
@@ -51,6 +54,7 @@ import {
   writeAddMethod,
   type AddMethodDeps,
   type AddMethodPlan,
+  type ExplicitCredentials,
 } from "./add-method.mts";
 import { methodVocabulary } from "./generate.mts";
 import { npmCommand, npmInvocation, type NpmInvocation } from "./npm.mts";
@@ -245,6 +249,173 @@ function present(value: string | null | undefined): string | undefined {
   return line === "" ? undefined : line;
 }
 
+// ── The login's key ─────────────────────────────────────────────────────────
+//
+// `npx -y @pipelex/mcp@latest login` saves its key as `PIPELEX_API_KEY` in
+// `~/.pipelex/.env`, or in the `.env` of `PIPELEX_HOME` when that is set, and
+// the Pipelex plugin's tools read that file on every call. The gesture reads it
+// as the last source of the key, after the shell and the env files, so one login
+// serves the tools and the method app. The key is used for the gesture's own
+// requests and never copied into the project; the app itself does not read
+// this file.
+//
+// The family's initializer reads the same file before it runs this gesture, in
+// `initializers/js/lib/login.mjs`, which this section restates because a
+// template imports nothing from outside its directory. Both suites execute the
+// family's table of cases, whose copy here is `fixtures/login-key.json`, and
+// both follow `pipelex-mcp`'s `src/credentials.ts`, which owns the file:
+//
+// - **Where it is**: `PIPELEX_HOME`, read from the shell alone (never from an
+//   env file, which a cloned repository can ship), `~` or a leading `~/` (`~\`
+//   on Windows) expanded against the user's home directory; else `.pipelex`
+//   under the user's home directory. A `PIPELEX_HOME` that is neither absolute
+//   nor `~`-prefixed, `~user/…` included, is refused rather than resolved.
+// - **What counts as the file**: a regular file of at most
+//   `MAX_LOGIN_FILE_BYTES`, a symlink followed to its target, parsed with
+//   Node's own `.env` parser, a leading byte-order mark dropped.
+// - **An empty value is no value**, for `PIPELEX_API_KEY`, `PIPELEX_BASE_URL`
+//   and `PIPELEX_HOME` alike.
+// - **The file's `PIPELEX_BASE_URL` comes with the file's key, and with it
+//   alone**, and only when neither the shell nor an env file sets one, so a
+//   development key saved beside a development base URL is not sent to
+//   production.
+
+/** The home directory's name under the user's home, when `PIPELEX_HOME` is not set. */
+export const LOGIN_HOME_DIR = ".pipelex";
+
+/** The file in the home directory that holds the saved key. */
+export const LOGIN_FILENAME = ".env";
+
+/** A file past this is not the credentials file, and counts as unreadable. */
+export const MAX_LOGIN_FILE_BYTES = 1024 * 1024;
+
+/** What reading the login's file found. */
+export type LoginKeyRead =
+  | { status: "key"; file: string; key: string; baseUrl?: string }
+  | { status: "no-key" | "missing" | "unreadable"; file: string }
+  | { status: "relative-home" };
+
+/** Where the user's home directory is, injected so a test never reads the machine's login. */
+export type Homedir = () => string;
+
+/**
+ * The command that saves a key, as the person types it on this system: on
+ * Windows, `npx.cmd`, which runs in Windows PowerShell 5.1 whatever its
+ * execution policy, where a typed `npx` may be refused.
+ */
+export function loginCommand(platform: NodeJS.Platform = process.platform): string {
+  return `${platform === "win32" ? "npx.cmd" : "npx"} -y @pipelex/mcp@latest login`;
+}
+
+/** The directory that holds the login's file, or `null` for a `PIPELEX_HOME` this reader refuses. */
+export function loginHome(
+  pipelexHome: string | undefined,
+  homedir: Homedir = os.homedir,
+): string | null {
+  if (!pipelexHome) return path.join(homedir(), LOGIN_HOME_DIR);
+  if (pipelexHome === "~") return path.normalize(homedir());
+  if (pipelexHome.startsWith("~/") || (path.sep === "\\" && pipelexHome.startsWith("~\\"))) {
+    return path.join(homedir(), pipelexHome.slice(2));
+  }
+  if (path.isAbsolute(pipelexHome)) return path.normalize(pipelexHome);
+  return null;
+}
+
+/** Read the login's file. Never throws: every failure is a status. */
+export function readLoginKey(
+  pipelexHome: string | undefined,
+  homedir: Homedir = os.homedir,
+): LoginKeyRead {
+  let home: string | null;
+  try {
+    home = loginHome(pipelexHome, homedir);
+  } catch {
+    // `os.homedir()` throws only when the user has no home directory at all.
+    return { status: "unreadable", file: path.join("~", LOGIN_HOME_DIR, LOGIN_FILENAME) };
+  }
+  if (home === null) return { status: "relative-home" };
+  const file = path.join(home, LOGIN_FILENAME);
+  let text: string;
+  try {
+    const stats = statSync(file);
+    if (!stats.isFile() || stats.size > MAX_LOGIN_FILE_BYTES) return { status: "unreadable", file };
+    text = readFileSync(file, "utf-8");
+  } catch (error) {
+    const missing = (error as { code?: unknown } | null)?.code === "ENOENT";
+    return { status: missing ? "missing" : "unreadable", file };
+  }
+  let values: NodeJS.Dict<string>;
+  try {
+    values = parseEnv(text.replace(/^\uFEFF/, ""));
+  } catch {
+    return { status: "unreadable", file };
+  }
+  const key = values.PIPELEX_API_KEY || undefined;
+  if (key === undefined) return { status: "no-key", file };
+  return { status: "key", file, key, baseUrl: values.PIPELEX_BASE_URL || undefined };
+}
+
+/** A path as a message shows it: `~/…` under the user's home directory, absolute otherwise. */
+export function displayPath(file: string, homedir: Homedir = os.homedir): string {
+  try {
+    const relative = path.relative(homedir(), file);
+    const outside = relative === ".." || relative.startsWith(`..${path.sep}`);
+    if (relative !== "" && !outside && !path.isAbsolute(relative)) return `~${path.sep}${relative}`;
+  } catch {
+    // No home directory to abbreviate against.
+  }
+  return file;
+}
+
+/** The refusal when no source holds a key: the login first, then the env files and the shell. */
+export function noKeyMessage(
+  read: Exclude<LoginKeyRead, { status: "key" }>,
+  homedir: Homedir = os.homedir,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const login = `\`${loginCommand(platform)}\``;
+  const rest =
+    `put your own key in ${ENV_FILE} or .env, or export it in your shell for this run: create ` +
+    "reads each of them, and never copies the key into a file.";
+  if (read.status === "relative-home") {
+    return (
+      `${API_KEY_KEY} is not set, and the login's saved key is not read because PIPELEX_HOME is ` +
+      `neither an absolute path nor one starting with ~/. Fix PIPELEX_HOME and run ${login}, or ${rest}`
+    );
+  }
+  const shown = displayPath(read.file, homedir);
+  if (read.status === "unreadable") {
+    return (
+      `${API_KEY_KEY} is not set, and ${shown}, where the login saves it, cannot be read. Make it ` +
+      `a file you can read and run ${login}, or ${rest}`
+    );
+  }
+  return (
+    `${API_KEY_KEY} is not set, and no key is saved in ${shown}. Run ${login} to save one there, ` +
+    `or ${rest}`
+  );
+}
+
+/**
+ * The warning a run on the login's key prints: the app it leaves reads its key
+ * from its environment and env files only, so it starts with none.
+ */
+export function loginKeyWarning(login: LoginUse): string {
+  return (
+    `the key the login saved in ${login.file} served this run only: the app does not read ` +
+    `that file, so put your own ${API_KEY_KEY} in ${ENV_FILE} before \`${npmCommand()} run dev\` ` +
+    `or \`${npmCommand()} run serve\`, or start them from a shell that exports it.`
+  );
+}
+
+/** Where the key a run uses came from, when it is the login's. */
+export interface LoginUse {
+  /** The login's file, as a message shows it. */
+  file: string;
+  /** Whether the base URL is the file's too: neither the shell nor an env file sets one. */
+  baseUrl: boolean;
+}
+
 // ── The env file ────────────────────────────────────────────────────────────
 
 /** What the shell itself set, read before any env file was loaded. */
@@ -374,7 +545,7 @@ export function appUrl(env: NodeJS.ProcessEnv): string {
 }
 
 /** Where the dev server can find a key that only a production build reads. */
-const DEV_KEY_HINT = "put it in .env or .env.development.local before `npm run dev`";
+const DEV_KEY_HINT = `put it in .env or .env.development.local before \`${npmCommand()} run dev\``;
 
 /**
  * The env file, written from the example. `.env.local` is read before every
@@ -406,16 +577,25 @@ export function renderEnvFile(example: string | null, values: EnvValues): string
  * Decide what happens to `.env.local`. An existing file is the person's and is
  * never touched — only a disagreement with the shell is worth saying, because
  * the app started without that shell variable will read the file instead.
+ * `login` is set when the run's key is the one the login saved, which the app
+ * itself never reads, so the file still gets an empty key line.
  */
 export async function planEnvFile(
   repoRoot: string,
   shell: ShellEnv,
   effectiveBaseUrl: string,
   files: EnvFiles = {},
+  login?: LoginUse,
 ): Promise<EnvPlan> {
   const envPath = path.join(repoRoot, ENV_FILE);
+  const loginNote =
+    login === undefined
+      ? undefined
+      : `The key the login saved in ${login.file} is used for this run only, and never copied; ` +
+        "the app does not read that file.";
   if (existsSync(envPath)) {
     const notes = [`${ENV_FILE} exists and is left as it is.`];
+    if (loginNote !== undefined) notes.push(loginNote);
     const fileBase = envAssignment(await readFile(envPath, "utf-8"), BASE_URL_KEY);
     if (shell.baseUrl !== undefined && fileBase !== undefined && fileBase !== shell.baseUrl) {
       notes.push(
@@ -435,14 +615,18 @@ export async function planEnvFile(
       ? "from your shell"
       : files.baseUrl !== undefined
         ? `from ${files.baseUrl}`
-        : "the default";
+        : login?.baseUrl
+          ? `from ${login.file}, beside the key the login saved`
+          : "the default";
   const keyNote =
     keyFile === undefined
-      ? `, and an empty ${API_KEY_KEY} line: put your own key there before \`npm run dev\`` +
+      ? `, and an empty ${API_KEY_KEY} line: put your own key there before \`${npmCommand()} run dev\`` +
         (shell.key !== undefined
           ? ". The key your shell exports is used for this run only, and never copied; while " +
             "a shell exports one, it wins over the file, so start the app from one that does not."
-          : ".")
+          : loginNote !== undefined
+            ? `. ${loginNote}`
+            : ".")
       : devServerReads(keyFile)
         ? `, and no ${API_KEY_KEY} line: the key stays in ${keyFile}, which a line here would hide.`
         : `, and no ${API_KEY_KEY} line: the key stays in ${keyFile}, which only a production ` +
@@ -450,6 +634,9 @@ export async function planEnvFile(
   const notes = [
     `${ENV_FILE} is written with ${BASE_URL_KEY}=${effectiveBaseUrl} (${baseOrigin})${keyNote}`,
   ];
+  // A key held only in a file the gesture does not load, such as `.env.development`:
+  // the run used the login's, which may be another organization's.
+  if (keyFile !== undefined && loginNote !== undefined) notes.push(loginNote);
   return { action: "write", content, notes, keyNeeded: keyFile === undefined };
 }
 
@@ -467,6 +654,8 @@ export interface CreateDeps {
    * did not set it, the key's whether or not it did.
    */
   envFiles?: EnvFiles;
+  /** Set when no shell or env file holds a key, and the run uses the one the login saved. */
+  login?: LoginUse;
   /** The client, base URL and bundle-path base `add-method` runs with. */
   addMethod: AddMethodDeps;
   run: RunCommand;
@@ -577,18 +766,32 @@ export function devOnlyKeyFile(repoRoot: string): string | undefined {
   return envAssignment(readFileSync(filePath, "utf-8"), API_KEY_KEY) ? file : undefined;
 }
 
+/** What a real run reads from outside the project, so a test can substitute each. */
+export interface CreateDepsOptions {
+  homedir?: Homedir;
+  platform?: NodeJS.Platform;
+}
+
 /**
  * The deps a real run uses. The shell's own values are read first, because the
  * env files loaded next would otherwise be indistinguishable from them. For a
  * base URL the shell did not set, and for any key a file holds, the file it
- * came from is recorded, so `.env.local` does not hide it. The key itself is
- * only ever used for the run, never written.
+ * came from is recorded, so `.env.local` does not hide it. When neither the
+ * shell nor an env file holds a key, the one the login saved is the last
+ * source, with the login file's base URL when nothing else sets one. The key
+ * itself is only ever used for the run, never written.
  */
-export function resolveCreateDeps(repoRoot: string = REPO_ROOT): CreateDeps {
+export function resolveCreateDeps(
+  repoRoot: string = REPO_ROOT,
+  { homedir = os.homedir, platform = process.platform }: CreateDepsOptions = {},
+): CreateDeps {
   const shell: ShellEnv = {
     baseUrl: process.env.PIPELEX_BASE_URL || undefined,
-    key: process.env.PIPELEX_API_KEY || undefined,
+    // A blank key is no key, as the initializer's preflight reads it.
+    key: process.env.PIPELEX_API_KEY?.trim() || undefined,
   };
+  // The shell's alone: an env file the project ships never says where the login is.
+  const pipelexHome = process.env.PIPELEX_HOME || undefined;
   const { loadedEnvFiles } = loadEnvConfig(repoRoot, false, {
     info: () => {},
     error: console.error,
@@ -603,17 +806,27 @@ export function resolveCreateDeps(repoRoot: string = REPO_ROOT): CreateDeps {
     baseUrl: shell.baseUrl === undefined ? fileOf(BASE_URL_KEY) : undefined,
     key: fileOf(API_KEY_KEY) ?? devOnlyKeyFile(repoRoot),
   };
-  if (!process.env.PIPELEX_API_KEY) {
-    throw new CreateError(
-      `${API_KEY_KEY} is not set. Put your own key in ${ENV_FILE} or .env, or export it in ` +
-        "your shell for this run: create reads it from either, and never copies it into a file.",
-    );
+  let login: LoginUse | undefined;
+  let credentials: ExplicitCredentials | undefined;
+  if (!process.env.PIPELEX_API_KEY?.trim()) {
+    const read = readLoginKey(pipelexHome, homedir);
+    if (read.status !== "key") throw new CreateError(noKeyMessage(read, homedir, platform));
+    const setBaseUrl = process.env.PIPELEX_BASE_URL || undefined;
+    login = {
+      file: displayPath(read.file, homedir),
+      baseUrl: !setBaseUrl && Boolean(read.baseUrl),
+    };
+    credentials = {
+      apiKey: read.key,
+      baseUrl: setBaseUrl ?? read.baseUrl ?? DEFAULT_API_BASE_URL,
+    };
   }
   return {
     repoRoot,
     shell,
     envFiles,
-    addMethod: resolveDeps(repoRoot),
+    login,
+    addMethod: resolveDeps(repoRoot, credentials),
     run: runInherited,
     npm: npmInvocation(),
   };
@@ -639,7 +852,13 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
     { nameFlag: "--method-name" },
   );
   const identity = deriveIdentity(plan, args);
-  const envPlan = await planEnvFile(repoRoot, deps.shell, deps.addMethod.baseUrl, deps.envFiles);
+  const envPlan = await planEnvFile(
+    repoRoot,
+    deps.shell,
+    deps.addMethod.baseUrl,
+    deps.envFiles,
+    deps.login,
+  );
   const bootstrap = bootstrapArgs(repoRoot, identity, args, plan.names.slug);
 
   console.log(`create: ${identity.title}`);
@@ -647,6 +866,10 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
   console.log(`  description: ${identity.description}`);
   printPlan(plan);
   for (const warning of plan.warnings) console.log(`\n! ${warning}`);
+  if (deps.login !== undefined && deps.envFiles?.key === undefined) {
+    // A warning, so the initializer repeats it after npm run all fills the tail.
+    console.log(`\n! ${loginKeyWarning(deps.login)}`);
+  }
   for (const note of envPlan.notes) console.log(`  env:    ${note}`);
 
   console.log("\ncreate: checking the project values with the bootstrap (--dry-run)\n");
@@ -733,9 +956,9 @@ async function runCreateInner(argv: readonly string[], given?: CreateDeps): Prom
       ...(envPlan.action === "write" && envPlan.keyNeeded
         ? [
             "",
-            `Put your own ${API_KEY_KEY} in ${ENV_FILE} before \`npm run dev\`: create never copies ` +
-              "the key your shell exports into the project, and while a shell exports one it " +
-              "wins over the file.",
+            `Put your own ${API_KEY_KEY} in ${ENV_FILE} before \`${npmCommand()} run dev\`: create never copies ` +
+              "a key into the project, whether your shell exports it or the login saved it, and " +
+              "while a shell exports one it wins over the file.",
           ]
         : []),
       "",

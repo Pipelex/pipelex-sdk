@@ -1114,6 +1114,7 @@ describe("downloadArtifacts", () => {
     expect(client.resultOptions[0]).toMatchObject({
       artifacts: ["main_stuff"],
       loadStoredTexts: false,
+      followArtifactLinks: false,
     });
     expect(client.resolveCalls).toHaveLength(1);
     expect(client.resolveCalls[0]!.input).toEqual({ uris: [PICTURE_URI, REPORT_URI] });

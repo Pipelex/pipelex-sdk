@@ -703,6 +703,28 @@ export function assertArtifactSelection(artifacts: readonly string[] | undefined
   }
 }
 
+/**
+ * Where a result artifact handed back by reference can be fetched — one entry of
+ * `RunResults.artifact_links`. The platform hands an artifact back this way when, inline, it would
+ * take the results body past the API Gateway's limit.
+ */
+export interface RunArtifactLink {
+  /**
+   * A GET of the artifact's stored file, signed for about fifteen minutes. The file is the one the
+   * runner wrote: the usage envelope `{ tokens_usages, usage_assembly_error }` for `tokens_usages`,
+   * every other artifact its own document, with the links inside it as stored, never re-signed.
+   */
+  url: string;
+  /** UTC expiry of `url`, ISO 8601. */
+  expires_at: string;
+}
+
+/**
+ * The artifacts a results read handed back by reference, keyed by their name as `artifacts` names
+ * them — `RunResults.artifact_links`.
+ */
+export type RunArtifactLinks = Partial<Record<RunResultArtifact, RunArtifactLink>>;
+
 /** Whether a results read with this selection carries `main_stuff` — no selection reads all. */
 export function selectionIncludesMainStuff(
   artifacts: readonly RunResultArtifact[] | undefined,
@@ -733,6 +755,17 @@ export interface GetRunResultOptions {
    * `docs/run-results.md`, "Stored texts".
    */
   loadStoredTexts?: boolean;
+  /**
+   * Fetch every artifact the platform handed back by reference (`RunResults.artifact_links`) and
+   * put it in its field before handing the result back: `true`, the default, so a referenced
+   * artifact reads as its content. `false` hands the links back untouched, each referenced field
+   * `null` beside its entry in `artifact_links`, for a caller that must not pull a large file
+   * through itself, such as a server whose responses are capped, which passes the link on instead.
+   * A completed read asked for `main_stuff` then throws `MissingMainStuffError` only when
+   * `main_stuff` is `null` with no link. See `docs/run-results.md`, "Artifacts handed back by
+   * reference".
+   */
+  followArtifactLinks?: boolean;
 }
 
 /**
@@ -862,6 +895,17 @@ export interface RunResults {
    * `tokens_usages` null, so a caller that cares must branch on this, not on the list.
    */
   usage_assembly_error?: string | null;
+  /**
+   * The artifacts the platform handed back by reference, keyed by name, each a signed link to its
+   * stored file. Present only when the read handed some back, because inline they would have taken
+   * the body past the API Gateway's limit; each such artifact's own field is then `null`, both
+   * `tokens_usages` and `usage_assembly_error` for the usage envelope. A `null` field with no entry
+   * here still means the artifact was not written. The result readers follow these links by
+   * default (`followArtifactLinks`) and drop each entry they follow, so the key is absent from a
+   * result they filled; `followArtifactLinks(results)` fills a result read with
+   * `followArtifactLinks: false` later. See `docs/run-results.md`.
+   */
+  artifact_links?: RunArtifactLinks;
 }
 
 /**
@@ -934,6 +978,14 @@ export interface WaitForResultOptions {
    * again a few times before the wait throws `StoredTextLoadError` (`concepts_missing`).
    */
   loadStoredTexts?: boolean;
+  /**
+   * Fetch the artifacts the completed result handed back by reference into their fields —
+   * `getRunResult`'s `followArtifactLinks`, `true` by default. The links are followed after the
+   * status read, under the wait's `timeoutMs` like the stored-text load, and before it, so a
+   * referenced `working_memory` tells the load which values are texts. `false` returns the links
+   * untouched.
+   */
+  followArtifactLinks?: boolean;
 }
 
 /**
@@ -984,9 +1036,9 @@ export type FetchResultOnce = (
 ) => Promise<RunResultState>;
 
 /**
- * The load of a completed result's stored texts — what the poll loop calls once a status read
- * answers completed, under the wait's own deadline, so a timeout tells a run that did not finish
- * from one whose texts did not load in time.
+ * The load of a completed result — its links followed and its stored texts loaded — what the poll
+ * loop calls once a status read answers completed, under the wait's own deadline, so a timeout
+ * tells a run that did not finish from one whose artifacts or texts did not load in time.
  */
 export type LoadCompletedResult = (
   result: RunResults,
@@ -1078,8 +1130,9 @@ export async function pollUntilResult(
         );
   const completedButNotLoaded = (): RunTimeoutError =>
     new RunTimeoutError(
-      `Run ${runId} completed, but its stored texts did not load within ${timeoutMs}ms; ` +
-        "read it again with getRunResult, or with loadStoredTexts: false for the wire shape.",
+      `Run ${runId} completed, but its artifacts handed back by reference or its stored texts ` +
+        `did not load within ${timeoutMs}ms; read it again with getRunResult, or with ` +
+        "followArtifactLinks: false and loadStoredTexts: false for the wire shape.",
       runId,
       timeoutMs,
     );
@@ -1101,15 +1154,17 @@ export async function pollUntilResult(
       const elapsedMs = Date.now() - startedAt;
       if (elapsedMs >= timeoutMs || deadline.signal.aborted) throw notFinished();
 
-      // With `loadCompleted`, the status read never loads: the load runs below, so a timeout
-      // says truthfully whether the run had completed.
+      // With `loadCompleted`, the status read neither follows links nor loads: both run below, so
+      // a timeout says truthfully whether the run had completed.
       const loadStoredTexts = loadCompleted === undefined ? options.loadStoredTexts : false;
+      const followArtifactLinks = loadCompleted === undefined ? options.followArtifactLinks : false;
       let state: RunResultState;
       try {
         state = await fetchOnce(runId, {
           signal,
           ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
           ...(loadStoredTexts === undefined ? {} : { loadStoredTexts }),
+          ...(followArtifactLinks === undefined ? {} : { followArtifactLinks }),
         });
       } catch (error) {
         if (timedOut()) throw notFinished();

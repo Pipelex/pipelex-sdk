@@ -59,6 +59,9 @@ import {
 } from "./stored-texts.js";
 import type { ConceptSource, StoredTextKind } from "./stored-texts.js";
 import { parseExactJson } from "./exact-json.js";
+// A cycle by design: following a link reads it through `readSignedUrl`, here, and the loader and the
+// download below follow a link they are handed. Neither module touches the other at load time.
+import { followArtifactLinks } from "./run-artifact-links.js";
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -865,6 +868,44 @@ export async function fetchArtifact(
   });
 }
 
+/**
+ * The whole body of a link the server has already signed, read under `fetchArtifact`'s bounds:
+ * the link checked as a resolved one is, redirects refused, the byte cap enforced against the
+ * declared length and mid-stream, the budget covering the whole exchange. `label` stands for the
+ * link in every error, since a signed link carries its authorization in its query string and is
+ * never written into an error. What `followArtifactLinks` reads a result artifact handed back by
+ * reference with.
+ */
+export async function readSignedUrl(
+  client: Pick<ArtifactCapableClient, "originUrl">,
+  label: string,
+  url: string,
+  options: FetchArtifactOptions = {},
+): Promise<{ bytes: Uint8Array; status: number }> {
+  const bounds = fetchBounds(options, client.originUrl);
+  const dispatcher = await dispatcherFor(bounds.timeoutMs);
+  const response = await fetchResolvedUrl(label, url, bounds, dispatcher, () => {
+    void dispatcher?.close().catch(() => undefined);
+  });
+  if (response.body === null) return { bytes: new Uint8Array(0), status: response.status };
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    chunks.push(chunk.value);
+    total += chunk.value.byteLength;
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { bytes, status: response.status };
+}
+
 /** The bounds every fetch runs under, defaults filled in and validated. */
 interface FetchBounds {
   maxBytes: number;
@@ -1377,6 +1418,12 @@ interface StoredTextSite {
  * before anything is sent, then as the bytes arrive; the first text that fails stops every other
  * read in flight.
  *
+ * A result read with `followArtifactLinks: false` is loaded too: a `main_stuff` it handed back by
+ * reference is followed into the result first, its link dropped, and a working memory or a form
+ * it handed back by reference is fetched for the load alone, its link kept (`followArtifactLinks`,
+ * under this load's `timeoutMs` and `allowHttp`); such a fetch that fails throws its
+ * `ArtifactFetchError`.
+ *
  * The result passed in is never changed: a new one is returned, or the same one when there is
  * nothing to load. Throws `StoredTextLoadError` naming the text that could not be loaded, where it
  * sits and why, a whole-request failure of the resolve route included (`resolve_failed`, the
@@ -1388,22 +1435,38 @@ export async function loadStoredTexts(
   results: RunResults,
   options: LoadStoredTextsOptions = {},
 ): Promise<RunResults> {
-  if (results.main_stuff == null) return results;
-  if (lacksStoredTextConcepts(results)) throw conceptsMissingError(results);
-  const node = mainStuffNode(results);
-  if (node === null) return results;
+  // A result read with `followArtifactLinks: false` may hold its main stuff or its concepts by
+  // reference: the main stuff is followed into the result, the concepts are fetched for the load
+  // alone, each under the load's own `timeoutMs` and `allowHttp`.
+  const bounds = {
+    timeoutMs: options.timeoutMs,
+    allowHttp: options.allowHttp,
+    signal: options.signal,
+  };
+  const target = await followArtifactLinks(client, results, {
+    ...bounds,
+    artifacts: ["main_stuff"],
+  });
+  if (target.main_stuff == null) return target;
+  // A linked concept is fetched only when something is shaped like a stored text's reference.
+  const source = mayHoldStoredTexts(target.main_stuff)
+    ? await followArtifactLinks(client, target, { ...bounds, artifacts: CONCEPT_ARTIFACTS })
+    : target;
+  if (lacksStoredTextConcepts(source)) throw conceptsMissingError(source);
+  const node = mainStuffNode(source);
+  if (node === null) return target;
   const loaded = await loadStoredTextValues(
     client,
-    results.main_stuff,
+    target.main_stuff,
     node,
     options,
-    results.pipeline_run_id,
+    target.pipeline_run_id,
   );
-  return loaded === results.main_stuff ? results : { ...results, main_stuff: loaded };
+  return loaded === target.main_stuff ? target : { ...target, main_stuff: loaded };
 }
 
 /** The result artifacts the concept at each path is read from. */
-const CONCEPT_ARTIFACTS = ["working_memory", "output_form", "input_form"] as const;
+export const CONCEPT_ARTIFACTS = ["working_memory", "output_form", "input_form"] as const;
 
 /**
  * The concept facts of a run's results: the results themselves when their read carried the
@@ -2098,11 +2161,13 @@ async function readCompletedResults(
   scope: ArtifactScope,
   signal: AbortSignal | undefined,
 ): Promise<RunResults> {
-  // Files only: the stored texts are values, which the walk skips by concept rather than loads.
+  // Files only: the stored texts are values, which the walk skips by concept rather than loads. A
+  // scope handed back by reference is followed by the download itself, under its own bounds.
   const state = await client.getRunResult(runId, {
     signal,
     artifacts: [scope],
     loadStoredTexts: false,
+    followArtifactLinks: false,
   });
   if (state.state === "running") {
     throw new RunStillRunningError(
@@ -2132,7 +2197,10 @@ async function readCompletedResults(
  * Returns a produced verdict: one entry per reference, errors as values. It
  * throws only when no verdict can be produced — `RunStillRunningError` or
  * `RunFailedError` for a run that has not completed, `ScopeUnavailableError`
- * when the scope's artifact is null or missing, `ArtifactAuthenticationError`
+ * when the scope's artifact is null or missing, `ArtifactFetchError` when the
+ * scope's artifact, or a concept artifact the walk needs, was handed back by
+ * reference and could not be fetched under the download's bounds,
+ * `ArtifactAuthenticationError`
  * (carrying the verdict so far) when the resolve route refuses the credential,
  * `ArtifactOperationError` outside Node, for an unusable `dir` or for an
  * unknown `scope`, and the
@@ -2180,9 +2248,18 @@ export async function downloadArtifacts(
       { problem: argumentInvalidProblem("run_id", "not_exactly_one_selector") },
     );
   }
-  const results = hasResults
+  const read = hasResults
     ? request.results!
     : await readCompletedResults(client, request.run_id!, scope, request.signal);
+  // The walked artifact, handed back by reference by a large run or in a result read with
+  // `followArtifactLinks: false`, is fetched under the download's own bounds.
+  const linkBounds: FetchArtifactOptions = {
+    maxBytes: request.maxBytes,
+    timeoutMs: request.timeoutMs,
+    allowHttp: request.allowHttp,
+    signal: request.signal,
+  };
+  const results = await followArtifactLinks(client, read, { ...linkBounds, artifacts: [scope] });
   const runId = results.pipeline_run_id;
 
   // `working_memory` is read off the parsed body: the platform relays it whether
@@ -2197,10 +2274,16 @@ export async function downloadArtifacts(
 
   // The concept at each path tells a stored text, a value of the run, from a file. A run read by
   // id asked for its scope alone, so its concepts are read beside it when the walk may need them.
-  const source: ConceptSource & { main_stuff?: unknown } =
-    !hasResults && mayHoldStoredTexts(walked)
-      ? await withConceptArtifacts(client, results, [scope], request.signal)
-      : results;
+  // A result in hand that holds them by reference has them fetched for the walk alone.
+  let source: ConceptSource & { main_stuff?: unknown } = results;
+  if (mayHoldStoredTexts(walked)) {
+    source = hasResults
+      ? await followArtifactLinks(client, results, {
+          ...linkBounds,
+          artifacts: CONCEPT_ARTIFACTS,
+        })
+      : await withConceptArtifacts(client, results, [scope], request.signal);
+  }
   const node =
     scope === "main_stuff"
       ? mainStuffNode({ ...source, main_stuff: walked })

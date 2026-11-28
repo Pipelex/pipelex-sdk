@@ -7,6 +7,8 @@ PIPELEX_API_KEY=… npm run create -- path/to/my_method.mthds
 npm run dev   # http://127.0.0.1:4300
 ```
 
+The key may also come from an env file, or from the Pipelex login, `npx -y @pipelex/mcp@latest login` (`npx.cmd` on Windows), as [the login's key](#the-logins-key) says.
+
 When it finishes, the page is your method's input form and result view, the project is named after the method, `.env.local` points at the API the gesture ran against and waits for your own key, and `npm run all` is green. Nothing is committed: the whole result is a working-tree change for you to review.
 
 This document is part of the template, not of the projects it creates: the gesture is one-shot, and the bootstrap removes it — with this document — once it has run.
@@ -17,7 +19,7 @@ This document is part of the template, not of the projects it creates: the gestu
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Make       | `make create METHOD=<method> [NAME=…] [TITLE=…] [DESCRIPTION=…] [METHOD_NAME=…] [PIPE=…] [LABEL=…] [AUTHOR_NAME=…] [AUTHOR_EMAIL=…] [REPO_URL=…] [LICENSE=…] [LICENSE_HOLDER=…] [LICENSE_YEAR=…] [DRY_RUN=1]`                        |
 | npm        | `npm run create -- <method> [--name …] [--title …] [--description …] [--method-name …] [--pipe …] [--label …] [--author-name …] [--author-email …] [--repo-url …] [--license …] [--license-holder …] [--license-year …] [--dry-run]` |
-| Needs      | `PIPELEX_API_KEY`, and a base URL that serves `/v1/codegen` and `/v1/pipe-io` (and `method_ref`, for an address) — see [the base URL](#the-key-and-the-base-url)                                                                     |
+| Needs      | `PIPELEX_API_KEY` from your shell, an env file or the Pipelex login, and a base URL that serves `/v1/codegen` and `/v1/pipe-io` (and `method_ref`, for an address) — see [the base URL](#the-key-and-the-base-url)                   |
 | Runs on    | The un-bootstrapped template only: `package.json` must still be named `pipelex-method-webapp-js`, and the bootstrap skill must be present                                                                                            |
 | Exit codes | `0` created (or rehearsed), `1` refused or failed — never a thrown stack                                                                                                                                                             |
 
@@ -61,7 +63,7 @@ The gesture runs in two halves, like `make add-method`, and nothing is written u
 **Read-only.**
 
 1. Refuse anything but the un-bootstrapped template.
-2. Read `PIPELEX_BASE_URL` and `PIPELEX_API_KEY` from the shell first, then load the env files Next.js reads (`.env.local`, `.env`, and their mode-specific variants), noting which file supplied the base URL when the shell did not set it, and which file holds a key whether or not the shell exports one. The key must be set by one of them; it is used for the gesture's own requests and never written.
+2. Read `PIPELEX_BASE_URL` and `PIPELEX_API_KEY` from the shell first, then load the env files Next.js reads (`.env.local`, `.env`, and their mode-specific variants), noting which file supplied the base URL when the shell did not set it, and which file holds a key whether or not the shell exports one. When neither holds a key, read the one the Pipelex login saved, last, as [the login's key](#the-logins-key) says. The key must come from one of them; it is used for the gesture's own requests and never written.
 3. Run `add-method`'s read-only half: fetch the method, choose the pipe, derive every name, refuse every collision, and render every file in memory.
 4. Derive the project's name, title and description.
 5. Plan `.env.local`.
@@ -88,6 +90,17 @@ A failure after step 1 cannot be undone by running the gesture again, because th
 - **`PIPELEX_API_KEY` never copied**, not even the one your shell exports: an exported key is whichever key was exported last, often a test key or one of another organization, and copied into the project it would outlive the shell, bill whatever organization it belongs to, and escape every rotation. So `.env.local` carries an empty `PIPELEX_API_KEY` line, and the plan and the closing lines say to put your own key there before `npm run dev`; a key a shell exports still wins over the file, so start the app from a shell that does not export another. When an env file holds a key, whether or not your shell exports another, `.env.development` included although only the dev server reads it, `.env.local` carries no `PIPELEX_API_KEY` line at all, only a comment naming that file, so the file keeps supplying it. The gesture reads the env files a production build reads, as every script here does, so that file can be `.env.production` or `.env.production.local`, which `npm run dev` never opens. In that case the comment and the plan say that the dev server will not see the key, and tell you to put it in `.env` or `.env.development.local` before `npm run dev`.
 
 The file is created readable by you alone. An existing `.env.local` is yours and is never touched; when your shell exports a base URL the file disagrees with, the plan says so, because the app reads the file whenever the shell does not set the variable.
+
+### The login's key
+
+`npx -y @pipelex/mcp@latest login` (`npx.cmd` on Windows) saves your key as `PIPELEX_API_KEY` in `~/.pipelex/.env`, or in the `.env` of the directory `PIPELEX_HOME` names, and the Pipelex plugin's tools read that file on every call. The gesture reads it too, as the last source of the key: only when neither your shell nor an env file of the project holds one. So one login serves the plugin and the gesture, including in an app such as Claude's desktop app, where a variable set in a terminal window never reaches the agent.
+
+- **Where it is.** `PIPELEX_HOME` is read from your shell alone, never from an env file, which a cloned repository could ship. A leading `~/` (or `~\` on Windows), or `~` alone, is your home directory. A `PIPELEX_HOME` that is neither absolute nor starts with `~/` is refused rather than resolved against the working directory, and the refusal says so.
+- **What counts as the file.** A regular file of at most one mebibyte, a symlink followed to its target, read with Node's own `.env` parser. An empty value counts as no value.
+- **Its base URL comes with its key, and with it alone.** When the key is the login's, the gesture runs against the `PIPELEX_BASE_URL` your shell or an env file sets, else the one the login saved beside the key, else the default, so a development key saved beside a development base URL is not sent to production. That base URL is the one written into `.env.local`, and the plan says where it came from.
+- **The key is never copied**, like every other: `.env.local` still gets an empty `PIPELEX_API_KEY` line, or is left as it is when it exists, and the plan says that the login's key was used for this run only. The app itself does not read the login's file, so the gesture also prints a warning, a line opening with `! ` that the initializer repeats at the end, saying to put your own key in `.env.local` before `npm run dev` or `npm run serve`, or to start them from a shell that exports it.
+
+When no source holds a key, the refusal names the login first, with the file it looked in, then the env files and the shell. The family's initializer, `npm create @pipelex/method-app`, reads the same file under the same rules before it runs this gesture; both suites execute the same table of cases, `scripts/lib/fixtures/login-key.json` here, a copy of the family's `initializers/login-key.json`, and both follow the file's owner, `src/credentials.ts` in `pipelex-mcp`. The fixture goes with this document when the bootstrap runs.
 
 ## What it leaves for later
 

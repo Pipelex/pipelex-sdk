@@ -358,7 +358,8 @@ describe("the result readers load stored texts", () => {
     expect(failure).toBeInstanceOf(RunTimeoutError);
     expect(failure).toMatchObject({ runId: RUN_ID, timeoutMs: 200 });
     expect((failure as RunTimeoutError).message).toContain(
-      `Run ${RUN_ID} completed, but its stored texts did not load within 200ms`,
+      `Run ${RUN_ID} completed, but its artifacts handed back by reference or its stored texts ` +
+        "did not load within 200ms",
     );
     expect(boundary.fetched).toHaveLength(1);
   });

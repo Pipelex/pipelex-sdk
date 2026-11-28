@@ -8,9 +8,10 @@
  *
  *  1. **A preflight that leaves nothing behind.** The arguments and the
  *     template; Node at or above the template's `engines` floor; npm unless
- *     `--no-create`, and `git` unless `--no-git`; `--method` and
- *     `PIPELEX_API_KEY` unless `--no-create`, the key tested for presence and
- *     never printed; the destination rule; git's reading of the destination,
+ *     `--no-create`, and `git` unless `--no-git`; `--method` and a key
+ *     unless `--no-create`, `PIPELEX_API_KEY` from the environment or else the
+ *     one the Pipelex login saved (`login.mjs`), tested for presence and never
+ *     printed; the destination rule; git's reading of the destination,
  *     and an identity when a commit will be made. It writes nothing but a
  *     missing destination inside another repository's work tree, made so that
  *     git reads it as the directory it will be, and the throwaway repository
@@ -47,6 +48,7 @@ import {
   readGit,
   templateOrigin,
 } from "./git.mjs";
+import { noKeyDetail, readLoginKey } from "./login.mjs";
 import {
   createWords,
   extractWarnings,
@@ -120,9 +122,11 @@ export function resolveDeps(deps = {}) {
   return {
     cwd: deps.cwd ?? process.cwd(),
     env,
+    homedir: deps.homedir ?? os.homedir,
     npm: deps.npm ?? npmInvocation(env),
     out: deps.out ?? process.stdout,
     packDir: deps.packDir ?? PACKS_DIR,
+    platform: deps.platform ?? process.platform,
     nodeVersion: deps.nodeVersion ?? process.versions.node,
     signal: deps.signal,
     tmpDir: deps.tmpDir ?? os.tmpdir(),
@@ -317,10 +321,16 @@ async function create(argv, d, say, state) {
     );
   }
   if (!args.noCreate && !d.env.PIPELEX_API_KEY?.trim()) {
-    throw Verdict.refused(
-      "no-key",
-      "PIPELEX_API_KEY is not set: export it in this shell for npm run create, which never copies it into the project, or pass --no-create and write .env.local yourself before running npm run create",
-    );
+    // The copy is new, so it has no .env.local or .env: after the environment,
+    // the login's file is the one source left, and npm run create reads it
+    // again itself, under the same rules.
+    const login = readLoginKey(d.env, { homedir: d.homedir });
+    if (login.status !== "key") {
+      throw Verdict.refused(
+        "no-key",
+        noKeyDetail(login, { homedir: d.homedir, platform: d.platform }),
+      );
+    }
   }
 
   const dest = path.resolve(d.cwd, args.dir);
