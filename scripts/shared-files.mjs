@@ -4,7 +4,7 @@
  *
  * Some behaviour is a contract the JavaScript and Python SDKs must both honour, and each holds
  * it as a file of recorded cases its own suite runs: the `pipelex-sdk` command's case table is
- * one. Each package directory stands on its own, its tests reaching nothing above it, so each
+ * one. The method-app family's initializer and template share such files too. Each package directory stands on its own, its tests reaching nothing above it, so each
  * holds its own copy of such a file. One copy is the source, written and reviewed where the
  * behaviour is changed; the others are copies, written by this script and never edited.
  *
@@ -70,6 +70,13 @@ export const SETS = [
     // How both SDKs verify and read a webhook call beyond the vectors (js/docs/webhooks.md, python/docs/webhooks.md).
     source: "js/tests/fixtures/webhook-events.json",
     copies: ["python/tests/fixtures/webhook-events.json"],
+  },
+  {
+    // How the method-app family reads the key the Pipelex login saved: the initializer's
+    // preflight and the webapp-js template's npm run create (method-apps/initializers/js/README.md,
+    // method-apps/webapp-js/docs/create.md).
+    source: "method-apps/initializers/login-key.json",
+    copies: ["method-apps/webapp-js/scripts/lib/fixtures/login-key.json"],
   },
 ];
 

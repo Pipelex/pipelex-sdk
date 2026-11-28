@@ -7,20 +7,21 @@ import path from "node:path";
 import process from "node:process";
 import { describe, it } from "node:test";
 
+import { displayPath } from "../lib/login.mjs";
 import { decodePack } from "../lib/pack.mjs";
 import { loadTable, TABLE_FILE } from "../lib/templates.mjs";
 import { shellQuote } from "../lib/verdict.mjs";
 import {
   git,
+  LOGIN_KEY,
   npmRecord,
   packs,
   runEnv,
   runInitializer,
   scopeIdentity,
+  SHELL_KEY,
   tempRoot,
 } from "./support.mjs";
-
-const KEY = "pk_test_never_printed_8d1f";
 
 /** A fresh root with a `work/` directory to run from. */
 function workspace() {
@@ -240,6 +241,59 @@ describe("a run", () => {
     assert.ok(stamp.mtimeMs >= lock.mtimeMs, "the stamp is not older than the lock");
   });
 
+  it("goes on with the key the login saved when the environment holds none, and never copies it into npm's environment", async () => {
+    const { root, work } = workspace();
+    const env = runEnv(root, { key: false, login: true });
+    const { verdict, output } = await runInitializer(["app", "--method", "mt_1"], {
+      cwd: work,
+      env,
+    });
+    assert.equal(verdict, "created", output);
+    const record = npmRecord(root);
+    assert.equal(record.create.sawKey, false, "npm run create reads the login's file itself");
+  });
+
+  it("names the login first when no key is found, with the file it looked in", async () => {
+    const { root, work } = workspace();
+    const env = runEnv(root, { key: false });
+    const { verdict, output } = await runInitializer(["app", "--method", "mt_1"], {
+      cwd: work,
+      env,
+    });
+    assert.equal(verdict, "refused: no-key", output);
+    const last = output.trimEnd().split("\n").at(-1);
+    assert.ok(
+      last.includes(
+        `no key is saved in ${displayPath(path.join(root, "pipelex-home", ".env"))}: run npx -y @pipelex/mcp@latest login to save one there, export PIPELEX_API_KEY in this shell, or pass --no-create`,
+      ),
+      last,
+    );
+  });
+
+  it("spells the login with npx.cmd on Windows", async () => {
+    const { root, work } = workspace();
+    const { output } = await runInitializer(["app", "--method", "mt_1"], {
+      cwd: work,
+      env: runEnv(root, { key: false }),
+      platform: "win32",
+    });
+    assert.ok(output.includes("run npx.cmd -y @pipelex/mcp@latest login to save"), output);
+  });
+
+  it("does not read a relative PIPELEX_HOME, and says so", async () => {
+    const { root } = workspace();
+    const env = { ...runEnv(root, { key: false, login: true }), PIPELEX_HOME: "pipelex-home" };
+    const { verdict, output } = await runInitializer(["app", "--method", "mt_1"], {
+      cwd: root,
+      env,
+    });
+    assert.equal(verdict, "refused: no-key", output);
+    assert.ok(
+      output.includes("PIPELEX_HOME is neither an absolute path nor one starting with ~/"),
+      output,
+    );
+  });
+
   it("never prints the key, whatever the verdict", async () => {
     const runs = [
       [["app", "--method", "mt_1"], {}],
@@ -249,6 +303,9 @@ describe("a run", () => {
       [["app"], {}],
       [["app", "--method", "mt_1", "--colour", "x"], {}],
       [["app", "--method", "mt_1"], { npm: false }],
+      [["app", "--method", "mt_1"], { key: false, login: true }],
+      [["app", "--method", "mt_1", "--quiet"], { key: false, login: true, createExit: 2 }],
+      [["app", "--method", "mt_1"], { key: false, login: true, npm: false }],
     ];
     for (const [argv, options] of runs) {
       const { root, work } = workspace();
@@ -258,10 +315,12 @@ describe("a run", () => {
         env: runEnv(root, options),
         tmpDir,
       });
-      assert.ok(!output.includes(KEY), `${argv.join(" ")} printed the key`);
-      for (const dir of fs.readdirSync(tmpDir)) {
-        const log = path.join(tmpDir, dir, "create.log");
-        if (fs.existsSync(log)) assert.ok(!fs.readFileSync(log, "utf8").includes(KEY));
+      for (const key of [SHELL_KEY, LOGIN_KEY]) {
+        assert.ok(!output.includes(key), `${argv.join(" ")} printed a key`);
+        for (const dir of fs.readdirSync(tmpDir)) {
+          const log = path.join(tmpDir, dir, "create.log");
+          if (fs.existsSync(log)) assert.ok(!fs.readFileSync(log, "utf8").includes(key));
+        }
       }
     }
   });
