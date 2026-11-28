@@ -129,7 +129,10 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
       const runId = waitedOnRun(stage, error);
       const warning =
         runId !== undefined
-          ? runStillGoingLine(runId)
+          ? // Only following a completed run's link fetches an artifact while the command waits.
+            error instanceof ArtifactFetchError
+            ? runOutputUnfetchedLine(runId)
+            : runStillGoingLine(runId)
           : mayHaveStarted(stage, error)
             ? RUN_MAY_HAVE_STARTED_LINE
             : undefined;
@@ -148,19 +151,17 @@ export async function runCommandRun(args: readonly string[], io: CommandIO): Pro
 }
 
 /**
- * The run a failure leaves going on the server: the run that exists when the failure is not its
- * own outcome, a failed run or a completed one without its output, with a stored text the command
- * could not load or with an output handed back by reference that it could not fetch, but an
- * unreachable API or a refused poll.
+ * The run a failure met while waiting leaves to be named: the run that exists when the failure is
+ * not its own outcome, a failed run or a completed one without its output or with a stored text the
+ * command could not load, but an unreachable API, a refused poll or an output handed back by
+ * reference that could not be fetched.
  */
 function waitedOnRun(stage: Stage, error: unknown): string | undefined {
   if (stage.kind !== "started") return undefined;
   if (
     error instanceof RunFailedError ||
     error instanceof MissingMainStuffError ||
-    error instanceof StoredTextLoadError ||
-    // Only following a completed run's link fetches an artifact while the command waits.
-    error instanceof ArtifactFetchError
+    error instanceof StoredTextLoadError
   ) {
     return undefined;
   }
@@ -189,6 +190,11 @@ export const RUN_MAY_HAVE_STARTED_LINE =
 /** The line under a failure met while waiting on a run that exists. */
 export function runStillGoingLine(runId: string): string {
   return `Run ${runId} may still be going on the server, so do not start it again.`;
+}
+
+/** The line under a completed run whose output, handed back by reference, could not be fetched. */
+export function runOutputUnfetchedLine(runId: string): string {
+  return `Run ${runId} completed, but its output could not be fetched: read its results again rather than start it again.`;
 }
 
 /** The method `--method` names, a path being read from disk. */

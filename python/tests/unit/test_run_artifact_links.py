@@ -341,6 +341,11 @@ class TestRunArtifactLinks:
         assert exc_info.value.uri == "artifact_links.working_memory"
         assert exc_info.value.reason == RUN_ARTIFACT_UNREADABLE
         assert exc_info.value.status == 200
+        # Where it fails, never the file's values, which may hold signed links.
+        assert "1, 2" not in str(exc_info.value)
+
+    def test_drops_a_byte_order_mark_as_a_text_decoder_does(self) -> None:
+        assert parse_run_artifact(RunArtifact.MAIN_STUFF, b'\xef\xbb\xbf{"text": "Short."}') == {"main_stuff": {"text": "Short."}}
 
     def test_waits_fetching_what_the_load_reads_before_the_other_links(self, mocker: MockerFixture) -> None:
         client = _client()

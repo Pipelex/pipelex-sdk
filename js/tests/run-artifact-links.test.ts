@@ -375,6 +375,15 @@ describe("what the review asked of following", () => {
     }
   });
 
+  it("reads a null link entry as no link", async () => {
+    mockBoundary({
+      body: { ...referencedBody(), artifact_links: { main_stuff: null } },
+      files: REFERENCED_FILES,
+    });
+
+    await expect(makeClient().getRunResult(RUN_ID)).rejects.toBeInstanceOf(MissingMainStuffError);
+  });
+
   it("refuses an empty selection to follow", async () => {
     mockBoundary({ body: referencedBody(), files: REFERENCED_FILES });
     const client = makeClient();

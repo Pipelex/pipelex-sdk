@@ -1037,7 +1037,10 @@ async def load_stored_texts(
     target = await follow_artifact_links(client, results, artifacts=[RunArtifact.MAIN_STUFF], options=link_bounds)
     if target.main_stuff is None:
         return target
-    source = await follow_artifact_links(client, target, artifacts=CONCEPT_ARTIFACTS, options=link_bounds)
+    # A linked concept is fetched only when something is shaped like a stored text's reference.
+    source = target
+    if may_hold_stored_texts(target.main_stuff):
+        source = await follow_artifact_links(client, target, artifacts=CONCEPT_ARTIFACTS, options=link_bounds)
     if lacks_stored_text_concepts(source):
         raise _concepts_missing_error(source)
     node = main_stuff_node(source)
@@ -2013,7 +2016,8 @@ def parse_run_artifact(artifact: RunArtifact, content: bytes | str) -> dict[str,
 def _parse(artifact: RunArtifact, content: bytes | str, *, status: int) -> dict[str, Any]:
     if isinstance(content, bytes):
         try:
-            text = content.decode("utf-8")
+            # A byte order mark is dropped, as a `TextDecoder` drops it.
+            text = content.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
             raise _unreadable(artifact, "it is not UTF-8 text", status) from exc
     else:
@@ -2127,7 +2131,9 @@ async def _fetch_validated(
     try:
         validated = RunResults.model_validate({"pipeline_run_id": run_id, **fields})
     except ValidationError as exc:
-        msg = f"The {artifact} artifact handed back by reference could not be read as the run's results: {exc}."
+        # Where it fails, never the values: a stored file holds signed links, which no error may carry.
+        where = "; ".join(".".join(str(part) for part in error["loc"]) for error in exc.errors(include_input=False))
+        msg = f"The {artifact} artifact handed back by reference could not be read as the run's results, at {where}."
         raise ArtifactFetchError(
             msg,
             uri=_link_label(artifact),

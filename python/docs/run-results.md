@@ -77,10 +77,11 @@ The API Gateway in front of the hosted platform refuses to deliver a body past i
 ```python
 from pipelex_sdk.runs import RunArtifact, RunResultCompleted
 
-state = await client.get_run_result(run_id, follow_artifact_links=False)
+# No file crosses the server, a stored text included.
+state = await client.get_run_result(run_id, follow_artifact_links=False, load_stored_texts=False)
 if isinstance(state, RunResultCompleted):
-    graph_link = state.result.artifact_link(RunArtifact.GRAPH_SPEC)
-    # Hand `graph_link.url` on; or, where the content is wanted after all:
+    links = state.result.artifact_links or {}
+    # Hand every link on, `main_stuff`'s included; or, where the content is wanted after all:
     followed = await client.follow_artifact_links(state.result, artifacts=[RunArtifact.GRAPH_SPEC])
 ```
 

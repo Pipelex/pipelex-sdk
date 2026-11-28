@@ -20,6 +20,7 @@ from pipelex_sdk.command.io import (
     EXIT_OK,
     RUN_MAY_HAVE_STARTED_LINE,
     Progress,
+    run_output_unfetched_line,
     run_still_going_line,
     usage_error,
     write_lines,
@@ -55,9 +56,10 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
     except Exception as exc:  # the command's top level: every failure is printed as sentences, never as a traceback
         presented = present_error(exc)
         lines = presented.lines
-        # A failed run, or a completed one without its output, with a stored text it could not load or with
-        # an output handed back by reference it could not fetch (only following a completed run's link
-        # fetches an artifact while the command waits), is the run's own outcome. Any other
+        # A failed run, or a completed one without its output or with a stored text it could not load, is the
+        # run's own outcome. A completed run whose output, handed back by reference, could not be fetched (only
+        # following a completed run's link fetches an artifact while the command waits) is named as completed,
+        # to be read again rather than started again. Any other
         # failure while waiting on a run that exists, an unreachable API or a refused poll, says
         # nothing of the run, which goes on: a wrapper must not read it as a failed run and pay for
         # another. Before the API named the run, the error's problem says whether one may have started,
@@ -65,9 +67,9 @@ def run_command(argv: Sequence[str], io: CommandIO) -> int:
         # limit, a connection that closed once the request had left or a gateway that cut the request
         # off, when it came back unreadable, or when the edge answered a server error with no problem
         # document, and a problem document the API answered says it as received.
-        if progress.waiting_on_run is not None and not isinstance(
-            exc, (RunFailedError, MissingMainStuffError, StoredTextLoadError, ArtifactFetchError)
-        ):
+        if progress.waiting_on_run is not None and isinstance(exc, ArtifactFetchError):
+            lines = [*lines, run_output_unfetched_line(progress.waiting_on_run)]
+        elif progress.waiting_on_run is not None and not isinstance(exc, (RunFailedError, MissingMainStuffError, StoredTextLoadError)):
             lines = [*lines, run_still_going_line(progress.waiting_on_run)]
         elif progress.starting and isinstance(exc, PipelineRequestError) and exc.problem.outcome_is_unknown:
             lines = [*lines, RUN_MAY_HAVE_STARTED_LINE]

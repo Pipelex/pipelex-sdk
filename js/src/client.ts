@@ -2874,7 +2874,7 @@ export class PipelexApiClient implements HostedProtocolSurface {
     if (
       selectionIncludesMainStuff(options.artifacts) &&
       result.main_stuff == null &&
-      result.artifact_links?.main_stuff === undefined
+      result.artifact_links?.main_stuff == null
     ) {
       throw new MissingMainStuffError(
         `Completed run '${runId}' returned no main stuff — a completed run always delivers a main stuff.`,

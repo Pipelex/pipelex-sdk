@@ -1448,10 +1448,10 @@ export async function loadStoredTexts(
     artifacts: ["main_stuff"],
   });
   if (target.main_stuff == null) return target;
-  const source = await followArtifactLinks(client, target, {
-    ...bounds,
-    artifacts: CONCEPT_ARTIFACTS,
-  });
+  // A linked concept is fetched only when something is shaped like a stored text's reference.
+  const source = mayHoldStoredTexts(target.main_stuff)
+    ? await followArtifactLinks(client, target, { ...bounds, artifacts: CONCEPT_ARTIFACTS })
+    : target;
   if (lacksStoredTextConcepts(source)) throw conceptsMissingError(source);
   const node = mainStuffNode(source);
   if (node === null) return target;

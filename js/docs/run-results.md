@@ -55,12 +55,15 @@ The API Gateway in front of the hosted platform refuses to deliver a body past i
 **Pass the link instead of the content when the file must not cross your server.** A server whose responses are capped, such as a Vercel function at about 4.5 MB, cannot relay an artifact that was referenced precisely because it passes 10 MB. It reads with `followArtifactLinks: false`, which fetches nothing and hands the links back on `artifact_links`, each referenced field `null`; the main-stuff check then throws `MissingMainStuffError` only for a `null` `main_stuff` with no link, so "handed back by reference" (`results.artifact_links?.main_stuff` is set) is told apart from "not written". The server hands the link to its client, which fetches the file from storage directly within its fifteen minutes and reads it with `parseRunArtifact(name, text)`, the pure parse the SDK applies, which needs no client or key and unpacks the usage envelope. A stored-text load on such a read still needs the run's concepts: when `main_stuff` holds a value shaped like a stored text's reference and the working memory or a form came back by reference, the load fetches that artifact for its own use and the result keeps the link; pass `loadStoredTexts: false` as well to fetch nothing at all. `loadStoredTexts(results)` called later on such a result does the same, and follows a `main_stuff` handed back by reference into the result first, since its texts are what it loads.
 
 ```ts
-// On the capped server: no file crosses it.
-const state = await client.getRunResult(runId, { followArtifactLinks: false });
+// On the capped server: no file crosses it, a stored text included.
+const state = await client.getRunResult(runId, {
+  followArtifactLinks: false,
+  loadStoredTexts: false,
+});
 if (state.state === "completed") {
   const { main_stuff, artifact_links } = state.result;
   // `stringifyExactJson`, never `Response.json`: an exact read may hold a `bigint`.
-  const body = stringifyExactJson({ main_stuff, graph_spec_link: artifact_links?.graph_spec ?? null });
+  const body = stringifyExactJson({ main_stuff, links: artifact_links ?? {} });
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 

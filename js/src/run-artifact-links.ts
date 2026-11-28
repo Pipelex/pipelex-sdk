@@ -166,7 +166,7 @@ export async function followArtifactLinks(
   const followed = (Object.keys(links) as RunResultArtifact[]).filter(
     (artifact) =>
       known.includes(artifact) &&
-      links[artifact] !== undefined &&
+      links[artifact] != null &&
       (only === undefined || only.includes(artifact)),
   );
   if (followed.length === 0) return results;
@@ -207,5 +207,5 @@ export function holdsArtifactLinks(
   results: Pick<RunResults, "artifact_links">,
   artifacts: readonly RunResultArtifact[],
 ): boolean {
-  return artifacts.some((artifact) => results.artifact_links?.[artifact] !== undefined);
+  return artifacts.some((artifact) => results.artifact_links?.[artifact] != null);
 }
